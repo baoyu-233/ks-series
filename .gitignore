@@ -1,5 +1,6 @@
 # Maven and IDE output
 **/target/
+.codex-action-artifacts/
 **/.vite/
 .idea/
 .vscode/
