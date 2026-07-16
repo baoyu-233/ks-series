@@ -1497,3 +1497,8 @@ ks-Eco 的 extra 子模块不直接暴露 HTTP 端点，全部通过 `EcoWebHand
 我会根据当前源码、配置和测试结果持续更新这份文档。README 主要保留项目定位、模块入口和常用操作；需要逐项核对命令、权限、部署边界或 `ks-Eco` 设计时，请直接查看 [完整技术报告](docs/KS-SERIES-REPORT.md)。
 
 玩家使用场景请看 [玩家版指南](docs/KS-SERIES-PLAYER-README.md)。
+## 许可证
+
+本项目采用 [Mozilla Public License 2.0](LICENSE)。KS-Series 的源代码、配置和文档可以被复制、修改、编译、商用和再发布。
+
+MPL-2.0 采用文件级 copyleft：修改了本项目中受 MPL-2.0 覆盖的文件时，发布该文件或包含该文件的版本，需要继续提供该文件的源代码并保留许可证与版权声明；与本项目组合但属于独立文件的其他作品，可以按照自己的许可证发布。具体义务以 [LICENSE](LICENSE) 中的正式条款为准。
