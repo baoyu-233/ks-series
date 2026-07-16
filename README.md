@@ -1,15 +1,13 @@
 # KS Series — Minecraft RPG 综合服务器插件体系
 
-> **服务端**: LeavesMC 1.21.11 (Paper 1.21 fork) | **Web 网关端口**: 58578（生产）/ 8123（测试）  
-> **离线模式**: 开启（AuthMe 接管登录） | **Maven 模块**: 19 个（13 独立插件 + 6 Extra 子模块）  
-> **数据库**: SQLite（ks-core 统管，30+ 张业务表） | **测试服内存**: 4G | **测试服端口**: 58576  
-> **一键构建**: `.\build_all.ps1` | **一键启停**: `.\server-control.ps1`
+这是我为 LeavesMC 1.21.11 维护的一套 Minecraft 服务器插件集合。项目围绕生存服的经济、市场、土地、企业、Boss、机器人和 RPG 扩展组织成多个模块，目标是让各个系统能够独立构建、按需部署，并在长期运营中保持清晰的边界。
 
-> **完整总报告**: [docs/KS-SERIES-REPORT.md](docs/KS-SERIES-REPORT.md)  
-> 报告按当前源码核对了全部 19 个模块、命令、权限、部署边界，并单独展开了 `ks-Eco` 的模块设计和模拟效果。旧版章节保留作为历史 API 与测试参考。
->
-> **玩家版指南**: [docs/KS-SERIES-PLAYER-README.md](docs/KS-SERIES-PLAYER-README.md)  
-> 面向玩家的玩法、普通命令、权限和 KSBot 使用说明；管理员审计、兼容层和所有后台命令均已隐藏，完整 `ks-Eco` 管理命令请看技术总报告。
+这份 README 负责介绍项目结构、主要能力和常用入口。命令、权限、部署位置、模块设计以及 `ks-Eco` 的实现细节，统一放在 [完整技术报告](docs/KS-SERIES-REPORT.md)；面向玩家的玩法和普通命令见 [玩家版指南](docs/KS-SERIES-PLAYER-README.md)。
+
+> **服务端基线**: LeavesMC 1.21.11（Paper 1.21 fork）  
+> **核心数据**: SQLite，由 `ks-core` 统一管理  
+> **经济核心**: `ks-Eco`，支持 GUI、Web 和可选 Extra 模块  
+> **玩家入口**: 游戏内命令、库存 GUI，以及按模块提供的 Web 页面
 
 ---
 
@@ -1494,6 +1492,8 @@ ks-Eco 的 extra 子模块不直接暴露 HTTP 端点，全部通过 `EcoWebHand
 
 ---
 
-*项目由 Claude Opus 4.8 维护 · 最近更新: 2026-07-01*  
-*管理面板: `http://127.0.0.1:58578/ks-Eco/admin?token=<token>`*  
-*公开公告栏: `http://127.0.0.1:58578/announce`*
+## 维护说明
+
+我会根据当前源码、配置和测试结果持续更新这份文档。README 主要保留项目定位、模块入口和常用操作；需要逐项核对命令、权限、部署边界或 `ks-Eco` 设计时，请直接查看 [完整技术报告](docs/KS-SERIES-REPORT.md)。
+
+玩家使用场景请看 [玩家版指南](docs/KS-SERIES-PLAYER-README.md)。
