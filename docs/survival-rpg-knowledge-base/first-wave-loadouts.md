@@ -1,5 +1,7 @@
 # 第一波战术配装规格
 
+> [English](first-wave-loadouts.en.md) | 中文
+
 状态：内容规格，尚未写入 MMOItems 或副本奖励表。具体强度和技能以
 `field-elite-and-stat-proposal.md` 为准。
 

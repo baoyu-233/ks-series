@@ -1,5 +1,7 @@
 # Economy Decisions
 
+> [English](decisions.en.md) | 中文
+
 状态含义：`ACCEPTED` 已确认并应继续遵守；`PROPOSED` 有证据支持但仍需产品确认；`SUPERSEDED` 已被新事实替代。
 
 ## ECO-001 官方收购与保护参考价分离

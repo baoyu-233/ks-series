@@ -1,5 +1,7 @@
 # ks-Eco v1.1.0
 
+> [English](README.en.md) | 中文
+
 **ks-Series 经济核心插件** — 市场系统、官方收购/出售、玩家交易、潜影盒深度解析、动态定价、虚空交易干预。
 
 ## 架构
@@ -44,13 +46,13 @@ ks-Eco (核心)
 
 ## 子模块
 
-### [ks-Eco-bank](ks-Eco-bank/) — 银行系统
+### [ks-Eco-bank](../ks-Eco-bank/) — 银行系统
 中央银行（基准利率 3.5%，准备金率 10%）+ 商业银行（存款/贷款）。M0/M1/M2 货币供应追踪。
 
-### [ks-Eco-enterprise](ks-Eco-enterprise/) — 企业招投标
+### [ks-Eco-enterprise](../ks-Eco-enterprise/) — 企业招投标
 企业注册（民营/国企）、项目招标/投标/中标（最低价自动中标）、分包/联合体。
 
-### [ks-Eco-tax](ks-Eco-tax/) — 税收系统
+### [ks-Eco-tax](../ks-Eco-tax/) — 税收系统
 阶梯税率（5%-20%）、动态税率调整、罚金机制、逃税检测。
 
 ## 官方价格体系

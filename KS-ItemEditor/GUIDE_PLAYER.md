@@ -1,5 +1,7 @@
 # ItemEditor 玩家使用指南
 
+> [English](GUIDE_PLAYER.en.md) | 中文
+
 > 你是普通玩家，可以使用网页设计器和武器精炼功能。
 
 ---

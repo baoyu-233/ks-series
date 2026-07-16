@@ -1,5 +1,7 @@
 # Dungeon, Economy, and Combat Progression
 
+> [中文](dungeon-economy-integration.zh-CN.md) | English
+
 ## Verified Existing Foundation
 
 `ks-Eco-RealEstateDungeon` already provides instance templates, party size limits, a leader-paid entry

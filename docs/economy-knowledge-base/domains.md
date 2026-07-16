@@ -1,5 +1,7 @@
 # Economy Domain Map
 
+> [English](domains.en.md) | 中文
+
 ## 总体循环
 
 ```text

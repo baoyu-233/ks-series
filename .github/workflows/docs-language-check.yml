@@ -1,0 +1,88 @@
+name: Check Documentation Languages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.md'
+      - '.github/workflows/docs-language-check.yml'
+  pull_request:
+    paths:
+      - '**/*.md'
+      - '.github/workflows/docs-language-check.yml'
+  schedule:
+    - cron: '30 1 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pairs:
+    name: Verify Chinese and English document pairs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required pairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          pairs=(
+            'README.md|README.en.md'
+            'COMMANDS.md|COMMANDS.en.md'
+            'REPORT.md|REPORT.en.md'
+            'TESTING.md|TESTING.en.md'
+            'PERF_REPORT.md|PERF_REPORT.en.md'
+            'docs/KS-SERIES-REPORT.md|docs/KS-SERIES-REPORT.en.md'
+            'docs/KS-SERIES-PLAYER-README.md|docs/KS-SERIES-PLAYER-README.en.md'
+            'docs/CODEBASE_MAP.md|docs/CODEBASE_MAP.zh-CN.md'
+            'docs/CODEX_MEMORY.md|docs/CODEX_MEMORY.en.md'
+            'docs/DOCUMENTATION.md|docs/DOCUMENTATION.en.md'
+            'docs/房地产与副本插件玩家教程.md|docs/房地产与副本插件玩家教程.en.md'
+            'ks-Eco-RealEstateDungeon/副本系统完整教程.md|ks-Eco-RealEstateDungeon/副本系统完整教程.en.md'
+            'ks-core/README.md|ks-core/README.en.md'
+            'ks-Eco/README.md|ks-Eco/README.en.md'
+            'ks-Eco-bank/README.md|ks-Eco-bank/README.en.md'
+            'ks-Eco-enterprise/README.md|ks-Eco-enterprise/README.en.md'
+            'ks-Eco-tax/README.md|ks-Eco-tax/README.en.md'
+            'ksHWP/README.md|ksHWP/README.en.md'
+            'ksHWP/GUIDE.md|ksHWP/GUIDE.en.md'
+            'ks-Inherit/README.md|ks-Inherit/README.en.md'
+            'KS-ItemEditor/README.md|KS-ItemEditor/README.en.md'
+            'KS-ItemEditor/GUIDE_ADMIN.md|KS-ItemEditor/GUIDE_ADMIN.en.md'
+            'KS-ItemEditor/GUIDE_PLAYER.md|KS-ItemEditor/GUIDE_PLAYER.en.md'
+            'KS-ItemEditor/VIBEDOC.md|KS-ItemEditor/VIBEDOC.en.md'
+            'KS-ItemSteal/README.md|KS-ItemSteal/README.en.md'
+            'docs/economy-knowledge-base/README.md|docs/economy-knowledge-base/README.en.md'
+            'docs/economy-knowledge-base/platform.md|docs/economy-knowledge-base/platform.en.md'
+            'docs/economy-knowledge-base/domains.md|docs/economy-knowledge-base/domains.en.md'
+            'docs/economy-knowledge-base/decisions.md|docs/economy-knowledge-base/decisions.en.md'
+            'docs/economy-knowledge-base/enterprise-blindbox-tickets.md|docs/economy-knowledge-base/enterprise-blindbox-tickets.en.md'
+            'docs/economy-knowledge-base/claude-import.md|docs/economy-knowledge-base/claude-import.en.md'
+            'docs/economy-knowledge-base/verification-log.md|docs/economy-knowledge-base/verification-log.en.md'
+            'docs/survival-rpg-knowledge-base/field-elite-and-stat-proposal.md|docs/survival-rpg-knowledge-base/field-elite-and-stat-proposal.en.md'
+            'docs/survival-rpg-knowledge-base/first-wave-loadouts.md|docs/survival-rpg-knowledge-base/first-wave-loadouts.en.md'
+            'docs/boss-knowledge-base/README.md|docs/boss-knowledge-base/README.zh-CN.md'
+            'docs/boss-knowledge-base/platform.md|docs/boss-knowledge-base/platform.zh-CN.md'
+            'docs/boss-knowledge-base/frostbound-conductor.md|docs/boss-knowledge-base/frostbound-conductor.zh-CN.md'
+            'docs/boss-knowledge-base/playtest-log.md|docs/boss-knowledge-base/playtest-log.zh-CN.md'
+            'docs/survival-rpg-knowledge-base/README.md|docs/survival-rpg-knowledge-base/README.zh-CN.md'
+            'docs/survival-rpg-knowledge-base/content-architecture.md|docs/survival-rpg-knowledge-base/content-architecture.zh-CN.md'
+            'docs/survival-rpg-knowledge-base/decision-log.md|docs/survival-rpg-knowledge-base/decision-log.zh-CN.md'
+            'docs/survival-rpg-knowledge-base/dungeon-economy-integration.md|docs/survival-rpg-knowledge-base/dungeon-economy-integration.zh-CN.md'
+            'docs/survival-rpg-knowledge-base/foundation-catalog.md|docs/survival-rpg-knowledge-base/foundation-catalog.zh-CN.md'
+            'docs/survival-rpg-knowledge-base/roadmap.md|docs/survival-rpg-knowledge-base/roadmap.zh-CN.md'
+            'docs/survival-rpg-knowledge-base/vision.md|docs/survival-rpg-knowledge-base/vision.zh-CN.md'
+          )
+          failed=0
+          for pair in "${pairs[@]}"; do
+            left="${pair%%|*}"
+            right="${pair##*|}"
+            if [[ ! -f "$left" || ! -f "$right" ]]; then
+              echo "Missing pair: $left | $right"
+              failed=1
+            fi
+          done
+          if [[ "$failed" -ne 0 ]]; then
+            exit 1
+          fi

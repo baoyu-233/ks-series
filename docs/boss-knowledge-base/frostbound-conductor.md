@@ -1,5 +1,7 @@
 # Frostbound Conductor
 
+> [中文](frostbound-conductor.zh-CN.md) | English
+
 ## Identity
 
 A four-player frost raid boss that punishes static damage rotations. Its default pressure is Frostbite,

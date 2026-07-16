@@ -1,5 +1,7 @@
 # FotiaEnchantment AI 附魔写法教程
 
+> [English](VIBEDOC.en.md) | 中文
+
 本文件只给 AI 看，用来教 AI 在看不到插件源码的情况下，按 FotiaEnchantment 的配置格式编写可用附魔。
 
 AI 的目标不是解释插件原理，而是根据服主需求生成正确的附魔配置和语言条目。

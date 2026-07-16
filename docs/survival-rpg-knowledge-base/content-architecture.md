@@ -1,5 +1,7 @@
 # Content Architecture
 
+> [中文](content-architecture.zh-CN.md) | English
+
 ## Foundation Layer
 
 Vanilla survival, land/real-estate, player trading, the official market, storage, enterprises, and

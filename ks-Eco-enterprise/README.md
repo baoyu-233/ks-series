@@ -1,5 +1,7 @@
 # ks-Eco-enterprise v1.1.0
 
+> [English](README.en.md) | 中文
+
 **现代企业与招投标系统** — 企业注册/管理、招投标、分包拼包、资质校验。
 
 ## 依赖

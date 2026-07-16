@@ -1,5 +1,7 @@
 # Platform Baseline
 
+> [中文](platform.zh-CN.md) | English
+
 ## Verified Stack
 
 - MythicMobs Premium `5.12.0-c087ceb9`

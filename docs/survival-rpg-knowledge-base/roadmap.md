@@ -1,5 +1,7 @@
 # Staged RPG Roadmap
 
+> [中文](roadmap.zh-CN.md) | English
+
 ## Stage 0: Stable Survival Foundation
 
 Goal: existing survival, economy, land, storage, and trade loops are understandable and reliable.

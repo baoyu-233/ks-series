@@ -1,5 +1,7 @@
 # ksHWP v1.2.0 — 硬世界地图
 
+> [English](README.en.md) | 中文
+
 公共社区地图插件。将 Minecraft 世界渲染为 Web 地图，支持多维世界、玩家标注、区域管理。
 
 ## 功能

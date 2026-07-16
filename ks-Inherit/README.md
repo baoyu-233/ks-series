@@ -1,5 +1,7 @@
 # ks-Inherit v1.0.0 —— ks-Series 跨版本物品继承插件
 
+> [English](README.en.md) | 中文
+
 **ks-Series** 插件群之一 —— 从 1.20.6 升级到 1.21.11 时无缝保留玩家物品。
 GUI 箱子存储 → 完整 NBT 序列化 → SQLite 持久化 → Web 审阅 → OpenInv 发放。
 

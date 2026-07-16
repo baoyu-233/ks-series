@@ -1,5 +1,7 @@
 # ItemEditor 管理员使用指南
 
+> [English](GUIDE_ADMIN.en.md) | 中文
+
 > 你是服主/管理员，拥有 `itemedit.admin` 权限。本指南涵盖全部功能。
 
 ---

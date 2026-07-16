@@ -1,5 +1,7 @@
 # Playtest Log
 
+> [中文](playtest-log.zh-CN.md) | English
+
 ## 2026-07-15 - First Formal-Server Feedback
 
 - `pet_ice_dragon` ModelEngine model loaded correctly.

@@ -1,5 +1,7 @@
 # Boss Knowledge Base
 
+> [中文](README.zh-CN.md) | English
+
 This directory is the encounter-design and validation sub-library of
 `docs/survival-rpg-knowledge-base/`. It owns durable MythicMobs records for ks-Series bosses.
 

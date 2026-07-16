@@ -1,5 +1,7 @@
 # ks-Series Codebase Map
 
+> [中文](CODEBASE_MAP.zh-CN.md) | English
+
 Last verified: 2026-07-16
 
 Current cross-session handoff: `docs/CODEX_MEMORY.md`

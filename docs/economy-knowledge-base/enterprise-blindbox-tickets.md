@@ -1,5 +1,7 @@
 # Enterprise Blind Box Ticket Audit
 
+> [English](enterprise-blindbox-tickets.en.md) | 中文
+
 审计日期：2026-07-16。范围是当前源码和本地测试服只读数据库，不代表生产服使用量。
 
 ## 结论

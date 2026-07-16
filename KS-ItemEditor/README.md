@@ -1,5 +1,7 @@
 # KS-ItemEditor v1.4.0
 
+> [English](README.en.md) | 中文
+
 **ks-Series 物品编辑器插件** —— GUI + 网页双模式编辑物品名称、Lore、附魔、属性修饰符等全部属性。
 
 **支持平台**: Paper 1.21.11+ / Leaves  

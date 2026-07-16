@@ -1,5 +1,7 @@
 # KS-Series 服务端性能分析报告
 
+> [English](PERF_REPORT.en.md) | 中文
+
 > **分析日期**: 2026-07-03  
 > **Profile 文件**: `PgBQzdsnsB.sparkprofile`（82 MB，长时间录制）  
 > **服务端版本**: Leaves 1.21.11-154  

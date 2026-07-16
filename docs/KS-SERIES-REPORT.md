@@ -1,5 +1,7 @@
 # ks-Series 全插件报告
 
+> [English](KS-SERIES-REPORT.en.md) | 中文
+
 > 生成日期：2026-07-15  
 > 适用服务端：LeavesMC 1.21.11（Paper 1.21 分支）  
 > 资料来源：当前源码、`plugin.yml`、模块 README、配置文件、`docs/CODEX_MEMORY.md`、`docs/CODEBASE_MAP.md` 和 `test_results/`。

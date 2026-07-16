@@ -1,5 +1,7 @@
 # KS-ItemSteal v1.0.2 —— ks-Series 通用夺取/归还兵刃辅助
 
+> [English](README.en.md) | 中文
+
 **ks-Series** 插件群之一 —— 无损夺取玩家物品并在夺取者死亡时归还。
 后缀匹配(剑/斧/盾等)、无损保存(附魔、命名、NBT 全保留)、PvE 与 PvP 通用。
 

@@ -1,5 +1,7 @@
 # Codex Project Memory
 
+> [English](CODEX_MEMORY.en.md) | 中文
+
 Last updated: 2026-07-16 Asia/Hong_Kong
 
 Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
@@ -321,3 +323,13 @@ Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
   verified enterprise level editing, pool requirements, player lock states and all four Web test scenarios.
 - `CODEBASE_MAP.md`, the economy knowledge base, `KS-SERIES-REPORT.md`, and the player README are synchronized
   with the retired-ticket and enterprise-level behavior; no documentation follow-up remains for this change.
+
+## Documentation Language Maintenance
+
+- Published Markdown now has a Chinese and English companion. Default Chinese documents use `.en.md`; documents whose
+  primary content is English use `.zh-CN.md`.
+- Each published pair should expose a top-of-page GitHub Markdown link to the other language. The language index is
+  `docs/DOCUMENTATION.md` / `docs/DOCUMENTATION.en.md`.
+- `.github/workflows/docs-language-check.yml` checks the required pair inventory on Markdown changes, pull requests,
+  manual runs, and a weekly schedule. Codex should also recheck the inventory when syncing source and publishing
+  checkouts or when a new document is added.

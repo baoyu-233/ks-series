@@ -1,5 +1,7 @@
 # Claude Memory Import
 
+> [English](claude-import.en.md) | 中文
+
 来源：`.claude/ks-server-ops-memory.md`，最后更新时间 2026-07-11 至 2026-07-14。以下内容经过当前代码或项目记忆复核后纳入经济知识库。
 
 ## 已采纳

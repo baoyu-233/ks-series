@@ -1,5 +1,7 @@
 # KS Series — Minecraft 生存服插件体系
 
+> [English](README.en.md) | 中文
+
 这是我围绕 LeavesMC 1.21.11 维护的一套 Minecraft 服务器插件集合。项目以生存服为基础，把经济、市场、土地、企业、世界地图、机器人、Boss 和渐进式 RPG 组织成可以独立构建、按需部署的模块。
 
 我希望每个系统都有清晰的边界：经济负责结算，RPG 负责成长和战斗证明，MythicMobs 负责内容表现，额外模块通过明确的接口接入。项目仍在持续开发，配置、命令和 API 可能随版本调整，正式使用前请先在自己的测试服验证。
@@ -165,10 +167,10 @@ mvn clean package
 
 | 文档 | 面向对象 | 内容 |
 |------|----------|------|
-| [完整技术报告](docs/KS-SERIES-REPORT.md) | 服主、开发者 | 全部插件、命令、权限、部署边界、API 和 `ks-Eco` 模块设计。 |
-| [玩家版指南](docs/KS-SERIES-PLAYER-README.md) | 普通玩家 | 玩家玩法、普通命令和经济/RPG 使用流程。 |
-| [房地产与副本玩家教程](docs/房地产与副本插件玩家教程.md) | 玩家 | 土地、房屋和副本的具体操作。 |
-| [代码地图](docs/CODEBASE_MAP.md) | 开发者 | 入口类、模块归属、线程边界和数据库责任。 |
+| [完整技术报告](docs/KS-SERIES-REPORT.md) / [English](docs/KS-SERIES-REPORT.en.md) | 服主、开发者 | 全部插件、命令、权限、部署边界、API 和 `ks-Eco` 模块设计。 |
+| [玩家版指南](docs/KS-SERIES-PLAYER-README.md) / [English](docs/KS-SERIES-PLAYER-README.en.md) | 普通玩家 | 玩家玩法、普通命令和经济/RPG 使用流程。 |
+| [房地产与副本玩家教程](docs/房地产与副本插件玩家教程.md) / [English](docs/房地产与副本插件玩家教程.en.md) | 玩家 | 土地、房屋和副本的具体操作。 |
+| [代码地图](docs/CODEBASE_MAP.md) / [中文](docs/CODEBASE_MAP.zh-CN.md) | 开发者 | 入口类、模块归属、线程边界和数据库责任。 |
 
 ## 开发状态
 

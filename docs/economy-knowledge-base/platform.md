@@ -1,5 +1,7 @@
 # Economy Platform Contract
 
+> [English](platform.en.md) | 中文
+
 ## 产品定位
 
 `ks-Eco` 是可装配的服务器经济平台，不只是余额插件：

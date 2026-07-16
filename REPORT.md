@@ -1,5 +1,7 @@
 # KS-Series 经济系统综合评估报告
 
+> [English](REPORT.en.md) | 中文
+
 > **生成日期**: 2026-06-25 | **测试版本**: ks-Eco 1.2.0 + 3 个 Extra 模块  
 > **测试环境**: Paper 1.21.11 + SQLite + MCSM Panel | **测试通过率**: 94% (53/56)
 

@@ -1,5 +1,7 @@
 # First-Season RPG Foundation Catalog
 
+> [中文](foundation-catalog.zh-CN.md) | English
+
 This catalog is the authoritative initial material and equipment economy. It is deliberately small:
 the goal is to connect survival production to future RPG combat without introducing random-stat or
 high-frequency progression systems.

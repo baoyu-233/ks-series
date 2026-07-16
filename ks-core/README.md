@@ -1,5 +1,7 @@
 # ks-core v1.0.0
 
+> [English](README.en.md) | 中文
+
 **ks-Series 核心基础设施** — 统一 Web 网关、Token 鉴权、路由分发、SQLite 数据存储。
 
 ## 功能

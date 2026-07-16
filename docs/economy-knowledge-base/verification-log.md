@@ -1,5 +1,7 @@
 # Economy Verification Log
 
+> [English](verification-log.en.md) | 中文
+
 ## 2026-07-16：限时销售与玩家盲盒线程分离
 
 - `mvn test`：通过，但项目没有 Java 测试源码。

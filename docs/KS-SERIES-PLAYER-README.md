@@ -1,5 +1,7 @@
 # ks-Series 玩家指南
 
+> [English](KS-SERIES-PLAYER-README.en.md) | 中文
+
 > 这是给玩家和普通运营成员看的简明版说明。  
 > 完整技术报告见 [KS-SERIES-REPORT.md](KS-SERIES-REPORT.md)。
 

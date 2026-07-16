@@ -1,5 +1,7 @@
 # Decision Log
 
+> [中文](decision-log.zh-CN.md) | English
+
 ## Accepted
 
 - The server is survival-first and RPG-progressive, not a lobby MMO.

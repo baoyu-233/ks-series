@@ -1,5 +1,7 @@
 # ks-Series 全部指令参考
 
+> [English](COMMANDS.en.md) | 中文
+
 > Web 网关: `http://localhost:8123` | 所有 Web 面板通过 ks-core 统一端口访问
 
 ---

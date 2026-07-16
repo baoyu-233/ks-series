@@ -1,5 +1,7 @@
 # Survival RPG Knowledge Base
 
+> [中文](README.zh-CN.md) | English
+
 This is the product and systems knowledge base for ks-Series as a survival server that gradually
 adds RPG depth. It is the source of truth for direction, system boundaries, and staged delivery.
 

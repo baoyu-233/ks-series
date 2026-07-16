@@ -1,5 +1,7 @@
 # Economy Knowledge Base
 
+> [English](README.en.md) | 中文
+
 这是 ks-Series 经济系统的长期设计、实现边界和验证记录。它用于回答三个问题：
 
 1. 一个功能为什么存在，它解决哪条资源或货币流动问题。

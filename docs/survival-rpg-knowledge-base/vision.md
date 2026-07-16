@@ -1,5 +1,7 @@
 # Server Vision
 
+> [中文](vision.zh-CN.md) | English
+
 ## Player Promise
 
 ks-Series is a long-running survival server where a new player can enjoy a recognizable vanilla

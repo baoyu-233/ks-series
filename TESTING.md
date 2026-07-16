@@ -1,5 +1,7 @@
 # ks-Series 插件测试指南
 
+> [English](TESTING.en.md) | 中文
+
 > **适用范围**: ks-core、ks-Eco、ksHWP、ks-Eco-bank、ks-Eco-enterprise、ks-Eco-tax  
 > **排除插件**: KS-ItemEditor (ie)、KS-ItemSteal (is)  
 > **测试环境**: `test_1_21/` (Leaves 1.21.11) + Python 模拟测试  
@@ -687,7 +689,7 @@ PYTHONIOENCODING=utf-8 python market_simulation.py
 
 **2026-06-24 — v1.1.0: 65/65 通过 (100%)**
 
-所有图表已生成，详见 [TEST_REPORT.md](../test_results/TEST_REPORT.md)。
+本地测试服的详细图表和原始结果不属于公开仓库；发布前请在自己的测试环境生成并保存测试结果。
 
 ---
 
