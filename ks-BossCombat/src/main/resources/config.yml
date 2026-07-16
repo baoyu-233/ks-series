@@ -1,0 +1,10 @@
+# Boss-specific weapon interaction rules. MythicMobs controls the scoreboard tag lifecycle.
+frostbound-weapon-adaptation:
+  enabled: true
+  boss-tag: "Frostbound_WeaponAdaptation"
+  damage-multiplier: 0.5
+  weapon-types:
+    - HAMMER
+    - GREATHAMMER
+    - SPEAR
+    - LANCE

@@ -1,0 +1,52 @@
+# ============================================
+# 批量扩展附魔：珊瑚铲 (Reef Scoop)
+# EN: Bulk extended enchantment: Reef Scoop (珊瑚铲)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: reef_scoop
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: utility
+category: tools
+
+applicable-items:
+  - SHOVEL
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: MINE_BLOCK
+    cooldown: 70
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+      - type: in_water
+    actions:
+      - type: BONUS_DROP
+        value: "{level}"
+      - type: PARTICLE
+        particle: "DRIPPING_WATER"
+        count: 10
+        offset: "0.35"
+        at: "BLOCK"
+      - type: SOUND
+        sound: "entity.fishing_bobber.splash"
+        volume: "0.6"
+        pitch: "1.2"
+        at: "SELF"

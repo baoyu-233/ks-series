@@ -1,0 +1,70 @@
+# ksHWP 配置文件
+# 路径: plugins/ksHWP/config.yml
+
+map:
+  # 是否启用地图渲染
+  enabled: true
+
+  # 一次请求最大渲染区块数（防内存泄漏）
+  max-chunks-per-request: 256
+
+  # 渲染超时（秒）
+  render-timeout-seconds: 30
+
+  # 单个区块缓存时间（秒），0 = 不缓存
+  chunk-cache-seconds: 300
+
+  # 地图默认中心世界
+  default-world: "world"
+
+  # 是否显示在线玩家位置
+  show-players: true
+
+  # 玩家位置刷新间隔（秒）
+  player-refresh-seconds: 5
+
+# 预渲染机制 — 提前生成周边图块，减少切换卡顿
+pre-render:
+  # 是否启用预渲染
+  enabled: true
+
+  # 预渲染半径（图块数），以当前视角为中心
+  radius: 5
+
+  # 预渲染缩放级别列表
+  zoom-levels: [2, 4]
+
+  # 预渲染队列最大长度
+  max-queue: 128
+
+  # 定时预渲染每个在线玩家周围的已加载区块，不会为了地图强制加载或生成新区块
+  nearby-player-chunk-radius: 6
+  # 每多少 tick 补一轮玩家周边图块（20 tick = 1 秒）
+  nearby-player-interval-ticks: 100
+  # 每轮每个玩家最多加入多少个区块，防止大范围移动时占满队列
+  nearby-player-max-enqueue-per-cycle: 12
+
+# 图层独立化 — 各信息层可独立开关与刷新
+layers:
+  players:
+    # 玩家标记图层
+    enabled: true
+    # 刷新间隔（秒），0 = 仅手动刷新
+    refresh-seconds: 5
+  annotations:
+    # 地图备注图层
+    enabled: true
+
+annotations:
+  # 是否启用个人地图备注
+  enabled: true
+
+  # 每个玩家最大备注数量
+  max-per-player: 100
+
+  # 备注最大长度（字符）
+  max-text-length: 200
+
+web:
+  # ks-core 路由路径
+  route: "/kSHWP"

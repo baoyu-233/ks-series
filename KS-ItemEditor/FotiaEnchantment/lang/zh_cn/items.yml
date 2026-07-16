@@ -1,0 +1,52 @@
+# ============================================
+# 自定义道具名称和描述（中文）
+# EN: Custom item names and descriptions (Chinese)
+# ============================================
+
+starweave-fragment:
+  name: "<!i><yellow>星辉残页"
+  lore:
+    - "<!i><gray>收集后可合成星芒魔典"
+    - "<!i><gray>所需数量: <white>{cost}"
+    - ""
+    - "<!i><dark_gray>通过击杀怪物或挖矿获得"
+
+stellaris-codex:
+  name: "<!i>{rarity_color}星芒魔典"
+  lore:
+    - "<!i><gray>右键打开揭示附魔"
+    - "<!i><gray>品质: {rarity_color}{rarity_name}"
+    - ""
+    - "<!i><dark_gray>揭示后获得随机附魔书"
+
+stellaris-codex-preview:
+  name: "<!i><yellow>随机星芒魔典"
+  lore:
+    - "<!i><gray>合成后随机确定品质"
+    - "<!i><gray>品质: <yellow>合成后揭示"
+    - ""
+    - "<!i><dark_gray>预览不会显示最终品质"
+
+disenchant-shard:
+  name: "<!i><green>祛魔碎石"
+  lore:
+    - "<!i><gray>随机拆卸 <white>1</white> 个附魔"
+    - "<!i><gray>成功率: <white>80%"
+    - ""
+    - "<!i><dark_gray>右键使用"
+
+disenchant-crystal:
+  name: "<!i><aqua>祛魔晶石"
+  lore:
+    - "<!i><gray>可选择拆卸最多 <white>3</white> 个附魔"
+    - "<!i><gray>成功率: <white>90%"
+    - ""
+    - "<!i><dark_gray>右键使用"
+
+disenchant-gem:
+  name: "<!i><light_purple>祛魔神石"
+  lore:
+    - "<!i><gray>可选择拆卸最多 <white>5</white> 个附魔"
+    - "<!i><gray>成功率: <white>100%"
+    - ""
+    - "<!i><dark_gray>右键使用"

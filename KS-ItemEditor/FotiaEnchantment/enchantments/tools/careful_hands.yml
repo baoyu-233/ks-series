@@ -1,0 +1,65 @@
+# ============================================
+# 批量扩展附魔：匠心之手 (Careful Hands)
+# EN: Bulk extended enchantment: Careful Hands (匠心之手)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: careful_hands
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: utility
+category: tools
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: REPAIR_ITEM
+    cooldown: 80
+    conditions:
+      - type: chance
+        value: "{level} * 9"
+    actions:
+      - type: HELD_ITEM_REPAIR
+        value: "{level}"
+      - type: PARTICLE
+        particle: "ENCHANT"
+        count: 8
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.experience_orb.pickup"
+        volume: "0.5"
+        pitch: "1.5"
+        at: "SELF"

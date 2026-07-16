@@ -1,0 +1,51 @@
+# ============================================
+# 批量扩展附魔：深层勘探 (Deep Prospector)
+# EN: Bulk extended enchantment: Deep Prospector (深层勘探)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: deep_prospector
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: mining
+category: tools
+
+applicable-items:
+  - PICKAXE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: MINE_DEEPSLATE
+    cooldown: 50
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: BONUS_DROP
+        value: "{level}"
+      - type: PARTICLE
+        particle: "ENCHANT"
+        count: 8
+        offset: "0.35"
+        at: "BLOCK"
+      - type: SOUND
+        sound: "block.deepslate.break"
+        volume: "0.5"
+        pitch: "1.2"
+        at: "SELF"

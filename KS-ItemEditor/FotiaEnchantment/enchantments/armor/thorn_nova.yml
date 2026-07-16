@@ -1,0 +1,87 @@
+# ============================================
+# 荆棘新星 (Thorn Nova)
+# EN: Thorn Nova (荆棘新星)
+# 受到攻击时有概率对周围敌人造成范围伤害
+# 周围有多个敌人时触发概率更高
+# ============================================
+
+# 附魔ID（唯一标识，不可重复）
+# EN: Enchantment ID; must be unique
+id: thorn_nova
+
+# 是否启用此附魔
+# EN: Whether this enchantment is enabled
+enabled: true
+
+# 最大等级
+# EN: Maximum level
+max-level: 3
+
+# 稀有度（对应 rarity.yml 中定义的稀有度ID）
+# EN: Rarity ID defined in rarity.yml
+rarity: aureate
+
+# 所属附魔组（对应 groups.yml）
+# EN: Enchantment group defined in groups.yml
+group: defensive
+
+# 可应用的物品类型
+# EN: Applicable item types
+applicable-items:
+  - CHESTPLATE
+
+# 冲突的附魔ID列表
+# EN: Conflicting enchantment IDs
+conflicts: []
+
+# 获取方式配置
+# EN: Acquisition method configuration
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  loot-table: true
+
+# 附魔台权重（影响附魔台中出现概率，较稀有）
+# EN: Enchanting table weight; affects chance to appear and is rarer
+enchanting-table-weight: 5
+
+# 星芒魔典抽取池配置
+# EN: Stellaris Codex roll pool configuration
+codex-pools:
+  aureate: 10
+  divine: 2
+
+# 效果配置（核心：Trigger → Condition → Effect 管道）
+# EN: Effect configuration; core pipeline is Trigger -> Condition -> Effect
+effects:
+  # 受到攻击时范围反击
+  - trigger: TAKE_ENTITY_DAMAGE
+    conditions:
+      # 概率触发
+      # EN: Chance-based trigger
+      - type: chance
+        value: "{level} * 15"
+      # 附近有玩家/敌人时触发（范围5格内至少有2个实体）
+      - type: players_nearby
+        radius: 5
+        min-count: 2
+    actions:
+      # 小范围爆炸造成伤害（低威力，不破坏方块）
+      - type: EXPLODE
+        power: "{level} * 0.5"
+        break-blocks: false
+      # 对周围造成真实伤害
+      - type: TRUE_DAMAGE
+        value: "{level} * 1.0"
+      # 荆棘粒子特效（绿色粒子扩散）
+      - type: PARTICLE
+        particle: HAPPY_VILLAGER
+        count: 20
+      # 播放荆棘音效
+      - type: SOUND
+        sound: entity.evoker_fangs.attack
+        volume: 0.7
+        pitch: 1.2
+    # 冷却时间（tick），较长冷却防止连续触发
+    cooldown: 160

@@ -1,0 +1,54 @@
+# ============================================
+# 批量扩展附魔：处决印记 (Execution Mark)
+# EN: Bulk extended enchantment: Execution Mark (处决印记)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: execution_mark
+enabled: true
+curse: false
+max-level: 5
+rarity: divine
+group: offensive
+category: melee
+
+applicable-items:
+  - SWORD
+  - AXE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 3
+villager-trade-price-range:
+  - 44
+  - 96
+
+codex-pools:
+  divine: 8
+
+effects:
+  - trigger: MELEE_ATTACK
+    cooldown: 120
+    conditions:
+      - type: chance
+        value: "{level} * 6"
+      - type: target_is_living
+      - type: target_health_percent_below
+        value: 35
+    actions:
+      - type: TRUE_DAMAGE
+        value: "{level} * 2.4"
+      - type: PARTICLE
+        particle: "WITCH"
+        count: 18
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.evoker.prepare_attack"
+        volume: "0.7"
+        pitch: "0.8"
+        at: "TARGET"

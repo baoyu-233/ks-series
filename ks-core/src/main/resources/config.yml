@@ -1,0 +1,76 @@
+# ============================================================
+# ks-core 配置文件
+# 版本: 1.0.0
+# 路径: plugins/ks-core/config.yml
+# ============================================================
+
+# ------------------------------------------------------------------
+# web-gateway — 统一 Web 网关配置
+# ------------------------------------------------------------------
+web-gateway:
+
+  # 是否启用 Web 网关
+  enabled: true
+
+  # HTTP 监听端口（面板服唯一端口，复用给所有子插件）
+  port: 58578
+
+  # 绑定 IP 地址
+  #   "127.0.0.1" — 仅本机
+  #   "0.0.0.0"   — 所有网卡（面板服必须）
+  bind-address: "0.0.0.0"
+
+  # 对外显示地址（为空则使用 bind-address）
+  public-address: ""
+
+  # Token 超时时间（秒）
+  token-timeout-seconds: 600
+
+  # HTTP 线程池大小
+  max-threads: 8
+
+# ------------------------------------------------------------------
+# sub-plugins — 子插件路由注册
+# ------------------------------------------------------------------
+sub-plugins:
+
+  # ItemEditor 接管
+  KS-ItemEditor:
+    enabled: true
+    route: "/IE"
+
+  # 地图插件
+  kshwp:
+    enabled: true
+    route: "/kSHWP"
+
+  # 经济插件
+  ks-eco:
+    enabled: true
+    route: "/ks-Eco"
+
+  # KS 兼容层
+  ks-compat:
+    enabled: true
+    route: "/ks-Compat"
+
+# ------------------------------------------------------------------
+# database — 数据存储配置
+# ------------------------------------------------------------------
+database:
+  # 数据库类型: sqlite | mysql（MySQL 为跨服预留）
+  type: sqlite
+
+  sqlite:
+    # SQLite 数据库文件路径（相对于 plugins/ks-core/）
+    file: "data.db"
+
+  # MySQL 预留配置
+  mysql:
+    host: "localhost"
+    port: 3306
+    database: "ks_core"
+    username: ""
+    password: ""
+    use-ssl: false
+    pool-size: 5

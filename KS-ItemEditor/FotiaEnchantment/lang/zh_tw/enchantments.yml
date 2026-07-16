@@ -1,0 +1,575 @@
+# ============================================
+# 附魔名称和描述翻译（中文）
+# EN: Enchantment name and description translations (Chinese)
+# 键名对应附魔文件名（即附魔ID）
+# EN: Keys match enchantment file names, also used as enchantment IDs
+# ============================================
+
+blazing_blade:
+  name: "烈焰之刃"
+  description:
+    - "攻击时有概率点燃目标"
+    - "并造成额外真实伤害"
+
+vampiric_strike:
+  name: "吸血打击"
+  description:
+    - "攻击时偷取目标生命值"
+
+thunder_smash:
+  name: "雷霆一击"
+  description:
+    - "攻击时有概率召唤闪电"
+    - "对目标造成额外伤害"
+
+explosive_arrow:
+  name: "爆裂箭矢"
+  description:
+    - "箭矢命中时产生爆炸"
+
+homing_arrow:
+  name: "追踪之矢"
+  description:
+    - "箭矢自动追踪最近的敌人"
+
+frost_shield:
+  name: "霜盾"
+  description:
+    - "被攻击时有概率冻结攻击者"
+
+thorn_nova:
+  name: "荆棘新星"
+  description:
+    - "被攻击时对周围敌人造成反伤"
+
+vitality_spring:
+  name: "生命涌泉"
+  description:
+    - "穿戴时周期性恢复生命值"
+
+auto_smelt:
+  name: "自动熔炼"
+  description:
+    - "挖掘矿石时自动熔炼为成品"
+
+vein_miner:
+  name: "连锁挖矿"
+  description:
+    - "挖矿时连锁破坏相邻同类方块"
+
+bountiful:
+  name: "丰收"
+  description:
+    - "采集时获得额外掉落物"
+
+xp_boost:
+  name: "经验倍增"
+  description:
+    - "获取经验时获得额外加成"
+
+windwalker:
+  name: "疾风步"
+  description:
+    - "穿戴时提升移动速度"
+
+# === FotiaEnchantment 100 enchantment expansion ===
+
+ember_edge:
+  name: "余烬刃锋"
+  description:
+    - "攻击时有概率点燃目标并造成真实伤害。"
+
+cinder_fang:
+  name: "灰烬獠牙"
+  description:
+    - "暴击时有概率追加火焰伤害。"
+
+phoenix_cut:
+  name: "凤凰斩"
+  description:
+    - "击杀目标时有概率恢复生命并获得短暂再生。"
+
+molten_rend:
+  name: "熔岩撕裂"
+  description:
+    - "攻击时有概率放大本次伤害并点燃目标。"
+
+ash_reaver:
+  name: "烬火收割"
+  description:
+    - "连杀时有概率恢复生命并获得短暂力量。"
+
+frostbite_edge:
+  name: "霜咬刃"
+  description:
+    - "攻击时有概率减速目标并造成额外伤害。"
+
+glacial_cleave:
+  name: "冰川劈斩"
+  description:
+    - "横扫攻击时有概率削弱目标并追加伤害。"
+
+winter_maw:
+  name: "凛冬之噬"
+  description:
+    - "攻击时有概率让目标疲惫并受到真实伤害。"
+
+thunder_lash:
+  name: "雷霆鞭击"
+  description:
+    - "攻击时有概率召唤雷电并追加伤害。"
+
+stormbreaker_edge:
+  name: "风暴破刃"
+  description:
+    - "暴击时有概率引雷并造成真实伤害。"
+
+volt_piercer:
+  name: "电弧穿刺"
+  description:
+    - "攻击时有概率用电弧减速目标。"
+
+blood_oath:
+  name: "血誓"
+  description:
+    - "攻击时有概率追加伤害并吸取生命。"
+
+execution_mark:
+  name: "处决印记"
+  description:
+    - "攻击低生命目标时有概率造成高额真实伤害。"
+
+shadow_lunge:
+  name: "影袭"
+  description:
+    - "从背后攻击时有概率造成额外伤害并加速。"
+
+skyfall_strike:
+  name: "坠星击"
+  description:
+    - "空中攻击时有概率造成额外伤害并击飞目标。"
+
+riposte_spark:
+  name: "反击火花"
+  description:
+    - "格挡时有概率反弹伤害。"
+
+duelist_focus:
+  name: "决斗专注"
+  description:
+    - "连击时有概率造成少量额外伤害。"
+
+blade_tempo:
+  name: "刃舞节奏"
+  description:
+    - "连击时有概率短暂提升移动速度。"
+
+phantom_cut:
+  name: "幻影切割"
+  description:
+    - "疾跑攻击时有概率造成额外伤害并获得速度。"
+
+earthshatter:
+  name: "裂地重击"
+  description:
+    - "暴击时有概率产生小型冲击并击飞目标。"
+
+flare_shot:
+  name: "炽焰射击"
+  description:
+    - "箭矢命中时有概率点燃目标并追加伤害。"
+
+frost_arrow:
+  name: "霜寒箭"
+  description:
+    - "弹射物命中时有概率减速目标。"
+
+storm_bolt:
+  name: "雷暴弩矢"
+  description:
+    - "弩箭命中时有概率召唤雷电。"
+
+gale_shaft:
+  name: "疾风箭杆"
+  description:
+    - "射箭时有概率短暂提升移动速度。"
+
+venom_tip:
+  name: "毒棘箭头"
+  description:
+    - "弹射物命中时有概率使目标中毒。"
+
+hunter_focus:
+  name: "猎手专注"
+  description:
+    - "远距离命中时有概率造成额外伤害。"
+
+eagle_mark:
+  name: "鹰眼标记"
+  description:
+    - "箭矢命中时有概率让目标发光。"
+
+scatter_spark:
+  name: "散射火花"
+  description:
+    - "射出弩箭时有概率获得短暂速度。"
+
+gravity_bolt:
+  name: "重力弩矢"
+  description:
+    - "弩箭命中时有概率拖慢并扰乱目标。"
+
+echo_arrow:
+  name: "回响箭"
+  description:
+    - "箭矢命中时有概率产生回响伤害。"
+
+soul_seeker:
+  name: "灵魂追矢"
+  description:
+    - "弹射物命中时有概率造成高额真实伤害。"
+
+skyflare:
+  name: "天焰"
+  description:
+    - "箭矢命中时有概率产生不破坏方块的火焰爆发。"
+
+piercing_gust:
+  name: "贯风"
+  description:
+    - "弹射物命中时有概率追加伤害并击退目标。"
+
+spectral_pin:
+  name: "幽光钉刺"
+  description:
+    - "命中时有概率标记并减速目标。"
+
+burst_quiver:
+  name: "爆裂箭袋"
+  description:
+    - "箭矢命中时有概率产生小型爆裂。"
+
+tide_shot:
+  name: "潮汐射击"
+  description:
+    - "远程命中时有概率用潮水拖慢目标。"
+
+ember_barrage:
+  name: "燃烬齐射"
+  description:
+    - "弩箭命中时有概率放大伤害并点燃目标。"
+
+frost_barrage:
+  name: "霜雾齐射"
+  description:
+    - "弩箭命中时有概率造成冰霜伤害并减速。"
+
+arc_tracer:
+  name: "电弧追踪"
+  description:
+    - "弹射物命中时有概率引导电弧雷击。"
+
+void_puncture:
+  name: "虚空穿刺"
+  description:
+    - "三叉戟命中时有概率造成真实伤害并削弱目标。"
+
+ember_guard:
+  name: "余烬护卫"
+  description:
+    - "受到火焰伤害时有概率减伤并获得抗火。"
+
+frost_barrier:
+  name: "霜寒屏障"
+  description:
+    - "被实体攻击时有概率减伤并减速攻击者。"
+
+storm_carapace:
+  name: "雷壳"
+  description:
+    - "受到弹射物伤害时有概率减伤并反击雷电。"
+
+vitality_ward:
+  name: "活力守护"
+  description:
+    - "生命较低时周期性恢复生命。"
+
+guardian_shell:
+  name: "守护甲壳"
+  description:
+    - "受到伤害时有概率减免一部分伤害。"
+
+thorn_bloom:
+  name: "荆棘绽放"
+  description:
+    - "被实体攻击时有概率反弹伤害。"
+
+last_stand:
+  name: "背水一战"
+  description:
+    - "濒死时有概率恢复生命并获得抗性。"
+
+ocean_breath:
+  name: "潮息"
+  description:
+    - "受到溺水伤害时有概率减伤并获得水下呼吸。"
+
+feather_plate:
+  name: "轻羽护甲"
+  description:
+    - "受到摔落伤害时有概率大幅减伤。"
+
+iron_will:
+  name: "钢铁意志"
+  description:
+    - "受到玩家伤害时有概率获得抗性并减伤。"
+
+moon_aegis:
+  name: "月华庇护"
+  description:
+    - "生命不满时周期性获得伤害吸收。"
+
+sunlit_resolve:
+  name: "日耀决心"
+  description:
+    - "恢复生命时有概率获得短暂再生。"
+
+shadow_veil:
+  name: "影幕"
+  description:
+    - "开始潜行时有概率短暂隐身。"
+
+kinetic_guard:
+  name: "动能护壁"
+  description:
+    - "受到弹射物伤害时有概率减伤并加速。"
+
+blaze_resist:
+  name: "炽热抗性"
+  description:
+    - "受到火焰伤害时有概率获得抗火。"
+
+glider_grace:
+  name: "滑翔恩典"
+  description:
+    - "鞘翅滑翔时有概率获得缓降。"
+
+sprint_guard:
+  name: "疾跑护卫"
+  description:
+    - "开始疾跑时有概率获得速度。"
+
+warding_echo:
+  name: "回声结界"
+  description:
+    - "受到伤害时有概率用回声结界减伤。"
+
+retaliation_field:
+  name: "反击力场"
+  description:
+    - "被实体攻击时有概率释放反击力场。"
+
+calm_mending:
+  name: "静息修补"
+  description:
+    - "自然回血时有概率额外恢复生命。"
+
+ore_harvest:
+  name: "矿脉丰收"
+  description:
+    - "挖掘矿石时有概率获得额外掉落。"
+
+deep_prospector:
+  name: "深层勘探"
+  description:
+    - "挖掘深层方块时有概率获得额外掉落。"
+
+gem_sense:
+  name: "宝石感知"
+  description:
+    - "挖掘矿石时有概率获得更多额外掉落。"
+
+timber_surge:
+  name: "林木涌动"
+  description:
+    - "砍伐树木时有概率连锁破坏同类方块。"
+
+crop_blessing:
+  name: "作物祝福"
+  description:
+    - "收获作物时有概率获得额外掉落。"
+
+stone_eater:
+  name: "啮石者"
+  description:
+    - "挖掘方块时有概率获得少量额外掉落。"
+
+swift_pick:
+  name: "迅捷镐"
+  description:
+    - "挖掘时有概率获得短暂急迫。"
+
+ember_forge:
+  name: "余烬锻炉"
+  description:
+    - "挖掘矿石时有概率自动熔炼掉落。"
+
+frost_touch_miner:
+  name: "霜触矿工"
+  description:
+    - "挖掘方块时有概率修复手持工具。"
+
+fortune_pulse:
+  name: "幸运脉冲"
+  description:
+    - "挖掘矿石时有概率触发高额额外掉落。"
+
+soil_singer:
+  name: "土壤歌者"
+  description:
+    - "种植时有概率获得短暂速度。"
+
+harvest_mender:
+  name: "丰收修补"
+  description:
+    - "收获时有概率修复手持工具。"
+
+quarry_echo:
+  name: "采石回响"
+  description:
+    - "采石时有概率获得额外掉落。"
+
+root_splitter:
+  name: "断根者"
+  description:
+    - "砍树时有概率连锁破坏并增加掉落。"
+
+reef_scoop:
+  name: "珊瑚铲"
+  description:
+    - "在水中挖掘时有概率获得额外掉落。"
+
+silk_heat:
+  name: "炽热精准"
+  description:
+    - "挖矿时有概率自动熔炼并修复工具。"
+
+gardener_grace:
+  name: "园丁恩典"
+  description:
+    - "催熟作物时有概率强化收获。"
+
+excavator_rhythm:
+  name: "掘进节拍"
+  description:
+    - "持续挖掘时有概率获得急迫。"
+
+anvil_saver:
+  name: "铁砧节省"
+  description:
+    - "使用铁砧时有概率修复手持物品。"
+
+careful_hands:
+  name: "匠心之手"
+  description:
+    - "修复物品时有概率获得额外耐久修复。"
+
+stellar_luck:
+  name: "星辉幸运"
+  description:
+    - "拾取物品时有概率获得幸运。"
+
+night_runner:
+  name: "夜行者"
+  description:
+    - "夜晚周期性获得速度。"
+
+clear_mind:
+  name: "清明"
+  description:
+    - "获得经验时有概率获得短暂再生。"
+
+echoing_step:
+  name: "回声步"
+  description:
+    - "跳跃时有概率短暂加速。"
+
+quick_recover:
+  name: "快速复苏"
+  description:
+    - "恢复生命时有概率获得额外再生。"
+
+steady_grip:
+  name: "稳固握持"
+  description:
+    - "切换手持物品时有概率修复手中物品。"
+
+hunger_spark:
+  name: "饥饿火花"
+  description:
+    - "饥饿值下降时有概率获得饱和。"
+
+aqua_poise:
+  name: "水下镇定"
+  description:
+    - "进入水中时有概率获得水下呼吸。"
+
+lava_nerve:
+  name: "岩浆胆识"
+  description:
+    - "进入岩浆时有概率获得抗火。"
+
+pearl_sense:
+  name: "珍珠感知"
+  description:
+    - "投掷末影珍珠时有概率获得速度。"
+
+command_focus:
+  name: "指令专注"
+  description:
+    - "执行命令时有概率获得短暂幸运。"
+
+chat_glimmer:
+  name: "言语微光"
+  description:
+    - "发送聊天时有概率获得短暂幸运。"
+
+raid_spirit:
+  name: "袭击斗志"
+  description:
+    - "赢得袭击后有概率恢复生命并获得力量。"
+
+bed_comfort:
+  name: "安眠"
+  description:
+    - "睡醒时有概率获得再生。"
+
+explorer_step:
+  name: "探险步伐"
+  description:
+    - "进入新生物群系时有概率获得速度。"
+
+world_anchor:
+  name: "世界锚定"
+  description:
+    - "切换世界时有概率获得抗性。"
+
+bell_charm:
+  name: "钟鸣护符"
+  description:
+    - "敲响钟时有概率获得幸运。"
+
+campfire_heart:
+  name: "营火之心"
+  description:
+    - "火焰熄灭时有概率恢复生命。"
+
+levity:
+  name: "轻盈"
+  description:
+    - "跳跃时有概率获得跳跃提升。"
+
+calm_aura:
+  name: "安宁光环"
+  description:
+    - "脱离战斗一段时间后周期性恢复生命。"

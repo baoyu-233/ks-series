@@ -1,0 +1,187 @@
+# ============================================
+# FotiaEnchantment 全局配置
+# EN: FotiaEnchantment global configuration
+# ============================================
+
+# 单件装备最大附魔数量
+# EN: Maximum number of enchantments allowed on one item
+max-enchantments-per-item: 8
+
+# ============================================
+# 物品 Lore 显示
+# EN: Item lore display
+# ============================================
+item-lore:
+  enchant-slots:
+    # 附魔槽位显示模式:
+    # lines = 每个剩余槽位显示一行 [可附魔槽位]
+    # summary = 显示一行 可附魔槽位: 已用/总数
+    # EN: Enchantment slot display mode:
+    # lines = one [Enchant Slot] line for each remaining slot
+    # summary = one compact Used/Max line
+    display-mode: lines
+
+# 默认语言（玩家客户端语言无对应翻译时回退到此语言）
+# EN: Default language used when the player client language has no matching translation
+default-language: zh_cn
+
+# 是否检查更新
+# EN: Whether to check for plugin updates
+check-update: true
+
+# ============================================
+# GitHub Release 更新检测
+# EN: GitHub Release update checking
+# ============================================
+update-checker:
+  # 是否启用更新检测。保留上方 check-update 是为了兼容旧配置。
+  # EN: Enable update checks. The check-update option above is kept for backward compatibility.
+  enabled: true
+  # GitHub 仓库所有者和仓库名，用于请求 releases/latest。
+  # EN: GitHub repository owner and name used to request releases/latest.
+  owner: Ti-Avanti
+  repository: FotiaEnchantment
+  # API 地址和下载地址支持 {owner} 与 {repository} 占位符。
+  # EN: The API URL and download URL support the {owner} and {repository} placeholders.
+  api-url: "https://api.github.com/repos/{owner}/{repository}/releases/latest"
+  download-url: "https://github.com/{owner}/{repository}/releases/latest"
+  # 是否在插件启动后自动检测；delay 用于避开服务器启动高峰。
+  # EN: Whether to check after plugin startup; delay avoids the busiest part of server startup.
+  check-on-startup: true
+  check-delay-seconds: 5
+  notify:
+    # 控制台提示有新版本。
+    # EN: Notify the console when a new version is available.
+    console: true
+    # 给拥有 fotia.enchantment.update 权限的在线玩家提示。
+    # EN: Notify online players with the fotia.enchantment.update permission.
+    ops: true
+
+# ============================================
+# 附魔获取方式全局开关
+# EN: Global toggles for enchantment acquisition methods
+# 每个附魔可以在自己的配置文件中覆盖这些设置
+# EN: Each enchantment can override these settings in its own config file
+# ============================================
+obtain:
+  # 是否可从附魔台获取自定义附魔
+  # EN: Whether custom enchantments can appear from the enchanting table
+  enchanting-table: true
+  # 是否可通过铁砧合成
+  # EN: Whether custom enchantments can be combined through an anvil
+  anvil: true
+  # 是否可从村民交易获取
+  # EN: Whether custom enchantments can appear in villager trades
+  villager-trade: true
+
+# ============================================
+# 附魔台自定义附魔补充抽取
+# EN: Extra custom enchantment rolls for the enchanting table
+# ============================================
+enchanting-table:
+  # 自定义附魔配置中的 obtain.enchanting-table-weight 可参考：
+  # 0 = 不进入附魔台，1-3 = 极低概率，4-8 = 较低概率，9-15 = 常见，16-25 = 高频，26+ = 很容易出现。
+  # EN: Suggested obtain.enchanting-table-weight scale for custom enchantments:
+  # 0 = disabled, 1-3 = very rare, 4-8 = rare, 9-15 = common, 16-25 = frequent, 26+ = very common.
+  # 单次附魔最多额外尝试抽取多少个自定义附魔；附魔等级越高实际尝试次数越多
+  # EN: Maximum extra custom enchantment roll attempts per enchant; higher enchant power increases actual attempts
+  custom-rolls: 3
+  # 每次额外抽取的基础概率
+  # EN: Base chance for each extra custom roll
+  base-custom-chance: 0.35
+  # 每级经验消耗额外增加的抽取概率
+  # EN: Extra roll chance added per enchantment cost level
+  custom-chance-per-level: 0.03
+  # 每次额外抽取的最高概率
+  # EN: Maximum chance for each extra custom roll
+  max-custom-chance: 0.95
+
+# ============================================
+# 性能设置
+# EN: Performance settings
+# ============================================
+performance:
+  # TIMER类触发器检查间隔(tick)，值越大性能越好但响应越慢
+  # EN: Interval in ticks for TIMER trigger checks; larger values improve performance but respond more slowly
+  effect-check-interval: 1
+  # 每tick最大效果执行数，防止卡服
+  # EN: Maximum effect executions per tick to reduce server lag
+  max-effects-per-tick: 50
+  # 玩家物品附魔有效性异步检测间隔（tick），用于清理已删除、禁用或不再适用的自定义附魔
+  # EN: Async interval in ticks for cleaning deleted, disabled, or inapplicable custom enchantments from player items
+  item-validity-check-interval: 40
+
+# ============================================
+# 星芒魔典配置
+# EN: Stellaris Codex configuration
+# ============================================
+stellaris-codex:
+  # 合成所需星辉残页数量
+  # EN: Number of Starweave Fragments required for crafting
+  fragment-cost: 5
+  # 碎片合成随机品质权重，数值越大越容易合成出该品质；0 或负数表示不参与随机
+  # EN: Rarity weights for fragment crafting; larger values are more likely, zero or negative disables that rarity
+  rarity-weights:
+    dustlight: 40
+    moonlit: 30
+    radiant: 18
+    aureate: 9
+    divine: 3
+
+# ============================================
+# 道具掉落配置
+# EN: Item drop configuration
+# ============================================
+item-drops:
+  # 怪物掉落
+  # EN: Mob drops
+  mob-drop:
+    enabled: true
+    # 全局掉落概率百分比（各怪物可单独覆盖）
+    # EN: Global drop chance percentage; each mob can override it
+    default-chance: 0.5
+    # 每种怪物的掉落配置
+    # EN: Per-mob drop configuration
+    mobs:
+      ZOMBIE:
+        chance: 0.3
+        items:
+          - starweave-fragment
+      SKELETON:
+        chance: 0.3
+        items:
+          - starweave-fragment
+      WITHER_SKELETON:
+        chance: 1.0
+        items:
+          - starweave-fragment
+          - disenchant-shard
+      ENDER_DRAGON:
+        chance: 100.0
+        items:
+          - disenchant-gem
+      WITHER:
+        chance: 50.0
+        items:
+          - disenchant-crystal
+  # 挖矿掉落
+  # EN: Mining drops
+  mining-drop:
+    enabled: true
+    blocks:
+      DIAMOND_ORE:
+        chance: 0.5
+        items:
+          - starweave-fragment
+      DEEPSLATE_DIAMOND_ORE:
+        chance: 0.5
+        items:
+          - starweave-fragment
+      ANCIENT_DEBRIS:
+        chance: 2.0
+        items:
+          - starweave-fragment
+      EMERALD_ORE:
+        chance: 0.3
+        items:
+          - starweave-fragment

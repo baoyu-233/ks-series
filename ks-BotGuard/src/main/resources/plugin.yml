@@ -1,0 +1,15 @@
+name: ks-BotGuard
+version: "1.0.0"
+main: org.kseries.botguard.KsBotGuard
+api-version: "1.20"
+description: Shields Leaves ServerBot damage from MythicLib while keeping the hit.
+loadbefore: [MythicLib, MMOCore]
+commands:
+  ksbotguard:
+    description: Reloads Leaves ServerBot protection settings.
+    usage: /ksbotguard reload
+    permission: ksbotguard.reload
+permissions:
+  ksbotguard.reload:
+    description: Reload ks-BotGuard configuration.
+    default: op

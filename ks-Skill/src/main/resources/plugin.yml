@@ -1,0 +1,20 @@
+name: ks-Skill
+version: "1.0.0"
+main: org.ksskill.KsSkill
+api-version: "1.20"
+description: ks-Series 玩家被动技能触发引擎 — 触发器/条件/概率/冷却/多来源绑定，效果委托 MythicMobs 施放
+softdepend: [PlayerTitle, MythicMobs, LuckPerms]
+commands:
+  ksskill:
+    description: 玩家被动技能引擎管理
+    usage: |
+      /ksskill list [玩家] — 列出技能条目 / 某玩家生效中的技能
+      /ksskill grant <玩家> <技能ID> — 指令授予技能
+      /ksskill revoke <玩家> <技能ID> — 撤销授予
+      /ksskill test <玩家> <技能ID> — 无视概率/冷却强制施放(调试)
+      /ksskill reload — 重载 skills.yml
+    permission: ksskill.admin
+permissions:
+  ksskill.admin:
+    description: 管理 ks-Skill 技能与授予
+    default: op

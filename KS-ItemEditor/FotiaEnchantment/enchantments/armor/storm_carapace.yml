@@ -1,0 +1,53 @@
+# ============================================
+# 批量扩展附魔：雷壳 (Storm Carapace)
+# EN: Bulk extended enchantment: Storm Carapace (雷壳)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: storm_carapace
+enabled: true
+curse: false
+max-level: 5
+rarity: aureate
+group: lightning
+category: armor
+
+applicable-items:
+  - CHESTPLATE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 6
+villager-trade-price-range:
+  - 28
+  - 64
+
+codex-pools:
+  aureate: 10
+  divine: 3
+
+effects:
+  - trigger: TAKE_PROJECTILE_DAMAGE
+    cooldown: 120
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: DAMAGE_REDUCE
+        value: "{level} * 7"
+      - type: LIGHTNING
+        damage: "{level} * 0.5"
+      - type: PARTICLE
+        particle: "ELECTRIC_SPARK"
+        count: 18
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.lightning_bolt.impact"
+        volume: "0.4"
+        pitch: "1.5"
+        at: "SELF"

@@ -1,0 +1,51 @@
+# ============================================
+# 批量扩展附魔：宝石感知 (Gem Sense)
+# EN: Bulk extended enchantment: Gem Sense (宝石感知)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: gem_sense
+enabled: true
+curse: false
+max-level: 4
+rarity: aureate
+group: mining
+category: tools
+
+applicable-items:
+  - PICKAXE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 6
+villager-trade-price-range:
+  - 28
+  - 64
+
+codex-pools:
+  aureate: 10
+  divine: 3
+
+effects:
+  - trigger: MINE_ORE
+    cooldown: 80
+    conditions:
+      - type: chance
+        value: "{level} * 7"
+    actions:
+      - type: BONUS_DROP
+        value: "{level} * 2"
+      - type: PARTICLE
+        particle: "END_ROD"
+        count: 12
+        offset: "0.35"
+        at: "BLOCK"
+      - type: SOUND
+        sound: "block.amethyst_block.chime"
+        volume: "0.7"
+        pitch: "1.5"
+        at: "SELF"

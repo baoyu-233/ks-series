@@ -1,0 +1,52 @@
+# ============================================
+# 批量扩展附魔：决斗专注 (Duelist Focus)
+# EN: Bulk extended enchantment: Duelist Focus (决斗专注)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: duelist_focus
+enabled: true
+curse: false
+max-level: 3
+rarity: dustlight
+group: offensive
+category: melee
+
+applicable-items:
+  - SWORD
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 22
+villager-trade-price-range:
+  - 8
+  - 22
+
+codex-pools:
+  dustlight: 18
+  moonlit: 6
+
+effects:
+  - trigger: MELEE_ATTACK_COMBO
+    cooldown: 45
+    conditions:
+      - type: chance
+        value: "{level} * 12"
+      - type: target_is_living
+    actions:
+      - type: DAMAGE_ADD
+        value: "{level} * 0.8"
+      - type: PARTICLE
+        particle: "CRIT"
+        count: 8
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.player.attack.strong"
+        volume: "0.5"
+        pitch: "1.4"
+        at: "TARGET"

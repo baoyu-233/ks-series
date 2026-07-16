@@ -1,0 +1,67 @@
+# ============================================
+# 批量扩展附魔：清明 (Clear Mind)
+# EN: Bulk extended enchantment: Clear Mind (清明)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: clear_mind
+enabled: true
+curse: false
+max-level: 3
+rarity: dustlight
+group: utility
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 22
+villager-trade-price-range:
+  - 8
+  - 22
+
+codex-pools:
+  dustlight: 18
+  moonlit: 6
+
+effects:
+  - trigger: GAIN_XP
+    cooldown: 60
+    conditions:
+      - type: chance
+        value: "{level} * 10"
+    actions:
+      - type: ADD_POTION_SELF
+        potion: "REGENERATION"
+        duration: "{level} * 25"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "ENCHANT"
+        count: 8
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.experience_orb.pickup"
+        volume: "0.5"
+        pitch: "1.8"
+        at: "SELF"

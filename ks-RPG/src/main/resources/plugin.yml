@@ -1,0 +1,19 @@
+name: ks-RPG
+version: ${project.version}
+main: org.kseries.rpg.KsRpg
+api-version: '1.21'
+description: ks-Series 生存 RPG 进度基础模块。
+authors: [baoyu, codex]
+softdepend: [MMOItems, MMOInventory]
+commands:
+  ksrpg:
+    description: 查看并兑换 ks-RPG 材料。
+    usage: /ksrpg <目录|兑换|凭证|门槛|重载>
+    aliases: [rpg]
+permissions:
+  ksrpg.use:
+    description: 使用 RPG 材料兑换目录。
+    default: true
+  ksrpg.admin:
+    description: 重载 RPG 材料兑换目录。
+    default: op

@@ -1,0 +1,573 @@
+# ============================================
+# Enchantment names and descriptions (English)
+# Key names correspond to enchantment file names (enchantment IDs)
+# ============================================
+
+blazing_blade:
+  name: "Blazing Blade"
+  description:
+    - "Chance to ignite target on attack"
+    - "and deal extra true damage"
+
+vampiric_strike:
+  name: "Vampiric Strike"
+  description:
+    - "Steal health from target on attack"
+
+thunder_smash:
+  name: "Thunder Smash"
+  description:
+    - "Chance to summon lightning on attack"
+    - "dealing extra damage to target"
+
+explosive_arrow:
+  name: "Explosive Arrow"
+  description:
+    - "Arrows explode on impact"
+
+homing_arrow:
+  name: "Homing Arrow"
+  description:
+    - "Arrows automatically track the nearest enemy"
+
+frost_shield:
+  name: "Frost Shield"
+  description:
+    - "Chance to freeze attacker when hit"
+
+thorn_nova:
+  name: "Thorn Nova"
+  description:
+    - "Reflect damage to nearby enemies when hit"
+
+vitality_spring:
+  name: "Vitality Spring"
+  description:
+    - "Periodically restore health while worn"
+
+auto_smelt:
+  name: "Auto Smelt"
+  description:
+    - "Automatically smelt ores when mined"
+
+vein_miner:
+  name: "Vein Miner"
+  description:
+    - "Chain-break adjacent blocks of the same type"
+
+bountiful:
+  name: "Bountiful"
+  description:
+    - "Gain extra drops when harvesting"
+
+xp_boost:
+  name: "XP Boost"
+  description:
+    - "Gain bonus experience when earning XP"
+
+windwalker:
+  name: "Windwalker"
+  description:
+    - "Increase movement speed while worn"
+
+# === FotiaEnchantment 100 enchantment expansion ===
+
+ember_edge:
+  name: "Ember Edge"
+  description:
+    - "Attacks have a chance to ignite the target and deal true damage."
+
+cinder_fang:
+  name: "Cinder Fang"
+  description:
+    - "Critical hits have a chance to add fiery damage."
+
+phoenix_cut:
+  name: "Phoenix Cut"
+  description:
+    - "Kills have a chance to heal you and grant brief regeneration."
+
+molten_rend:
+  name: "Molten Rend"
+  description:
+    - "Attacks have a chance to amplify damage and ignite the target."
+
+ash_reaver:
+  name: "Ash Reaver"
+  description:
+    - "Kill streaks have a chance to heal you and grant brief strength."
+
+frostbite_edge:
+  name: "Frostbite Edge"
+  description:
+    - "Attacks have a chance to slow the target and deal bonus damage."
+
+glacial_cleave:
+  name: "Glacial Cleave"
+  description:
+    - "Sweep attacks have a chance to weaken the target and add damage."
+
+winter_maw:
+  name: "Winter Maw"
+  description:
+    - "Attacks have a chance to fatigue the target and deal true damage."
+
+thunder_lash:
+  name: "Thunder Lash"
+  description:
+    - "Attacks have a chance to call lightning and add damage."
+
+stormbreaker_edge:
+  name: "Stormbreaker Edge"
+  description:
+    - "Critical hits have a chance to call lightning and deal true damage."
+
+volt_piercer:
+  name: "Volt Piercer"
+  description:
+    - "Attacks have a chance to slow the target with an electric arc."
+
+blood_oath:
+  name: "Blood Oath"
+  description:
+    - "Attacks have a chance to add damage and steal health."
+
+execution_mark:
+  name: "Execution Mark"
+  description:
+    - "Attacks against low-health targets have a chance to deal heavy true damage."
+
+shadow_lunge:
+  name: "Shadow Lunge"
+  description:
+    - "Back attacks have a chance to deal bonus damage and speed you up."
+
+skyfall_strike:
+  name: "Skyfall Strike"
+  description:
+    - "Airborne attacks have a chance to deal bonus damage and launch the target."
+
+riposte_spark:
+  name: "Riposte Spark"
+  description:
+    - "Blocking has a chance to reflect damage."
+
+duelist_focus:
+  name: "Duelist Focus"
+  description:
+    - "Combos have a chance to deal a small amount of bonus damage."
+
+blade_tempo:
+  name: "Blade Tempo"
+  description:
+    - "Combos have a chance to briefly increase movement speed."
+
+phantom_cut:
+  name: "Phantom Cut"
+  description:
+    - "Sprinting attacks have a chance to deal bonus damage and grant speed."
+
+earthshatter:
+  name: "Earthshatter"
+  description:
+    - "Critical hits have a chance to create a small shock and launch the target."
+
+flare_shot:
+  name: "Flare Shot"
+  description:
+    - "Arrow hits have a chance to ignite the target and add damage."
+
+frost_arrow:
+  name: "Frost Arrow"
+  description:
+    - "Projectile hits have a chance to slow the target."
+
+storm_bolt:
+  name: "Storm Bolt"
+  description:
+    - "Crossbow hits have a chance to call lightning."
+
+gale_shaft:
+  name: "Gale Shaft"
+  description:
+    - "Shooting a bow has a chance to briefly increase movement speed."
+
+venom_tip:
+  name: "Venom Tip"
+  description:
+    - "Projectile hits have a chance to poison the target."
+
+hunter_focus:
+  name: "Hunter Focus"
+  description:
+    - "Long-distance hits have a chance to deal bonus damage."
+
+eagle_mark:
+  name: "Eagle Mark"
+  description:
+    - "Arrow hits have a chance to make the target glow."
+
+scatter_spark:
+  name: "Scatter Spark"
+  description:
+    - "Shooting a crossbow has a chance to grant brief speed."
+
+gravity_bolt:
+  name: "Gravity Bolt"
+  description:
+    - "Crossbow hits have a chance to slow and disrupt the target."
+
+echo_arrow:
+  name: "Echo Arrow"
+  description:
+    - "Arrow hits have a chance to deal echoing damage."
+
+soul_seeker:
+  name: "Soul Seeker"
+  description:
+    - "Projectile hits have a chance to deal heavy true damage."
+
+skyflare:
+  name: "Skyflare"
+  description:
+    - "Arrow hits have a chance to create a non-block-breaking flame burst."
+
+piercing_gust:
+  name: "Piercing Gust"
+  description:
+    - "Projectile hits have a chance to add damage and knock the target away."
+
+spectral_pin:
+  name: "Spectral Pin"
+  description:
+    - "Hits have a chance to mark and slow the target."
+
+burst_quiver:
+  name: "Burst Quiver"
+  description:
+    - "Arrow hits have a chance to create a small burst."
+
+tide_shot:
+  name: "Tide Shot"
+  description:
+    - "Ranged hits have a chance to slow the target with a tide."
+
+ember_barrage:
+  name: "Ember Barrage"
+  description:
+    - "Crossbow hits have a chance to amplify damage and ignite the target."
+
+frost_barrage:
+  name: "Frost Barrage"
+  description:
+    - "Crossbow hits have a chance to deal frost damage and slow the target."
+
+arc_tracer:
+  name: "Arc Tracer"
+  description:
+    - "Projectile hits have a chance to guide an electric strike."
+
+void_puncture:
+  name: "Void Puncture"
+  description:
+    - "Trident hits have a chance to deal true damage and weaken the target."
+
+ember_guard:
+  name: "Ember Guard"
+  description:
+    - "Fire damage has a chance to be reduced and grant fire resistance."
+
+frost_barrier:
+  name: "Frost Barrier"
+  description:
+    - "Entity hits have a chance to reduce damage and slow the attacker."
+
+storm_carapace:
+  name: "Storm Carapace"
+  description:
+    - "Projectile damage has a chance to be reduced and answered with lightning."
+
+vitality_ward:
+  name: "Vitality Ward"
+  description:
+    - "Periodically heals you while your health is low."
+
+guardian_shell:
+  name: "Guardian Shell"
+  description:
+    - "Taking damage has a chance to reduce part of it."
+
+thorn_bloom:
+  name: "Thorn Bloom"
+  description:
+    - "Entity hits have a chance to reflect damage."
+
+last_stand:
+  name: "Last Stand"
+  description:
+    - "Near death, you have a chance to heal and gain resistance."
+
+ocean_breath:
+  name: "Ocean Breath"
+  description:
+    - "Drowning damage has a chance to be reduced and grant water breathing."
+
+feather_plate:
+  name: "Feather Plate"
+  description:
+    - "Fall damage has a chance to be greatly reduced."
+
+iron_will:
+  name: "Iron Will"
+  description:
+    - "Player damage has a chance to grant resistance and reduce damage."
+
+moon_aegis:
+  name: "Moon Aegis"
+  description:
+    - "Periodically grants absorption while your health is not full."
+
+sunlit_resolve:
+  name: "Sunlit Resolve"
+  description:
+    - "Healing has a chance to grant brief regeneration."
+
+shadow_veil:
+  name: "Shadow Veil"
+  description:
+    - "Starting to sneak has a chance to briefly grant invisibility."
+
+kinetic_guard:
+  name: "Kinetic Guard"
+  description:
+    - "Projectile damage has a chance to be reduced and grant speed."
+
+blaze_resist:
+  name: "Blaze Resist"
+  description:
+    - "Fire damage has a chance to grant fire resistance."
+
+glider_grace:
+  name: "Glider Grace"
+  description:
+    - "Gliding with elytra has a chance to grant slow falling."
+
+sprint_guard:
+  name: "Sprint Guard"
+  description:
+    - "Starting to sprint has a chance to grant speed."
+
+warding_echo:
+  name: "Warding Echo"
+  description:
+    - "Taking damage has a chance to reduce damage with an echo ward."
+
+retaliation_field:
+  name: "Retaliation Field"
+  description:
+    - "Entity hits have a chance to release a retaliation field."
+
+calm_mending:
+  name: "Calm Mending"
+  description:
+    - "Natural regeneration has a chance to restore extra health."
+
+ore_harvest:
+  name: "Ore Harvest"
+  description:
+    - "Mining ores has a chance to grant extra drops."
+
+deep_prospector:
+  name: "Deep Prospector"
+  description:
+    - "Mining deepslate blocks has a chance to grant extra drops."
+
+gem_sense:
+  name: "Gem Sense"
+  description:
+    - "Mining ores has a chance to grant more extra drops."
+
+timber_surge:
+  name: "Timber Surge"
+  description:
+    - "Harvesting trees has a chance to chain-break matching blocks."
+
+crop_blessing:
+  name: "Crop Blessing"
+  description:
+    - "Harvesting crops has a chance to grant extra drops."
+
+stone_eater:
+  name: "Stone Eater"
+  description:
+    - "Mining blocks has a chance to grant a small extra drop bonus."
+
+swift_pick:
+  name: "Swift Pick"
+  description:
+    - "Mining has a chance to grant brief haste."
+
+ember_forge:
+  name: "Ember Forge"
+  description:
+    - "Mining ores has a chance to auto-smelt drops."
+
+frost_touch_miner:
+  name: "Frost Touch Miner"
+  description:
+    - "Mining blocks has a chance to repair the held tool."
+
+fortune_pulse:
+  name: "Fortune Pulse"
+  description:
+    - "Mining ores has a chance to trigger a high extra drop bonus."
+
+soil_singer:
+  name: "Soil Singer"
+  description:
+    - "Planting seeds has a chance to grant brief speed."
+
+harvest_mender:
+  name: "Harvest Mender"
+  description:
+    - "Harvesting has a chance to repair the held tool."
+
+quarry_echo:
+  name: "Quarry Echo"
+  description:
+    - "Quarrying stone has a chance to grant extra drops."
+
+root_splitter:
+  name: "Root Splitter"
+  description:
+    - "Harvesting trees has a chance to chain-break and increase drops."
+
+reef_scoop:
+  name: "Reef Scoop"
+  description:
+    - "Mining underwater has a chance to grant extra drops."
+
+silk_heat:
+  name: "Silk Heat"
+  description:
+    - "Mining has a chance to auto-smelt and repair the tool."
+
+gardener_grace:
+  name: "Gardener Grace"
+  description:
+    - "Using bone meal has a chance to improve the harvest."
+
+excavator_rhythm:
+  name: "Excavator Rhythm"
+  description:
+    - "Sustained mining has a chance to grant haste."
+
+anvil_saver:
+  name: "Anvil Saver"
+  description:
+    - "Using an anvil has a chance to repair the held item."
+
+careful_hands:
+  name: "Careful Hands"
+  description:
+    - "Repairing items has a chance to restore extra durability."
+
+stellar_luck:
+  name: "Stellar Luck"
+  description:
+    - "Picking up items has a chance to grant luck."
+
+night_runner:
+  name: "Night Runner"
+  description:
+    - "Periodically grants speed at night."
+
+clear_mind:
+  name: "Clear Mind"
+  description:
+    - "Gaining XP has a chance to grant brief regeneration."
+
+echoing_step:
+  name: "Echoing Step"
+  description:
+    - "Jumping has a chance to briefly increase speed."
+
+quick_recover:
+  name: "Quick Recover"
+  description:
+    - "Healing has a chance to grant extra regeneration."
+
+steady_grip:
+  name: "Steady Grip"
+  description:
+    - "Changing held items has a chance to repair the held item."
+
+hunger_spark:
+  name: "Hunger Spark"
+  description:
+    - "Losing hunger has a chance to grant saturation."
+
+aqua_poise:
+  name: "Aqua Poise"
+  description:
+    - "Entering water has a chance to grant water breathing."
+
+lava_nerve:
+  name: "Lava Nerve"
+  description:
+    - "Entering lava has a chance to grant fire resistance."
+
+pearl_sense:
+  name: "Pearl Sense"
+  description:
+    - "Throwing an ender pearl has a chance to grant speed."
+
+command_focus:
+  name: "Command Focus"
+  description:
+    - "Running a command has a chance to grant brief luck."
+
+chat_glimmer:
+  name: "Chat Glimmer"
+  description:
+    - "Sending chat has a chance to grant brief luck."
+
+raid_spirit:
+  name: "Raid Spirit"
+  description:
+    - "Winning a raid has a chance to heal you and grant strength."
+
+bed_comfort:
+  name: "Bed Comfort"
+  description:
+    - "Waking up has a chance to grant regeneration."
+
+explorer_step:
+  name: "Explorer Step"
+  description:
+    - "Entering a new biome has a chance to grant speed."
+
+world_anchor:
+  name: "World Anchor"
+  description:
+    - "Changing worlds has a chance to grant resistance."
+
+bell_charm:
+  name: "Bell Charm"
+  description:
+    - "Ringing a bell has a chance to grant luck."
+
+campfire_heart:
+  name: "Campfire Heart"
+  description:
+    - "Being extinguished has a chance to restore health."
+
+levity:
+  name: "Levity"
+  description:
+    - "Jumping has a chance to grant jump boost."
+
+calm_aura:
+  name: "Calm Aura"
+  description:
+    - "After avoiding attacks for a while, periodically restores health."

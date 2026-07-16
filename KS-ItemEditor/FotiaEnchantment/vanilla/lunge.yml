@@ -1,0 +1,36 @@
+# ============================================
+# 原版附魔覆盖: 突进 (Lunge)
+# EN: Vanilla enchantment override: Lunge
+# 修改原版附魔的属性和行为
+# EN: Modify vanilla enchantment properties and behavior
+# ============================================
+
+# 是否禁用此原版附魔
+# EN: Whether to disable this vanilla enchantment
+# 设为 true 后该附魔将无法通过任何方式获得
+disabled: false
+
+# 覆盖最大等级（-1 表示不修改，使用原版默认值）
+# EN: Override max level; -1 keeps the vanilla default
+max-level: -1
+
+# 额外冲突的附魔ID列表（包含原版和自定义附魔）
+# EN: Additional conflicting enchantment IDs, including vanilla and custom enchantments
+conflicts: []
+
+# 覆盖适用物品类型（留空表示不修改）
+# EN: Override applicable item types; leave empty to keep vanilla behavior
+applicable-items: []
+
+# 附魔台权重（-1 表示不修改）
+# EN: Enchanting table weight; -1 keeps vanilla behavior
+enchanting-table-weight: -1
+
+# lore 接管时显示的原版附魔名称
+# EN: Vanilla enchantment name shown when lore display is controlled by the plugin
+display-name: "突进"
+
+# lore 接管时显示在名称下一行的描述
+# EN: Description shown under the vanilla enchantment name when lore display is controlled by the plugin
+description:
+  - "提高持矛突进攻击造成的伤害。"

@@ -1,0 +1,56 @@
+# ============================================
+# 批量扩展附魔：坠星击 (Skyfall Strike)
+# EN: Bulk extended enchantment: Skyfall Strike (坠星击)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: skyfall_strike
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: offensive
+category: melee
+
+applicable-items:
+  - SWORD
+  - AXE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: MELEE_ATTACK_WHILE_AIRBORNE
+    cooldown: 90
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+      - type: target_is_living
+    actions:
+      - type: DAMAGE_ADD
+        value: "{level} * 1.8"
+      - type: LAUNCH
+        value: "{level} * 0.18"
+        direction: "UP"
+      - type: PARTICLE
+        particle: "CRIT"
+        count: 20
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.player.attack.knockback"
+        volume: "0.8"
+        pitch: "1.0"
+        at: "TARGET"

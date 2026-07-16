@@ -1,0 +1,51 @@
+# ============================================
+# 批量扩展附魔：作物祝福 (Crop Blessing)
+# EN: Bulk extended enchantment: Crop Blessing (作物祝福)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: crop_blessing
+enabled: true
+curse: false
+max-level: 3
+rarity: dustlight
+group: utility
+category: tools
+
+applicable-items:
+  - HOE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 22
+villager-trade-price-range:
+  - 8
+  - 22
+
+codex-pools:
+  dustlight: 18
+  moonlit: 6
+
+effects:
+  - trigger: HARVEST
+    cooldown: 40
+    conditions:
+      - type: chance
+        value: "{level} * 12"
+    actions:
+      - type: BONUS_DROP
+        value: "{level}"
+      - type: PARTICLE
+        particle: "HAPPY_VILLAGER"
+        count: 10
+        offset: "0.35"
+        at: "BLOCK"
+      - type: SOUND
+        sound: "block.crop.break"
+        volume: "0.5"
+        pitch: "1.4"
+        at: "SELF"

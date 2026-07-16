@@ -1,0 +1,65 @@
+# ============================================
+# 批量扩展附魔：铁砧节省 (Anvil Saver)
+# EN: Bulk extended enchantment: Anvil Saver (铁砧节省)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: anvil_saver
+enabled: true
+curse: false
+max-level: 4
+rarity: radiant
+group: utility
+category: tools
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: ANVIL_USE
+    cooldown: 100
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: HELD_ITEM_REPAIR
+        value: "{level} * 2"
+      - type: PARTICLE
+        particle: "ENCHANT"
+        count: 8
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "block.anvil.use"
+        volume: "0.5"
+        pitch: "1.6"
+        at: "SELF"

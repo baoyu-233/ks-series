@@ -1,0 +1,69 @@
+# ============================================
+# 御风 (Windwalker)
+# EN: Windwalker (御风)
+# 持有/穿戴时持续提供移动速度加成
+# 被动型附魔，持续生效无需触发
+# ============================================
+
+# 附魔ID（唯一标识，不可重复）
+# EN: Enchantment ID; must be unique
+id: windwalker
+
+# 是否启用此附魔
+# EN: Whether this enchantment is enabled
+enabled: true
+
+# 最大等级
+# EN: Maximum level
+max-level: 3
+
+# 稀有度（对应 rarity.yml 中定义的稀有度ID）
+# EN: Rarity ID defined in rarity.yml
+rarity: moonlit
+
+# 所属附魔组（对应 groups.yml）
+# EN: Enchantment group defined in groups.yml
+group: movement
+
+# 可应用的物品类型
+# EN: Applicable item types
+applicable-items:
+  - BOOTS
+  - LEGGINGS
+
+# 冲突的附魔ID列表
+# EN: Conflicting enchantment IDs
+conflicts: []
+
+# 获取方式配置
+# EN: Acquisition method configuration
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  loot-table: true
+
+# 附魔台权重（影响附魔台中出现概率）
+# EN: Enchanting table weight; affects chance to appear
+enchanting-table-weight: 16
+
+# 星芒魔典抽取池配置
+# EN: Stellaris Codex roll pool configuration
+codex-pools:
+  moonlit: 14
+  radiant: 7
+
+# 效果配置（核心：Trigger → Condition → Effect 管道）
+# EN: Effect configuration; core pipeline is Trigger -> Condition -> Effect
+effects:
+  # 持续持有/穿戴时提供速度加成
+  - trigger: HOLD
+    conditions: []
+    actions:
+      # 提供移动速度加成（百分比增加）
+      - type: SPEED_BOOST
+        value: "{level} * 10"
+      # 风之粒子特效（轻微的视觉反馈）
+      - type: PARTICLE
+        particle: CLOUD
+        count: 2

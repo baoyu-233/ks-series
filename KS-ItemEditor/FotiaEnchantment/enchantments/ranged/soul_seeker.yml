@@ -1,0 +1,52 @@
+# ============================================
+# 批量扩展附魔：灵魂追矢 (Soul Seeker)
+# EN: Bulk extended enchantment: Soul Seeker (灵魂追矢)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: soul_seeker
+enabled: true
+curse: false
+max-level: 5
+rarity: divine
+group: offensive
+category: ranged
+
+applicable-items:
+  - BOW
+  - CROSSBOW
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 3
+villager-trade-price-range:
+  - 44
+  - 96
+
+codex-pools:
+  divine: 8
+
+effects:
+  - trigger: PROJECTILE_HIT_ENTITY
+    cooldown: 120
+    conditions:
+      - type: chance
+        value: "{level} * 6"
+      - type: target_is_living
+    actions:
+      - type: TRUE_DAMAGE
+        value: "{level} * 2"
+      - type: PARTICLE
+        particle: "SOUL"
+        count: 18
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.soul_escape"
+        volume: "0.6"
+        pitch: "1.1"
+        at: "TARGET"

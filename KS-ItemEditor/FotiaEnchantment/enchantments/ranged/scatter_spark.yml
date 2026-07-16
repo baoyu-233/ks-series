@@ -1,0 +1,52 @@
+# ============================================
+# 批量扩展附魔：散射火花 (Scatter Spark)
+# EN: Bulk extended enchantment: Scatter Spark (散射火花)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: scatter_spark
+enabled: true
+curse: false
+max-level: 4
+rarity: radiant
+group: lightning
+category: ranged
+
+applicable-items:
+  - CROSSBOW
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: CROSSBOW_SHOOT
+    cooldown: 80
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: SPEED_BOOST
+        value: 0
+        duration: "{level} * 25"
+      - type: PARTICLE
+        particle: "ELECTRIC_SPARK"
+        count: 18
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "item.crossbow.shoot"
+        volume: "0.6"
+        pitch: "1.5"
+        at: "SELF"

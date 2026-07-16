@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ks-Compat</title>
+  <style>
+    :root { color-scheme: dark; --bg:#101418; --panel:#171d22; --line:#2a343d; --text:#e7edf2; --muted:#9fb0bd; --accent:#64d2a2; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:"Microsoft YaHei", system-ui, sans-serif; background:var(--bg); color:var(--text); }
+    header { display:flex; align-items:center; justify-content:space-between; padding:18px 22px; border-bottom:1px solid var(--line); }
+    main { padding:18px 22px 28px; max-width:1180px; margin:0 auto; }
+    h1 { font-size:22px; margin:0; }
+    h2 { font-size:16px; margin:0 0 14px; }
+    .tabs { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+    button { border:1px solid var(--line); background:#1c252c; color:var(--text); padding:8px 12px; border-radius:6px; cursor:pointer; }
+    button.active, button.primary { border-color:var(--accent); background:#17352a; }
+    input, select { width:100%; border:1px solid var(--line); background:#0f1418; color:var(--text); padding:8px; border-radius:6px; }
+    label { display:block; color:var(--muted); font-size:12px; margin-bottom:6px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+    .panel { border:1px solid var(--line); background:var(--panel); border-radius:8px; padding:14px; }
+    .row { display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:8px; align-items:end; margin-bottom:8px; }
+    .muted { color:var(--muted); }
+    .status { white-space:pre-wrap; line-height:1.55; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { border-bottom:1px solid var(--line); padding:8px; text-align:left; font-size:13px; }
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>ks-Compat</h1>
+  <button class="primary" onclick="saveCurrent()">保存</button>
+</header>
+<main>
+  <div class="tabs">
+    <button id="tab-status" class="active" onclick="showTab('status')">状态</button>
+    <button id="tab-fotia" onclick="showTab('fotia')">Fotia耐久</button>
+    <button id="tab-bots" onclick="showTab('bots')">KSBot</button>
+  </div>
+
+  <section id="view-status" class="panel">
+    <h2>模块状态</h2>
+    <div id="statusText" class="status muted">加载中...</div>
+  </section>
+
+  <section id="view-fotia" class="panel hidden">
+    <h2>金钱耐久附魔</h2>
+    <div class="grid">
+      <div><label>启用</label><select id="fotiaEnabled"><option value="true">启用</option><option value="false">关闭</option></select></div>
+      <div><label>Fotia附魔ID</label><input id="fotiaEnchantId"></div>
+      <div><label>没钱时</label><select id="fotiaInsufficient"><option value="allow-durability-damage">正常掉耐久</option><option value="cancel-item-damage">阻止掉耐久</option></select></div>
+      <div><label>修复触发剩余%</label><input id="fotiaRepairThreshold" type="number" step="0.1"></div>
+      <div><label>修复到剩余%</label><input id="fotiaRepairTarget" type="number" step="0.1"></div>
+      <div><label>失败重试tick</label><input id="fotiaRepairRetry" type="number" step="1"></div>
+      <div><label>每级价格增幅</label><input id="fotiaLevelStep" type="number" step="0.01"></div>
+    </div>
+    <h2 style="margin-top:16px">价格区间</h2>
+    <div id="tiers"></div>
+    <button onclick="addTier()">添加区间</button>
+    <h2 style="margin-top:16px">等级专属价格</h2>
+    <div id="levelTiers"></div>
+    <button onclick="addLevelTier()">添加等级档位</button>
+  </section>
+
+  <section id="view-bots" class="panel hidden">
+    <h2>KSBot设置</h2>
+    <div class="grid">
+      <div><label>启用</label><select id="botEnabled"><option value="true">启用</option><option value="false">关闭</option></select></div>
+      <div><label>经济购买/租赁</label><select id="botEconomyEnabled"><option value="false">关闭</option><option value="true">启用</option></select></div>
+      <div><label>每日租金</label><input id="botDaily" type="number" step="1"></div>
+      <div><label>永久名额价格</label><input id="botPermanent" type="number" step="1"></div>
+      <div><label>单次最大租期</label><input id="botMaxRentDays" type="number" step="1"></div>
+    </div>
+    <h2 style="margin-top:16px">已登记假人</h2>
+    <table><thead><tr><th>名字</th><th>玩家</th><th>类型</th><th>到期</th></tr></thead><tbody id="botRows"></tbody></table>
+  </section>
+</main>
+<script>
+const token = new URLSearchParams(location.search).get('token') || '';
+let current = 'status';
+let state = {};
+
+function showTab(id) {
+  current = id;
+  for (const key of ['status','fotia','bots']) {
+    document.getElementById('view-' + key).classList.toggle('hidden', key !== id);
+    document.getElementById('tab-' + key).classList.toggle('active', key === id);
+  }
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(`api/${path}?token=${encodeURIComponent(token)}`, {
+    headers: {'Content-Type':'application/json'},
+    ...opts
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function tierRow(t = {}) {
+  const div = document.createElement('div');
+  div.className = 'row tier';
+  div.innerHTML = `
+    <div><label>最低剩余%</label><input class="tierFrom" type="number" step="0.1" value="${t.fromRemainingPercent ?? 0}"></div>
+    <div><label>最高剩余%</label><input class="tierTo" type="number" step="0.1" value="${t.toRemainingPercent ?? 100}"></div>
+    <div><label>每点耐久价格</label><input class="tierCost" type="number" step="0.1" value="${t.costPerDamage ?? 1}"></div>
+    <button onclick="this.closest('.tier').remove()">删除</button>`;
+  return div;
+}
+
+function addTier(t) { document.getElementById('tiers').appendChild(tierRow(t)); }
+
+function levelTierRow(t = {}) {
+  const div = document.createElement('div');
+  div.className = 'row levelTier';
+  div.innerHTML = `
+    <div><label>最低附魔等级</label><input class="levelTierMin" type="number" min="1" step="1" value="${t.minLevel ?? 1}"></div>
+    <div><label>最高附魔等级</label><input class="levelTierMax" type="number" min="1" step="1" value="${t.maxLevel ?? 1}"></div>
+    <div><label>扣费倍率</label><input class="levelTierMultiplier" type="number" min="0" step="0.01" value="${t.multiplier ?? 1}"></div>
+    <button onclick="this.closest('.levelTier').remove()">删除</button>`;
+  return div;
+}
+
+function addLevelTier(t) { document.getElementById('levelTiers').appendChild(levelTierRow(t)); }
+
+function render() {
+  document.getElementById('statusText').textContent = JSON.stringify(state.status || {}, null, 2);
+  const f = state.fotia || {};
+  fotiaEnabled.value = String(!!f.enabled);
+  fotiaEnchantId.value = f.enchantId || '';
+  fotiaInsufficient.value = f.insufficientMoney || 'allow-durability-damage';
+  fotiaRepairThreshold.value = f.repairThresholdRemainingPercent ?? 10;
+  fotiaRepairTarget.value = f.repairTargetRemainingPercent ?? 100;
+  fotiaRepairRetry.value = f.repairRetryTicks ?? 20;
+  fotiaLevelStep.value = f.levelPriceStep ?? 0;
+  tiers.innerHTML = '';
+  (f.costTiers || []).forEach(addTier);
+  levelTiers.innerHTML = '';
+  (f.levelPriceTiers || []).forEach(addLevelTier);
+
+  const b = state.bots || {};
+  botEnabled.value = String(!!b.enabled);
+  botEconomyEnabled.value = String(!!b.economyEnabled);
+  botDaily.value = b.summonPricePerDay ?? 0;
+  botPermanent.value = b.permanentSlotPrice ?? 0;
+  botMaxRentDays.value = b.maxRentDaysPerPurchase ?? 30;
+  botRows.innerHTML = '';
+  (b.records || []).forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.botName || '-'}</td><td>${r.ownerName || r.ownerUuid}</td><td>${r.kind}</td><td>${r.expiresAtText || '永久'}</td>`;
+    botRows.appendChild(tr);
+  });
+}
+
+async function load() {
+  state = await api('status');
+  render();
+}
+
+async function saveCurrent() {
+  if (current === 'fotia') {
+    const costTiers = [...document.querySelectorAll('.tier')].map(row => ({
+      fromRemainingPercent: Number(row.querySelector('.tierFrom').value),
+      toRemainingPercent: Number(row.querySelector('.tierTo').value),
+      costPerDamage: Number(row.querySelector('.tierCost').value)
+    }));
+    const levelPriceTiers = [...document.querySelectorAll('.levelTier')].map(row => ({
+      minLevel: Number(row.querySelector('.levelTierMin').value),
+      maxLevel: Number(row.querySelector('.levelTierMax').value),
+      multiplier: Number(row.querySelector('.levelTierMultiplier').value)
+    }));
+    await api('fotia/save', {method:'POST', body: JSON.stringify({
+      enabled: fotiaEnabled.value === 'true',
+      enchantId: fotiaEnchantId.value,
+      insufficientMoney: fotiaInsufficient.value,
+      repairThresholdRemainingPercent: Number(fotiaRepairThreshold.value),
+      repairTargetRemainingPercent: Number(fotiaRepairTarget.value),
+      repairRetryTicks: Number(fotiaRepairRetry.value),
+      levelPriceStep: Number(fotiaLevelStep.value),
+      costTiers,
+      levelPriceTiers
+    })});
+  } else if (current === 'bots') {
+    await api('bots/settings/save', {method:'POST', body: JSON.stringify({
+      enabled: botEnabled.value === 'true',
+      economyEnabled: botEconomyEnabled.value === 'true',
+      summonPricePerDay: Number(botDaily.value),
+      permanentSlotPrice: Number(botPermanent.value),
+      maxRentDaysPerPurchase: Number(botMaxRentDays.value)
+    })});
+  }
+  await load();
+}
+
+load().catch(e => statusText.textContent = e.message);
+</script>
+</body>
+</html>

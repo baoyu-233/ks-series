@@ -1,0 +1,97 @@
+# ============================================
+# 烈焰之刃 (Blazing Blade)
+# EN: Blazing Blade (烈焰之刃)
+# 攻击时有概率点燃目标并造成额外真实伤害
+# 击杀敌人时恢复生命值
+# ============================================
+
+# 附魔ID（唯一标识，不可重复）
+# EN: Enchantment ID; must be unique
+id: blazing_blade
+
+# 是否启用此附魔
+# EN: Whether this enchantment is enabled
+enabled: true
+
+# 最大等级
+# EN: Maximum level
+max-level: 5
+
+# 稀有度（对应 rarity.yml 中定义的稀有度ID）
+# EN: Rarity ID defined in rarity.yml
+rarity: radiant
+
+# 所属附魔组（对应 groups.yml）
+# EN: Enchantment group defined in groups.yml
+group: fire
+
+# 可应用的物品类型
+# EN: Applicable item types
+applicable-items:
+  - SWORD
+  - AXE
+
+# 冲突的附魔ID列表（与霜冻护盾互斥）
+conflicts:
+  - frost_shield
+
+# 获取方式配置
+# EN: Acquisition method configuration
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  loot-table: true
+
+# 附魔台权重（影响附魔台中出现概率）
+# EN: Enchanting table weight; affects chance to appear
+enchanting-table-weight: 10
+
+# 星芒魔典抽取池配置
+# EN: Stellaris Codex roll pool configuration
+codex-pools:
+  radiant: 10
+  aureate: 5
+
+# 效果配置（核心：Trigger → Condition → Effect 管道）
+# EN: Effect configuration; core pipeline is Trigger -> Condition -> Effect
+effects:
+  # 效果1：攻击时概率点燃并造成真实伤害
+  - trigger: MELEE_ATTACK
+    conditions:
+      # 概率触发，等级越高概率越大
+      # EN: Chance-based trigger; higher levels increase the chance
+      - type: chance
+        value: "{level} * 10"
+    actions:
+      # 造成真实伤害，无视护甲
+      - type: TRUE_DAMAGE
+        value: "{level} * 1.5"
+      # 点燃目标，持续时间随等级增加（单位：tick）
+      - type: IGNITE_TARGET
+        duration: "{level} * 40"
+      # 火焰粒子特效
+      - type: PARTICLE
+        particle: FLAME
+        count: 10
+      # 播放火焰音效
+      - type: SOUND
+        sound: entity.blaze.shoot
+        volume: 0.6
+        pitch: 1.2
+    # 冷却时间（tick），防止频繁触发
+    cooldown: 60
+
+  # 效果2：击杀敌人时恢复生命
+  - trigger: KILL
+    conditions: []
+    actions:
+      # 恢复生命值
+      # EN: Restore health
+      - type: HEAL
+        value: "{level} * 1.0"
+      # 播放治愈音效
+      - type: SOUND
+        sound: entity.player.levelup
+        volume: 0.8
+        pitch: 1.5

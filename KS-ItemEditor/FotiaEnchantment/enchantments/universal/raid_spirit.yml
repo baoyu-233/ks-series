@@ -1,0 +1,69 @@
+# ============================================
+# 批量扩展附魔：袭击斗志 (Raid Spirit)
+# EN: Bulk extended enchantment: Raid Spirit (袭击斗志)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: raid_spirit
+enabled: true
+curse: false
+max-level: 5
+rarity: aureate
+group: offensive
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 6
+villager-trade-price-range:
+  - 28
+  - 64
+
+codex-pools:
+  aureate: 10
+  divine: 3
+
+effects:
+  - trigger: WIN_RAID
+    cooldown: 200
+    conditions:
+      - type: chance
+        value: "{level} * 12"
+    actions:
+      - type: HEAL
+        value: "{level} * 2"
+      - type: ADD_POTION_SELF
+        potion: "STRENGTH"
+        duration: "{level} * 80"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "TOTEM_OF_UNDYING"
+        count: 18
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "ui.toast.challenge_complete"
+        volume: "0.7"
+        pitch: "1.2"
+        at: "SELF"

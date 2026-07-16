@@ -1,0 +1,48 @@
+# ============================================
+# 碎片合成 GUI
+# EN: Fragment crafting GUI
+# ============================================
+# F = 碎片展示，A = 箭头提示，R = 随机魔典预览，C = 合成按钮。
+# EN: F = fragment display; A = arrow hint; R = random codex preview; C = craft button.
+
+rows: 3
+title: "lang:craft-gui.title"
+fill-empty: true
+
+layout:
+  - "#########"
+  - "##F#A#R##"
+  - "####C####"
+
+roles:
+  background: "#"
+  fragment: "F"
+  arrow: "A"
+  result-preview: "R"
+  craft-button: "C"
+
+items:
+  background:
+    material: BLACK_STAINED_GLASS_PANE
+    name: "<!i><dark_gray> "
+    lore: []
+
+  arrow:
+    material: ARROW
+    name: "lang:craft-gui.arrow"
+    lore:
+      - "<!i><gray>{current}/{cost}"
+
+  craft-ready:
+    material: LIME_STAINED_GLASS_PANE
+    name: "lang:craft-gui.craft-button"
+    lore:
+      - "lang:craft-gui.ready"
+      - "lang:craft-gui.craft-hint"
+
+  craft-insufficient:
+    material: RED_STAINED_GLASS_PANE
+    name: "lang:craft-gui.insufficient-button"
+    lore:
+      - "lang:craft-gui.insufficient"
+      - "lang:craft-gui.craft-hint"

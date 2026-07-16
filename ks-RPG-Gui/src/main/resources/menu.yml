@@ -1,0 +1,99 @@
+menu:
+  title: '&1&lKS &8· &bRPG 进度面板'
+  rows: 6
+  frame-material: LIGHT_BLUE_STAINED_GLASS_PANE
+  fill-material: BLACK_STAINED_GLASS_PANE
+  slots:
+    profile: 4
+    proofs: 10
+    materials: 12
+    accessories: 14
+    gates: 16
+    refresh: 45
+    close: 49
+    admin-items: 51
+    admin-reload: 53
+    back: 45
+    previous: 47
+    list-refresh: 49
+    next: 51
+    list-close: 53
+  items:
+    proofs:
+      material: NETHER_STAR
+      name: '&b战斗凭证'
+      lore:
+        - '&7记录你完成过的关键战斗。'
+        - '&7凭证不能交易，也不能直接购买。'
+    materials:
+      material: HOPPER
+      name: '&e材料兑换'
+      lore:
+        - '&7查看野外材料与精炼材料的兑换目录。'
+    accessories:
+      material: TOTEM_OF_UNDYING
+      name: '&a饰品栏'
+      lore:
+        - '&7两枚戒指与一个护符。'
+    gates:
+      material: END_PORTAL_FRAME
+      name: '&d突破门槛'
+      lore:
+        - '&7查看已满足与尚未满足的关键战斗资格。'
+    refresh:
+      material: SUNFLOWER
+      name: '&e刷新'
+      lore:
+        - '&7重新读取当前进度。'
+    close:
+      material: BARRIER
+      name: '&c关闭'
+      lore: []
+    admin-items:
+      material: CHEST
+      name: '&6RPG 物品库'
+      lore:
+        - '&7仅管理员可用。'
+        - '&7展示当前 RPG 内容定义中的全部物品。'
+        - '&e点击物品即可领取一个。'
+    admin-reload:
+      material: REPEATER
+      name: '&6重载面板配置'
+      lore:
+        - '&7仅管理员可用。'
+    back:
+      material: OAK_DOOR
+      name: '&c返回主面板'
+      lore: []
+    previous:
+      material: ARROW
+      name: '&a上一页'
+      lore: []
+    next:
+      material: ARROW
+      name: '&a下一页'
+      lore: []
+    proof-owned:
+      material: LIME_DYE
+      name: '&a{display}'
+      lore:
+        - '&7状态：&a已获得'
+        - '&8ID: {id}'
+    proof-missing:
+      material: GRAY_DYE
+      name: '&7{display}'
+      lore:
+        - '&7状态：&8未获得'
+        - '&8ID: {id}'
+    gate-ready:
+      material: LIME_DYE
+      name: '&a{display}'
+      lore:
+        - '&7状态：&a已满足'
+        - '&8ID: {id}'
+    gate-locked:
+      material: RED_DYE
+      name: '&c{display}'
+      lore:
+        - '&7状态：&c尚未满足'
+        - '&8ID: {id}'

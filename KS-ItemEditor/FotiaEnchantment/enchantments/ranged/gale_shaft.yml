@@ -1,0 +1,52 @@
+# ============================================
+# 批量扩展附魔：疾风箭杆 (Gale Shaft)
+# EN: Bulk extended enchantment: Gale Shaft (疾风箭杆)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: gale_shaft
+enabled: true
+curse: false
+max-level: 3
+rarity: dustlight
+group: movement
+category: ranged
+
+applicable-items:
+  - BOW
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 22
+villager-trade-price-range:
+  - 8
+  - 22
+
+codex-pools:
+  dustlight: 18
+  moonlit: 6
+
+effects:
+  - trigger: BOW_SHOOT
+    cooldown: 50
+    conditions:
+      - type: chance
+        value: "{level} * 10"
+    actions:
+      - type: SPEED_BOOST
+        value: "{level} - 1"
+        duration: "{level} * 30"
+      - type: PARTICLE
+        particle: "CLOUD"
+        count: 8
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.arrow.shoot"
+        volume: "0.5"
+        pitch: "1.6"
+        at: "SELF"

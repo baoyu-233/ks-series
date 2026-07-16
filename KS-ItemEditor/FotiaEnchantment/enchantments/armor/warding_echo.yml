@@ -1,0 +1,54 @@
+# ============================================
+# 批量扩展附魔：回声结界 (Warding Echo)
+# EN: Bulk extended enchantment: Warding Echo (回声结界)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: warding_echo
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: defensive
+category: armor
+
+applicable-items:
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: TAKE_DAMAGE
+    cooldown: 110
+    conditions:
+      - type: chance
+        value: "{level} * 7"
+    actions:
+      - type: DAMAGE_REDUCE
+        value: "{level} * 6"
+      - type: PARTICLE
+        particle: "NOTE"
+        count: 10
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "block.note_block.chime"
+        volume: "0.6"
+        pitch: "1.2"
+        at: "SELF"

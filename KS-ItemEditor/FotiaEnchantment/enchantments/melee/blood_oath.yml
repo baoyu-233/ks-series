@@ -1,0 +1,55 @@
+# ============================================
+# 批量扩展附魔：血誓 (Blood Oath)
+# EN: Bulk extended enchantment: Blood Oath (血誓)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: blood_oath
+enabled: true
+curse: false
+max-level: 5
+rarity: aureate
+group: offensive
+category: melee
+
+applicable-items:
+  - SWORD
+  - AXE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 6
+villager-trade-price-range:
+  - 28
+  - 64
+
+codex-pools:
+  aureate: 10
+  divine: 3
+
+effects:
+  - trigger: MELEE_ATTACK
+    cooldown: 80
+    conditions:
+      - type: chance
+        value: "{level} * 7"
+      - type: target_is_living
+    actions:
+      - type: LIFESTEAL
+        value: "{level} * 0.8"
+      - type: DAMAGE_ADD
+        value: "{level}"
+      - type: PARTICLE
+        particle: "DAMAGE_INDICATOR"
+        count: 10
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.player.hurt"
+        volume: "0.4"
+        pitch: "1.4"
+        at: "SELF"

@@ -1,0 +1,58 @@
+# ============================================
+# 批量扩展附魔：炽热抗性 (Blaze Resist)
+# EN: Bulk extended enchantment: Blaze Resist (炽热抗性)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: blaze_resist
+enabled: true
+curse: false
+max-level: 3
+rarity: dustlight
+group: fire
+category: armor
+
+applicable-items:
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 22
+villager-trade-price-range:
+  - 8
+  - 22
+
+codex-pools:
+  dustlight: 18
+  moonlit: 6
+
+effects:
+  - trigger: FIRE_DAMAGE
+    cooldown: 100
+    conditions:
+      - type: chance
+        value: "{level} * 12"
+    actions:
+      - type: DAMAGE_REDUCE
+        value: "{level} * 10"
+      - type: ADD_POTION_SELF
+        potion: "FIRE_RESISTANCE"
+        duration: "{level} * 60"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "SMOKE"
+        count: 8
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "block.fire.extinguish"
+        volume: "0.5"
+        pitch: "1.2"
+        at: "SELF"

@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>ks-Title 称号管理</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;padding:20px}
+h1{color:#58a6ff;font-size:20px;margin-bottom:4px}
+.sub{color:#8b949e;font-size:13px;margin-bottom:16px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:16px}
+.card h3{color:#58a6ff;margin-bottom:10px;font-size:15px}
+.banner{display:flex;gap:20px;flex-wrap:wrap;font-size:13px;color:#8b949e}
+.banner b{color:#c9d1d9}
+input,select,button,textarea{padding:6px 12px;background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px}
+button{cursor:pointer;background:#238636;border-color:#2ea043;color:#fff;font-weight:600}
+button:hover{background:#2ea043}
+button.danger{background:#da3633;border-color:#f85149}
+button.danger:hover{background:#f85149}
+button.fetch-token{background:#9e6a03;border-color:#bb8009}
+button.fetch-token:hover{background:#bb8009}
+button.small{padding:2px 8px;font-size:11px}
+button.secondary{background:#30363d;border-color:#484f58}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #21262d;vertical-align:top}
+th{background:#0d1117;color:#8b949e;font-weight:600}
+tr:hover{background:#1c2128}
+.toast{position:fixed;top:12px;right:12px;padding:10px 20px;border-radius:6px;font-size:13px;z-index:999;animation:fadeIn .3s}
+.toast-ok{background:#238636;color:#fff}
+.toast-err{background:#da3633;color:#fff}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+.token-row{margin-bottom:10px;display:flex;gap:8px;align-items:center}
+.form-grid{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.form-grid input,.form-grid select{flex:1;min-width:100px}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.mono{font-family:monospace}
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;background:#30363d}
+.mc-imgtoken{display:inline-block;padding:0 4px;border-radius:4px;font-size:11px;background:#30363d;color:#8b949e;border:1px dashed #484f58}
+.mc-obf{font-family:'Courier New',monospace;display:inline-block}
+.preview-box{background:#010409;border:1px solid #30363d;border-radius:6px;padding:16px;margin:10px 0;font-size:18px;text-align:center;min-height:24px}
+</style>
+</head>
+<body>
+<h1>🏷 ks-Title 称号管理</h1>
+<p class="sub">称号定义 / 属性加成 / 动画帧 / 玩家持有与佩戴</p>
+
+<div class="card token-row">
+<label style="font-size:12px;color:#8b949e">Admin Token:</label>
+<input id="authToken" placeholder="Bearer token or ?token= param" style="width:300px;font-family:monospace;font-size:11px">
+<button onclick="setToken()">🔑 设置</button>
+<button onclick="fetchTestToken()" class="fetch-token">🎫 获取Token(仅本地)</button>
+<span id="authStatus" style="font-size:11px;color:#8b949e;"></span>
+</div>
+
+<div class="card">
+<h3>📊 迁移状态</h3>
+<div class="banner" id="statusBanner">加载中...</div>
+</div>
+
+<div class="card">
+<h3>➕ 新建称号</h3>
+<div class="form-grid">
+<input id="newName" placeholder="显示名 (支持&颜色码)" style="flex:2">
+<input id="newDesc" placeholder="描述(可选)">
+<input id="newCategory" placeholder="分类" value="general">
+<select id="newUnlockType">
+<option value="ADMIN_GRANT">ADMIN_GRANT(仅管理员发放)</option>
+<option value="PURCHASE">PURCHASE(商店购买)</option>
+<option value="CONDITION">CONDITION(条件解锁)</option>
+</select>
+<input id="newPrice" type="number" placeholder="价格" value="0" style="width:90px">
+<button onclick="createDef()">创建</button>
+</div>
+</div>
+
+<div class="card">
+<h3>📋 称号列表</h3>
+<div style="max-height:45vh;overflow-y:auto">
+<table><thead><tr>
+<th>ID</th><th>显示名</th><th>分类</th><th>获取方式</th><th>价格/条件</th><th>可见</th><th>启用</th><th></th>
+</tr></thead><tbody id="defsBody"></tbody></table>
+</div>
+</div>
+
+<div class="card">
+<h3>🎨 动态称号生成器 <span style="font-size:11px;color:#8b949e;font-weight:normal">新手向 — 不用手写颜色码，选好样式直接生成</span></h3>
+<div class="form-grid">
+<input id="genText" placeholder="基础文字，如：创世骇客" style="flex:2">
+<select id="genBracket">
+<option value="square" selected>[ 文字 ]</option>
+<option value="cn">【 文字 】</option>
+<option value="jp">「 文字 」</option>
+<option value="book">《 文字 》</option>
+<option value="none">无括号</option>
+</select>
+<select id="genStyle" onchange="regenPreview()">
+<option value="static">静态单色</option>
+<option value="rainbow">彩虹跑马灯</option>
+<option value="breathe">呼吸渐变</option>
+<option value="sweep">扫光高亮</option>
+</select>
+</div>
+<div class="form-grid">
+<label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:4px">主色 <input id="genColor1" type="color" value="#55ffff"></label>
+<label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:4px" id="genColor2Wrap">副色 <input id="genColor2" type="color" value="#ff55ff"></label>
+<label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:4px" id="genFramesWrap">帧数 <input id="genFrames" type="number" value="12" style="width:60px"></label>
+<label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:4px" id="genIntervalWrap">间隔ms <input id="genInterval" type="number" value="120" style="width:70px"></label>
+<button onclick="regenPreview()">🔄 生成预览</button>
+</div>
+<div class="preview-box" id="genPreview">填好上面的文字后点"生成预览"</div>
+<div class="form-grid">
+<button onclick="createFromGenerator()">✅ 创建为新称号</button>
+<button onclick="applyToSelected()" class="secondary">📥 写入到已选称号 (<span id="genSelectedLabel">未选择</span>)</button>
+</div>
+</div>
+
+<div class="card">
+<h3>🖼 IA 故障风格图片帧生成器 <span style="font-size:11px;color:#8b949e;font-weight:normal">赛博朋克风格，点"自动上传"直接放进 ItemsAdder；只有最后 /iazip 打包需要你自己手动运行</span></h3>
+<div class="form-grid">
+<input id="iaText" placeholder="文字，如 GENESIS" style="flex:1">
+<input id="iaFontSize" type="number" value="28" style="width:70px" title="字号">
+<label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:4px">发光色 <input id="iaGlowColor" type="color" value="#ff2b2b"></label>
+<label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:4px">起始色 <input id="iaTextColor1" type="color" value="#ff2b2b"></label>
+<label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:4px">结束色 <input id="iaTextColor2" type="color" value="#00f5ff"></label>
+<label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:4px">渐变强度 <input id="iaGradientBoost" type="range" min="0" max="100" value="70" style="width:90px"></label>
+<input id="iaFrames" type="number" value="6" style="width:60px" title="帧数">
+<input id="iaInterval" type="number" value="150" style="width:70px" title="间隔ms">
+</div>
+<div class="form-grid">
+<label style="font-size:12px;color:#c9d1d9;display:flex;align-items:center;gap:4px"><input type="checkbox" id="iaFxRgb" checked style="width:auto;padding:0"> RGB通道分离</label>
+<input id="iaFxRgbAmt" type="range" min="0" max="100" value="40" style="width:90px">
+<label style="font-size:12px;color:#c9d1d9;display:flex;align-items:center;gap:4px"><input type="checkbox" id="iaFxBlock" checked style="width:auto;padding:0"> 随机块闪烁</label>
+<input id="iaFxBlockAmt" type="range" min="0" max="100" value="35" style="width:90px">
+<label style="font-size:12px;color:#c9d1d9;display:flex;align-items:center;gap:4px"><input type="checkbox" id="iaFxScan" checked style="width:auto;padding:0"> 扫描线错位</label>
+<input id="iaFxScanAmt" type="range" min="0" max="100" value="35" style="width:90px">
+</div>
+<div class="form-grid">
+<button onclick="iaGenerate()">🔄 生成帧图</button>
+<button onclick="iaUploadToServer()">⬆ 自动上传到服务器(ItemsAdder)</button>
+<button onclick="iaDownloadAll()" class="secondary">⬇ 下载全部PNG(备用)</button>
+<button onclick="iaCopyConfig()" class="secondary">📋 查看配置片段(仅供参考)</button>
+</div>
+<p style="font-size:11px;color:#8b949e;margin:4px 0">上传后图片和配置会自动写入 <code>plugins/ItemsAdder/contents/ks_title_gen/</code>，还差最后一步——控制台运行 <b>/iazip</b> 打包生效（这一步保持手动，不会自动触发）。</p>
+<div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-top:10px">
+<div>
+<div style="font-size:11px;color:#8b949e;margin-bottom:4px">动画预览</div>
+<canvas id="iaPreviewCanvas" width="384" height="72" style="background:#000;border:1px solid #30363d;border-radius:4px"></canvas>
+</div>
+<div style="flex:1;min-width:220px">
+<div style="font-size:11px;color:#8b949e;margin-bottom:4px">文件名前缀（下载/配置片段都用它）+ 各帧缩略图(绿框=静态图)</div>
+<input id="iaPrefix" placeholder="图片前缀，如 genesis" style="width:100%;margin-bottom:6px">
+<div id="iaThumbs" style="display:flex;gap:4px;flex-wrap:wrap"></div>
+</div>
+</div>
+<textarea id="iaConfigOut" readonly style="width:100%;height:110px;margin-top:8px;font-family:monospace;font-size:11px;background:#010409;color:#8b949e;border:1px solid #30363d;border-radius:6px;padding:8px" placeholder="点“生成IA配置片段”后这里会出现 font_images 配置文本"></textarea>
+</div>
+
+<div class="card">
+<h3>🔗 绑定称号为 IA 动态图片（自动接管 TAB） <span id="iaBindTitleLabel" class="badge">未选择称号</span></h3>
+<p style="font-size:12px;color:#8b949e;margin-bottom:8px">上面生成的帧图手动导入 ItemsAdder 并 iazip 生效后（文件名 &lt;前缀&gt;_f1..fN.png + &lt;前缀&gt;_static.png），在这里填同样的前缀完成绑定——插件会自动改写 TAB 的 config.yml / animations.yml 并触发 tab reload；之后若这些接线被误改或被 TAB 更新覆盖，每 20 分钟自检会自动补回。</p>
+<div class="form-grid">
+<input id="bindPrefix" placeholder="图片前缀(需与IA里一致)">
+<input id="bindFrames" type="number" placeholder="帧数" style="width:70px">
+<input id="bindInterval" type="number" placeholder="间隔ms" style="width:80px">
+<label style="font-size:12px;color:#c9d1d9;display:flex;align-items:center;gap:4px"><input type="checkbox" id="bindChatStatic" style="width:auto;padding:0"> 同时设为聊天静态图称号</label>
+<button onclick="bindIaTitle()">✅ 绑定</button>
+<button onclick="unbindIaTitle()" class="danger">解绑</button>
+</div>
+<div id="bindStatus" style="font-size:12px;color:#8b949e"></div>
+</div>
+
+<div class="two-col">
+<div class="card">
+<h3>⚡ 属性加成 <span id="attrTitleLabel" class="badge">未选择称号</span></h3>
+<div class="form-grid">
+<select id="attrType">
+<option value="POTION">POTION(药水)</option>
+<option value="ATTRIBUTE">ATTRIBUTE(Bukkit属性)</option>
+<option value="MYTHICLIB_STAT">MYTHICLIB_STAT</option>
+</select>
+<input id="attrKey" placeholder="key(如 SPEED / generic.max_health)">
+<input id="attrAmount" type="number" placeholder="数值" style="width:80px">
+<button onclick="addAttr()">添加</button>
+</div>
+<table><thead><tr><th>#</th><th>类型</th><th>Key</th><th>数值</th><th></th></tr></thead><tbody id="attrsBody"></tbody></table>
+</div>
+
+<div class="card">
+<h3>🎞 动画帧 <span id="frameTitleLabel" class="badge">未选择称号</span></h3>
+<div class="form-grid">
+<input id="frameText" placeholder="帧文本(如 &c[称号]、下一帧变色)" style="flex:2">
+<input id="frameInterval" type="number" placeholder="间隔ms" value="800" style="width:90px">
+<button onclick="addFrame()">追加帧</button>
+<button onclick="clearFrames()" class="secondary">清空全部帧</button>
+</div>
+<table><thead><tr><th>#</th><th>文本</th><th>间隔</th><th></th></tr></thead><tbody id="framesBody"></tbody></table>
+</div>
+</div>
+
+<div class="card">
+<h3>👤 玩家称号查询</h3>
+<div class="form-grid">
+<input id="lookupPlayer" placeholder="玩家名">
+<button onclick="lookupPlayer()">查询</button>
+</div>
+<div id="lookupResult" style="font-size:13px;color:#8b949e;margin-bottom:8px"></div>
+<div class="form-grid">
+<input id="grantTitleId" type="number" placeholder="称号ID" style="width:100px">
+<button onclick="grantToPlayer()">发放</button>
+<button onclick="revokeFromPlayer()" class="danger">收回</button>
+</div>
+</div>
+
+<script>
+var _token='',_tokenFail=false,_selectedTitle=null;
+
+(function(){
+ var m=location.search.match(/[?&]token=([^&]+)/);
+ if(m){_token=m[1];document.getElementById('authToken').value=_token;document.getElementById('authStatus').textContent='✅ from URL';}
+})();
+
+function setToken(){
+ _token=document.getElementById('authToken').value.trim();
+ _tokenFail=false;
+ document.getElementById('authStatus').textContent=_token?'✅ 已设置':'';
+ loadAll();
+}
+
+async function fetchTestToken(){
+ var r=await fetch('/ks-Title/api/test-token',{method:'POST'});
+ var d=await r.json();
+ if(d.token){document.getElementById('authToken').value=d.token;setToken();toast('✅ Token 已获取（仅本地有效）','ok');}
+ else toast('❌ '+d.error,'err');
+}
+
+async function api(method,url,body){
+ var opts={method:method,headers:{'Content-Type':'application/json'}};
+ if(_token)opts.headers['Authorization']='Bearer '+_token;
+ if(body)opts.body=JSON.stringify(body);
+ var r=await fetch(url,opts);
+ if(r.status===401){_tokenFail=true;return{error:'token 无效或过期，请重新获取'};}
+ return r.json();
+}
+
+function loadAll(){loadStatus();loadDefs();}
+
+async function loadStatus(){
+ var d=await api('GET','/ks-Title/api/status');
+ if(_tokenFail){document.getElementById('statusBanner').textContent='Token 无效，请重新获取';return;}
+ document.getElementById('statusBanner').innerHTML=
+   '<span>迁移完成: <b>'+(d.migrationDone?'是':'否')+'</b></span>'+
+   '<span>称号定义: <b>'+d.defsCount+'</b></span>'+
+   '<span>持有记录: <b>'+d.ownershipCount+'</b></span>'+
+   '<span>佩戴记录: <b>'+d.equippedCount+'</b></span>';
+}
+
+async function loadDefs(){
+ if(_tokenFail){return;}
+ var d=await api('GET','/ks-Title/api/defs');
+ if(_tokenFail){loadDefs();return;}
+ var tb=document.getElementById('defsBody'),h='';
+ (d.defs||[]).forEach(function(t){
+   var priceOrCond = t.unlockType==='PURCHASE' ? t.price : (t.unlockType==='CONDITION' ? (t.conditionType+':'+t.conditionValue) : '-');
+   h+='<tr><td class="mono">'+t.id+'</td><td>'+mcToHtml(t.displayName)+'</td><td>'+he(t.category)+'</td>'
+     +'<td>'+t.unlockType+'</td><td>'+he(String(priceOrCond))+'</td>'
+     +'<td>'+(t.visible?'是':'否')+'</td><td>'+(t.enabled?'是':'否')+'</td>'
+     +'<td><button class="small" onclick="selectTitle('+t.id+')">选择</button> '
+     +'<button class="small danger" onclick="deleteDef('+t.id+')">删除</button></td></tr>';
+ });
+ tb.innerHTML=h||'<tr><td colspan="8" style="color:#666;text-align:center">暂无</td></tr>';
+}
+
+async function createDef(){
+ var name=document.getElementById('newName').value.trim();
+ if(!name){toast('请输入显示名','err');return;}
+ var body={displayName:name,description:document.getElementById('newDesc').value.trim(),
+   category:document.getElementById('newCategory').value.trim()||'general',
+   unlockType:document.getElementById('newUnlockType').value,
+   price:parseFloat(document.getElementById('newPrice').value)||0};
+ var d=await api('POST','/ks-Title/api/defs',body);
+ if(d.id){toast('创建成功 ID='+d.id,'ok');document.getElementById('newName').value='';loadAll();}
+ else toast(d.error||'失败','err');
+}
+
+async function deleteDef(id){
+ var d=await api('DELETE','/ks-Title/api/defs?id='+id);
+ if(d.message){toast(d.message,'ok');loadAll();}else toast(d.error||'失败','err');
+}
+
+function selectTitle(id){
+ _selectedTitle=id;
+ document.getElementById('attrTitleLabel').textContent='称号 #'+id;
+ document.getElementById('frameTitleLabel').textContent='称号 #'+id;
+ document.getElementById('genSelectedLabel').textContent='#'+id;
+ document.getElementById('iaBindTitleLabel').textContent='称号 #'+id;
+ loadDetail(id);
+ loadIaBindingStatus();
+}
+
+async function loadDetail(id){
+ var d=await api('GET','/ks-Title/api/defs/detail?id='+id);
+ if(_tokenFail)return;
+ var ab=document.getElementById('attrsBody'),ah='';
+ (d.attributes||[]).forEach(function(a){
+   ah+='<tr><td class="mono">'+a.id+'</td><td>'+a.buffType+'</td><td>'+he(a.buffKey)+'</td><td>'+a.amount+'</td>'
+     +'<td><button class="small danger" onclick="delAttr('+a.id+')">删除</button></td></tr>';
+ });
+ ab.innerHTML=ah||'<tr><td colspan="5" style="color:#666;text-align:center">暂无</td></tr>';
+
+ var fb=document.getElementById('framesBody'),fh='';
+ (d.frames||[]).forEach(function(f){
+   fh+='<tr><td class="mono">'+f.frameIndex+'</td><td>'+mcToHtml(f.frameText)+'</td><td>'+f.intervalMs+'ms</td>'
+     +'<td><button class="small danger" onclick="delFrame('+f.id+')">删除</button></td></tr>';
+ });
+ fb.innerHTML=fh||'<tr><td colspan="4" style="color:#666;text-align:center">静态称号(无帧)</td></tr>';
+}
+
+async function addAttr(){
+ if(!_selectedTitle){toast('请先在列表选择一个称号','err');return;}
+ var key=document.getElementById('attrKey').value.trim();
+ var amount=parseFloat(document.getElementById('attrAmount').value)||0;
+ if(!key){toast('请输入 key','err');return;}
+ var d=await api('POST','/ks-Title/api/attrs',{titleId:_selectedTitle,buffType:document.getElementById('attrType').value,buffKey:key,amount:amount});
+ if(d.id){toast('已添加','ok');loadDetail(_selectedTitle);}else toast(d.error||'失败','err');
+}
+async function delAttr(id){
+ var d=await api('DELETE','/ks-Title/api/attrs?id='+id);
+ if(d.message){toast(d.message,'ok');loadDetail(_selectedTitle);}else toast(d.error||'失败','err');
+}
+
+async function addFrame(){
+ if(!_selectedTitle){toast('请先在列表选择一个称号','err');return;}
+ var text=document.getElementById('frameText').value.trim();
+ var interval=parseInt(document.getElementById('frameInterval').value)||800;
+ if(!text){toast('请输入帧文本','err');return;}
+ var d=await api('POST','/ks-Title/api/frames',{titleId:_selectedTitle,frameText:text,intervalMs:interval});
+ if(d.message){toast(d.message,'ok');document.getElementById('frameText').value='';loadDetail(_selectedTitle);}else toast(d.error||'失败','err');
+}
+async function delFrame(id){
+ var d=await api('DELETE','/ks-Title/api/frames?id='+id);
+ if(d.message){toast(d.message,'ok');loadDetail(_selectedTitle);}else toast(d.error||'失败','err');
+}
+async function clearFrames(){
+ if(!_selectedTitle){toast('请先在列表选择一个称号','err');return;}
+ var d=await api('DELETE','/ks-Title/api/frames/all?id='+_selectedTitle);
+ if(d.message){toast(d.message,'ok');loadDetail(_selectedTitle);}else toast(d.error||'失败','err');
+}
+
+async function lookupPlayer(){
+ var name=document.getElementById('lookupPlayer').value.trim();
+ if(!name){toast('请输入玩家名','err');return;}
+ var d=await api('GET','/ks-Title/api/ownership?player='+encodeURIComponent(name));
+ if(d.error){document.getElementById('lookupResult').textContent=d.error;return;}
+ document.getElementById('lookupResult').innerHTML=
+   '持有: <b>'+(d.owned&&d.owned.length?d.owned.join(', '):'无')+'</b> ｜ 佩戴: <b>'+(d.equipped>=0?d.equipped:'无')+'</b>';
+}
+async function grantToPlayer(){
+ var name=document.getElementById('lookupPlayer').value.trim();
+ var id=parseInt(document.getElementById('grantTitleId').value);
+ if(!name||!id){toast('请输入玩家名和称号ID','err');return;}
+ var d=await api('POST','/ks-Title/api/grant',{player:name,titleId:id});
+ if(d.message){toast(d.message,'ok');lookupPlayer();}else toast(d.error||'失败','err');
+}
+async function revokeFromPlayer(){
+ var name=document.getElementById('lookupPlayer').value.trim();
+ var id=parseInt(document.getElementById('grantTitleId').value);
+ if(!name||!id){toast('请输入玩家名和称号ID','err');return;}
+ var d=await api('POST','/ks-Title/api/revoke',{player:name,titleId:id});
+ if(d.message){toast(d.message,'ok');lookupPlayer();}else toast(d.error||'失败','err');
+}
+
+function he(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function toast(m,c){var e=document.createElement('div');e.className='toast toast-'+(c||'ok');e.textContent=m;document.body.appendChild(e);setTimeout(function(){e.remove()},3000)}
+
+// ==================== Minecraft 颜色码 -> HTML 预览渲染 ====================
+// 支持: 经典 &0-9a-f 颜色 / &l&o&n&m&r 格式 / &#RRGGBB 十六进制 / §x§r§r§g§g§b§b 展开式十六进制(游戏内实际存储格式)
+// / &k obfuscated(用随机字符模拟游戏内乱码闪烁效果) / :xxx: ItemsAdder图片占位符(浏览器画不出真实材质,用徽章代替)
+var MC_COLORS={'0':'#000000','1':'#0000AA','2':'#00AA00','3':'#00AAAA','4':'#AA0000','5':'#AA00AA','6':'#FFAA00','7':'#AAAAAA',
+ '8':'#555555','9':'#5555FF','a':'#55FF55','b':'#55FFFF','c':'#FF5555','d':'#FF55FF','e':'#FFFF55','f':'#FFFFFF'};
+
+function mcToHtml(raw){
+ var s=String(raw||'');
+ var out=[], i=0, color=null, bold=false, italic=false, underline=false, strike=false, obf=false, buf='';
+ function flush(){
+   if(buf===''){return;}
+   var style=[];
+   if(color) style.push('color:'+color);
+   if(bold) style.push('font-weight:bold');
+   if(italic) style.push('font-style:italic');
+   var deco=[]; if(underline) deco.push('underline'); if(strike) deco.push('line-through');
+   if(deco.length) style.push('text-decoration:'+deco.join(' '));
+   if(obf) out.push('<span style="'+style.join(';')+'" class="mc-obf">'+he(buf)+'</span>');
+   else out.push('<span style="'+style.join(';')+'">'+he(buf)+'</span>');
+   buf='';
+ }
+ while(i<s.length){
+   var ch=s[i];
+   if(ch==='&'||ch==='§'){
+     if(ch==='&' && s[i+1]==='#' && /^[0-9a-fA-F]{6}$/.test(s.substr(i+2,6))){
+       flush(); color='#'+s.substr(i+2,6); i+=8; continue;
+     }
+     if(s[i+1]==='x'||s[i+1]==='X'){
+       var hex='', j=i+2, ok=true;
+       for(var k=0;k<6;k++){
+         if(s[j]===ch && /[0-9a-fA-F]/.test(s[j+1]||'')){ hex+=s[j+1]; j+=2; } else { ok=false; break; }
+       }
+       if(ok){ flush(); color='#'+hex; i=j; continue; }
+     }
+     var code=(s[i+1]||'').toLowerCase();
+     if(MC_COLORS[code]){ flush(); color=MC_COLORS[code]; bold=italic=underline=strike=obf=false; i+=2; continue; }
+     if(code==='l'){ flush(); bold=true; i+=2; continue; }
+     if(code==='o'){ flush(); italic=true; i+=2; continue; }
+     if(code==='n'){ flush(); underline=true; i+=2; continue; }
+     if(code==='m'){ flush(); strike=true; i+=2; continue; }
+     if(code==='k'){ flush(); obf=true; i+=2; continue; }
+     if(code==='r'){ flush(); color=null; bold=italic=underline=strike=obf=false; i+=2; continue; }
+     buf+=ch; i++; continue;
+   }
+   if(ch===':'){
+     var m=s.slice(i).match(/^:([a-zA-Z0-9_\-]+):/);
+     if(m){ flush(); out.push('<span class="mc-imgtoken">🖼'+he(m[1])+'</span>'); i+=m[0].length; continue; }
+   }
+   buf+=ch; i++;
+ }
+ flush();
+ return out.join('');
+}
+
+// 每 80ms 把所有 .mc-obf 元素的文字换成等长随机字符，模拟游戏内 &k 混淆闪烁效果
+setInterval(function(){
+ var chars='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*';
+ document.querySelectorAll('.mc-obf').forEach(function(el){
+   var len=el.textContent.length, r='';
+   for(var i=0;i<len;i++) r+=chars[Math.floor(Math.random()*chars.length)];
+   el.textContent=r;
+ });
+}, 80);
+
+// ==================== 动态称号生成器 ====================
+var _genFrames=[], _genPreviewTimer=null;
+
+function hexToRgb(h){h=h.replace('#','');return [parseInt(h.substr(0,2),16),parseInt(h.substr(2,2),16),parseInt(h.substr(4,2),16)];}
+function rgbToHex(r,g,b){return [r,g,b].map(function(v){v=Math.max(0,Math.min(255,Math.round(v)));return v.toString(16).padStart(2,'0');}).join('');}
+function hsvToRgb(h,s,v){
+ var i=Math.floor(h*6), f=h*6-i, p=v*(1-s), q=v*(1-f*s), t=v*(1-(1-f)*s), r,g,b;
+ switch(i%6){
+  case 0: r=v;g=t;b=p;break; case 1: r=q;g=v;b=p;break; case 2: r=p;g=v;b=t;break;
+  case 3: r=p;g=q;b=v;break; case 4: r=t;g=p;b=v;break; default: r=v;g=p;b=q;
+ }
+ return [r*255,g*255,b*255];
+}
+function lerp(a,b,t){return a+(b-a)*t;}
+
+function bracketWrap(inner, style){
+ var pairs={none:['',''],square:['[',']'],cn:['【','】'],jp:['「','」'],book:['《','》']};
+ var p=pairs[style]||pairs.square;
+ return '&7'+p[0]+inner+'&7'+p[1];
+}
+
+function generateFrames(){
+ var text=document.getElementById('genText').value.trim()||'称号';
+ var bracket=document.getElementById('genBracket').value;
+ var style=document.getElementById('genStyle').value;
+ var color1=document.getElementById('genColor1').value;
+ var color2=document.getElementById('genColor2').value;
+ var frameCount=Math.max(1,Math.min(60,parseInt(document.getElementById('genFrames').value)||12));
+ var frames=[];
+ if(style==='static'){
+   frames.push(bracketWrap('&#'+color1.replace('#','')+text, bracket));
+ } else if(style==='rainbow'){
+   for(var i=0;i<frameCount;i++){
+     var chars='';
+     for(var j=0;j<text.length;j++){
+       var hue=((j/Math.max(1,text.length))+(i/frameCount))%1;
+       var rgb=hsvToRgb(hue,1,1);
+       chars+='&#'+rgbToHex(rgb[0],rgb[1],rgb[2])+text[j];
+     }
+     frames.push(bracketWrap(chars, bracket));
+   }
+ } else if(style==='breathe'){
+   var c1=hexToRgb(color1), c2=hexToRgb(color2);
+   for(var i=0;i<frameCount;i++){
+     var t=(Math.sin(2*Math.PI*i/frameCount)+1)/2;
+     var rgb=[lerp(c1[0],c2[0],t),lerp(c1[1],c2[1],t),lerp(c1[2],c2[2],t)];
+     frames.push(bracketWrap('&#'+rgbToHex(rgb[0],rgb[1],rgb[2])+text, bracket));
+   }
+ } else if(style==='sweep'){
+   for(var i=0;i<frameCount;i++){
+     var pos=Math.floor((i/frameCount)*text.length);
+     var chars='';
+     for(var j=0;j<text.length;j++){
+       var hi=Math.abs(j-pos)<=1;
+       chars+='&#'+(hi?color2:color1).replace('#','')+text[j];
+     }
+     frames.push(bracketWrap(chars, bracket));
+   }
+ }
+ return frames;
+}
+
+function regenPreview(){
+ var style=document.getElementById('genStyle').value;
+ document.getElementById('genColor2Wrap').style.display=(style==='breathe'||style==='sweep')?'flex':'none';
+ document.getElementById('genFramesWrap').style.display=(style==='static')?'none':'flex';
+ document.getElementById('genIntervalWrap').style.display=(style==='static')?'none':'flex';
+ _genFrames=generateFrames();
+ if(_genPreviewTimer){ clearInterval(_genPreviewTimer); _genPreviewTimer=null; }
+ var idx=0, el=document.getElementById('genPreview');
+ var interval=Math.max(50,parseInt(document.getElementById('genInterval').value)||120);
+ function render(){ el.innerHTML=mcToHtml(_genFrames[idx % _genFrames.length]); idx++; }
+ render();
+ if(_genFrames.length>1) _genPreviewTimer=setInterval(render, interval);
+}
+
+async function createFromGenerator(){
+ if(!_genFrames.length) regenPreview();
+ var interval=parseInt(document.getElementById('genInterval').value)||120;
+ var d=await api('POST','/ks-Title/api/defs',{displayName:_genFrames[0],category:'generated',unlockType:'ADMIN_GRANT'});
+ if(!d.id){ toast(d.error||'创建失败','err'); return; }
+ for(var i=0;i<_genFrames.length;i++){
+   await api('POST','/ks-Title/api/frames',{titleId:d.id,frameText:_genFrames[i],intervalMs:interval});
+ }
+ toast('已创建称号 #'+d.id+(_genFrames.length>1?'，共写入 '+_genFrames.length+' 帧':''),'ok');
+ loadAll();
+}
+
+async function applyToSelected(){
+ if(!_selectedTitle){ toast('请先在称号列表选择一个称号','err'); return; }
+ if(!_genFrames.length) regenPreview();
+ var interval=parseInt(document.getElementById('genInterval').value)||120;
+ await api('DELETE','/ks-Title/api/frames/all?id='+_selectedTitle);
+ for(var i=0;i<_genFrames.length;i++){
+   await api('POST','/ks-Title/api/frames',{titleId:_selectedTitle,frameText:_genFrames[i],intervalMs:interval});
+ }
+ toast('已写入 '+_genFrames.length+' 帧到称号 #'+_selectedTitle,'ok');
+ loadDetail(_selectedTitle);
+}
+
+document.getElementById('genColor2Wrap').style.display='none';
+document.getElementById('genFramesWrap').style.display='none';
+document.getElementById('genIntervalWrap').style.display='none';
+
+// ==================== IA 故障风格图片帧生成器（Canvas，纯前端） ====================
+var _iaFrames=[], _iaStatic=null, _iaPreviewTimer=null;
+
+function applyRgbSplit(ctx,w,h,amt){
+ var img=ctx.getImageData(0,0,w,h);
+ var src=new Uint8ClampedArray(img.data);
+ var shift=Math.round((amt/100)*8);
+ if(shift<=0) return;
+ for(var y=0;y<h;y++){
+  for(var x=0;x<w;x++){
+   var di=(y*w+x)*4;
+   var rx=x-shift, bx=x+shift;
+   if(rx>=0&&rx<w) img.data[di]=src[(y*w+rx)*4];
+   if(bx>=0&&bx<w) img.data[di+2]=src[(y*w+bx)*4+2];
+  }
+ }
+ ctx.putImageData(img,0,0);
+}
+
+function contentBounds(ctx,w,h){
+ var img=ctx.getImageData(0,0,w,h).data;
+ var minX=w,minY=h,maxX=-1,maxY=-1;
+ for(var y=0;y<h;y++){
+  for(var x=0;x<w;x++){
+   if(img[(y*w+x)*4+3]>8){
+    if(x<minX)minX=x; if(y<minY)minY=y; if(x>maxX)maxX=x; if(y>maxY)maxY=y;
+   }
+  }
+ }
+ return maxX<0 ? {x:0,y:0,w:w,h:h} : {x:minX,y:minY,w:maxX-minX+1,h:maxY-minY+1};
+}
+
+function expandBounds(b,w,h,pad){
+ var x=Math.max(0,b.x-pad), y=Math.max(0,b.y-pad);
+ var x2=Math.min(w,b.x+b.w+pad), y2=Math.min(h,b.y+b.h+pad);
+ return {x:x,y:y,w:x2-x,h:y2-y};
+}
+
+function unionBounds(list,w,h){
+ var minX=w,minY=h,maxX=-1,maxY=-1;
+ list.forEach(function(b){
+  minX=Math.min(minX,b.x); minY=Math.min(minY,b.y);
+  maxX=Math.max(maxX,b.x+b.w-1); maxY=Math.max(maxY,b.y+b.h-1);
+ });
+ return maxX<0 ? {x:0,y:0,w:w,h:h} : {x:minX,y:minY,w:maxX-minX+1,h:maxY-minY+1};
+}
+
+function cropAndScaleCanvas(src,bounds,outH){
+ var outW=Math.max(1,Math.round(bounds.w*(outH/Math.max(1,bounds.h))));
+ var out=document.createElement('canvas'); out.width=outW; out.height=outH;
+ var ctx=out.getContext('2d');
+ ctx.imageSmoothingEnabled=true;
+ try{ ctx.imageSmoothingQuality='high'; }catch(e){}
+ ctx.drawImage(src,bounds.x,bounds.y,bounds.w,bounds.h,0,0,outW,outH);
+ return out;
+}
+
+function applyScanGlitch(ctx,w,h,amt){
+ if(amt<=0) return;
+ var bands=8, bandH=Math.max(1,Math.floor(h/bands));
+ var maxShift=Math.round((amt/100)*16);
+ for(var b=0;b<bands;b++){
+  if(Math.random()>0.55) continue; // 不是每条带每帧都错位，制造随机断续感
+  var y0=b*bandH, y1=Math.min(h,y0+bandH), bh=y1-y0;
+  if(bh<=0) continue;
+  var shift=Math.floor((Math.random()*2-1)*maxShift);
+  if(shift===0) continue;
+  var img=ctx.getImageData(0,y0,w,bh);
+  var src=new Uint8ClampedArray(img.data);
+  for(var yy=0;yy<bh;yy++){
+   for(var x=0;x<w;x++){
+    var sx=x-shift, di=(yy*w+x)*4;
+    if(sx>=0&&sx<w){
+     var si=(yy*w+sx)*4;
+     img.data[di]=src[si]; img.data[di+1]=src[si+1]; img.data[di+2]=src[si+2]; img.data[di+3]=src[si+3];
+    } else { img.data[di+3]=0; }
+   }
+  }
+  ctx.putImageData(img,0,y0);
+ }
+}
+
+function applyBlockGlitch(ctx,w,h,amt,bounds){
+ if(amt<=0) return;
+ var count=Math.round((amt/100)*10)+1;
+ var area=bounds||{x:0,y:0,w:w,h:h};
+ for(var i=0;i<count;i++){
+  var bw=4+Math.random()*16, bh=2+Math.random()*6;
+  var bx=area.x+Math.random()*Math.max(1,area.w-bw), by=area.y+Math.random()*Math.max(1,area.h-bh);
+  if(Math.random()<0.5){
+   ctx.clearRect(bx,by,bw,bh);
+  } else {
+   ctx.fillStyle='rgba(255,255,255,'+(0.3+Math.random()*0.5)+')';
+   ctx.fillRect(bx,by,bw,bh);
+  }
+ }
+}
+
+function iaOpts(){
+ return {
+  text: document.getElementById('iaText').value.trim()||'TITLE',
+  fontSize: parseInt(document.getElementById('iaFontSize').value)||28,
+  glowColor: document.getElementById('iaGlowColor').value,
+  textColor1: document.getElementById('iaTextColor1').value,
+  textColor2: document.getElementById('iaTextColor2').value,
+  gradientBoost: parseInt(document.getElementById('iaGradientBoost').value)||0,
+  fxRgb: document.getElementById('iaFxRgb').checked,
+  fxRgbAmt: parseInt(document.getElementById('iaFxRgbAmt').value)||0,
+  fxBlock: document.getElementById('iaFxBlock').checked,
+  fxBlockAmt: parseInt(document.getElementById('iaFxBlockAmt').value)||0,
+  fxScan: document.getElementById('iaFxScan').checked,
+  fxScanAmt: parseInt(document.getElementById('iaFxScanAmt').value)||0
+ };
+}
+
+function iaSafePrefix(raw){
+ var s=String(raw||'').trim().toLowerCase()
+  .replace(/[^a-z0-9_-]+/g,'_')
+  .replace(/_+/g,'_')
+  .replace(/^[-_]+|[-_]+$/g,'');
+ return s||'title';
+}
+
+function iaLerpColor(c1,c2,t){
+ var a=hexToRgb(c1), b=hexToRgb(c2);
+ return '#'+rgbToHex(lerp(a[0],b[0],t),lerp(a[1],b[1],t),lerp(a[2],b[2],t));
+}
+
+function rgbToHsv01(rgb){
+ var r=rgb[0]/255,g=rgb[1]/255,b=rgb[2]/255;
+ var max=Math.max(r,g,b), min=Math.min(r,g,b), d=max-min, h=0;
+ if(d!==0){
+  if(max===r) h=((g-b)/d)%6;
+  else if(max===g) h=(b-r)/d+2;
+  else h=(r-g)/d+4;
+  h/=6; if(h<0) h+=1;
+ }
+ return {h:h,s:max===0?0:d/max,v:max};
+}
+
+function iaNeonGradientColor(c1,c2,t,boost){
+ if(t<=0) return c1;
+ if(t>=1) return c2;
+ var a=rgbToHsv01(hexToRgb(c1)), b=rgbToHsv01(hexToRgb(c2));
+ var d=b.h-a.h;
+ if(d>0.5) d-=1;
+ if(d<-0.5) d+=1;
+ var power=Math.max(0,Math.min(100,boost||0))/100;
+ var h=(a.h+d*t+Math.sin(Math.PI*t)*power*0.34)%1;
+ if(h<0) h+=1;
+ var s=Math.min(1,lerp(Math.max(a.s,0.82),Math.max(b.s,0.82),t)+power*0.18);
+ var v=Math.min(1,lerp(Math.max(a.v,0.88),Math.max(b.v,0.88),t)+power*0.10);
+ var rgb=hsvToRgb(h,s,v);
+ return '#'+rgbToHex(rgb[0],rgb[1],rgb[2]);
+}
+
+function drawIaGradientText(ctx,text,cx,cy,color1,color2,boost){
+ var chars=Array.from(text);
+ if(!chars.length) return;
+ var widths=chars.map(function(ch){return ctx.measureText(ch).width;});
+ var total=widths.reduce(function(a,b){return a+b;},0);
+ var x=cx-total/2;
+ ctx.textAlign='left';
+ ctx.textBaseline='middle';
+ for(var i=0;i<chars.length;i++){
+  var t=chars.length===1 ? 0 : i/(chars.length-1);
+  ctx.fillStyle=boost>0 ? iaNeonGradientColor(color1,color2,t,boost) : iaLerpColor(color1,color2,t);
+  ctx.fillText(chars[i],x,cy);
+  x+=widths[i];
+ }
+}
+
+function iaMeasureTextWidth(opts){
+ var c=document.createElement('canvas');
+ var ctx=c.getContext('2d');
+ ctx.font='bold '+opts.fontSize+'px Consolas, "Courier New", monospace';
+ return Array.from(opts.text).reduce(function(sum,ch){return sum+ctx.measureText(ch).width;},0);
+}
+
+function iaCanvasWidth(opts){
+ var textW=iaMeasureTextWidth(opts);
+ var rgbPad=opts.fxRgb ? Math.round((opts.fxRgbAmt/100)*18) : 0;
+ var scanPad=opts.fxScan ? Math.round((opts.fxScanAmt/100)*32) : 0;
+ var glowPad=Math.ceil(opts.fontSize*2.2);
+ var want=Math.ceil(textW+glowPad+rgbPad+scanPad+48);
+ return {width:Math.max(256,Math.min(2048,want)), wanted:want};
+}
+
+function renderGlitchFrame(canvas, opts, animated){
+ var ctx=canvas.getContext('2d');
+ var w=canvas.width, h=canvas.height;
+ ctx.clearRect(0,0,w,h);
+ ctx.textBaseline='middle';
+ ctx.font='bold '+opts.fontSize+'px Consolas, "Courier New", monospace';
+ ctx.shadowColor=opts.glowColor; ctx.shadowBlur=opts.fontSize*0.7;
+ drawIaGradientText(ctx,opts.text,w/2,h/2,opts.textColor1,opts.textColor2,opts.gradientBoost);
+ drawIaGradientText(ctx,opts.text,w/2,h/2,opts.textColor1,opts.textColor2,opts.gradientBoost);
+ ctx.shadowBlur=0;
+ drawIaGradientText(ctx,opts.text,w/2,h/2,opts.textColor1,opts.textColor2,opts.gradientBoost);
+ if(opts.fxRgb) applyRgbSplit(ctx,w,h,opts.fxRgbAmt);
+ var bounds=expandBounds(contentBounds(ctx,w,h),w,h,8);
+ if(animated){
+  if(opts.fxScan) applyScanGlitch(ctx,w,h,opts.fxScanAmt);
+  if(opts.fxBlock) applyBlockGlitch(ctx,w,h,opts.fxBlockAmt,bounds);
+ }
+}
+
+function iaGenerate(){
+ var opts=iaOpts();
+ var frameCount=Math.max(1,Math.min(24,parseInt(document.getElementById('iaFrames').value)||6));
+ var widthInfo=iaCanvasWidth(opts);
+ var w=widthInfo.width, h=64, outH=32;
+ if(widthInfo.wanted>w) toast('文本较长，已使用最大宽度 '+w+'px，仍可能被截断；可调小字号','err');
+ var rawFrames=[];
+ for(var i=0;i<frameCount;i++){
+  var c=document.createElement('canvas'); c.width=w; c.height=h;
+  renderGlitchFrame(c, opts, true);
+  rawFrames.push(c);
+ }
+ var sc=document.createElement('canvas'); sc.width=w; sc.height=h;
+ renderGlitchFrame(sc, opts, false);
+ try{
+  var allBounds=rawFrames.concat([sc]).map(function(c){return expandBounds(contentBounds(c,w,h),w,h,2);});
+  var crop=unionBounds(allBounds,w,h);
+  if(crop.w<8||crop.h<8) throw new Error('empty crop');
+  _iaFrames=rawFrames.map(function(c){return cropAndScaleCanvas(c,crop,outH);});
+  _iaStatic=cropAndScaleCanvas(sc,crop,outH);
+ }catch(e){
+  _iaFrames=rawFrames;
+  _iaStatic=sc;
+  console.warn('IA title crop failed, using original frames', e);
+ }
+
+ var tb=document.getElementById('iaThumbs'); tb.innerHTML='';
+ _iaFrames.forEach(function(c,idx){
+  var img=document.createElement('img'); img.src=c.toDataURL(); img.title='frame '+(idx+1);
+  img.style.cssText='width:48px;height:12px;border:1px solid #30363d;background:#000';
+  tb.appendChild(img);
+ });
+ var simg=document.createElement('img'); simg.src=_iaStatic.toDataURL(); simg.title='static';
+ simg.style.cssText='width:48px;height:12px;border:1px solid #55ff55;background:#000';
+ tb.appendChild(simg);
+
+ var pc=document.getElementById('iaPreviewCanvas');
+ var pctx=pc.getContext('2d');
+ var idx=0;
+ if(_iaPreviewTimer){ clearInterval(_iaPreviewTimer); _iaPreviewTimer=null; }
+ var interval=Math.max(50,parseInt(document.getElementById('iaInterval').value)||150);
+ function draw(){
+  var img=_iaFrames[idx % _iaFrames.length], scale=Math.min(2,pc.width/img.width,pc.height/img.height);
+  var dw=img.width*scale, dh=img.height*scale;
+  pctx.clearRect(0,0,pc.width,pc.height);
+  pctx.imageSmoothingEnabled=false;
+  pctx.drawImage(img,Math.round((pc.width-dw)/2),Math.round((pc.height-dh)/2),dw,dh);
+  idx++;
+ }
+ draw();
+ if(_iaFrames.length>1) _iaPreviewTimer=setInterval(draw, interval);
+ toast('已生成 '+frameCount+' 帧 + 1 张静态图，可下载或生成配置片段','ok');
+}
+
+function downloadCanvas(canvas, filename){
+ canvas.toBlob(function(blob){
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a'); a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(url);}, 2000);
+ });
+}
+
+function iaDownloadAll(){
+ if(!_iaFrames.length){ toast('请先点"生成帧图"','err'); return; }
+ var prefix=iaSafePrefix(document.getElementById('iaPrefix').value);
+ document.getElementById('iaPrefix').value=prefix;
+ _iaFrames.forEach(function(c,idx){ downloadCanvas(c, prefix+'_f'+(idx+1)+'.png'); });
+ if(_iaStatic) downloadCanvas(_iaStatic, prefix+'_static.png');
+}
+
+function iaCopyConfig(){
+ if(!_iaFrames.length){ toast('请先点"生成帧图"','err'); return; }
+ var prefix=iaSafePrefix(document.getElementById('iaPrefix').value);
+ document.getElementById('iaPrefix').value=prefix;
+ var lines=['info:','  namespace: kstitle','','font_images:'];
+ _iaFrames.forEach(function(c,idx){
+  lines.push('  '+prefix+'_f'+(idx+1)+':');
+  lines.push('    path: "font/titles/'+prefix+'_f'+(idx+1)+'.png"');
+  lines.push('    y_position: 8');
+  lines.push('    scale_ratio: 10');
+ });
+lines.push('  '+prefix+'_static:');
+lines.push('    path: "font/titles/'+prefix+'_static.png"');
+lines.push('    y_position: 7');
+lines.push('    scale_ratio: 10');
+ var text=lines.join('\n');
+ document.getElementById('iaConfigOut').value=text;
+ if(navigator.clipboard) navigator.clipboard.writeText(text).then(function(){toast('配置已复制到剪贴板(仅供参考，点“自动上传”可跳过手动这步)','ok');}).catch(function(){toast('已生成，见下方文本框','ok');});
+ else toast('已生成，见下方文本框','ok');
+}
+
+async function iaUploadToServer(){
+ if(!_iaFrames.length){ toast('请先点"生成帧图"','err'); return; }
+ var rawPrefix=document.getElementById('iaPrefix').value.trim();
+ if(!rawPrefix){ toast('请先填写图片前缀','err'); return; }
+ var prefix=iaSafePrefix(rawPrefix);
+ document.getElementById('iaPrefix').value=prefix;
+ var images=[];
+ _iaFrames.forEach(function(c,idx){ images.push({name:prefix+'_f'+(idx+1), base64:c.toDataURL('image/png').split(',')[1]}); });
+ if(_iaStatic) images.push({name:prefix+'_static', base64:_iaStatic.toDataURL('image/png').split(',')[1]});
+ var d=await api('POST','/ks-Title/api/ia-upload',{packName:'ks_title_gen', namespace:'kstitle', yPosition:8, scaleRatio:10, images:images});
+ if(d.message){ toast(d.message,'ok'); } else toast(d.error||'上传失败','err');
+}
+
+// ==================== IA 绑定（自动接管 TAB） ====================
+
+async function loadIaBindingStatus(){
+ if(!_selectedTitle){ document.getElementById('bindStatus').textContent=''; return; }
+ var d=await api('GET','/ks-Title/api/ia-binding?id='+_selectedTitle);
+ if(_tokenFail) return;
+ if(d.bound){
+  document.getElementById('bindStatus').innerHTML='当前绑定: 前缀=<b>'+he(d.imagePrefix)+'</b> 帧数='+d.frameCount+' 间隔='+d.intervalMs+'ms'+(d.chatStatic?' (含聊天静态图)':'');
+  document.getElementById('bindPrefix').value=d.imagePrefix;
+  document.getElementById('bindFrames').value=d.frameCount;
+  document.getElementById('bindInterval').value=d.intervalMs;
+  document.getElementById('bindChatStatic').checked=d.chatStatic;
+ } else {
+  document.getElementById('bindStatus').textContent='尚未绑定';
+ }
+}
+
+async function bindIaTitle(){
+ if(!_selectedTitle){ toast('请先在称号列表选择一个称号','err'); return; }
+ var rawPrefix=document.getElementById('bindPrefix').value.trim();
+ if(!rawPrefix){ toast('请输入图片前缀','err'); return; }
+ var prefix=iaSafePrefix(rawPrefix);
+ document.getElementById('bindPrefix').value=prefix;
+ var body={titleId:_selectedTitle, imagePrefix:prefix,
+   frameCount:parseInt(document.getElementById('bindFrames').value)||6,
+   intervalMs:parseInt(document.getElementById('bindInterval').value)||150,
+   chatStatic:document.getElementById('bindChatStatic').checked};
+ var d=await api('POST','/ks-Title/api/ia-binding', body);
+ if(d.message){ toast(d.message,'ok'); loadIaBindingStatus(); loadDetail(_selectedTitle); } else toast(d.error||'失败','err');
+}
+async function unbindIaTitle(){
+ if(!_selectedTitle){ toast('请先在称号列表选择一个称号','err'); return; }
+ var d=await api('DELETE','/ks-Title/api/ia-binding?id='+_selectedTitle);
+ if(d.message){ toast(d.message,'ok'); loadIaBindingStatus(); } else toast(d.error||'失败','err');
+}
+
+loadAll();
+</script>
+</body>
+</html>

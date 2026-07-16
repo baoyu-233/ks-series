@@ -1,0 +1,7 @@
+name: ks-BossCombat
+version: ${project.version}
+main: org.kseries.bosscombat.KsBossCombat
+api-version: '1.21'
+description: ks-Series boss combat rules that require cross-plugin runtime integration.
+authors: [baoyu, codex]
+softdepend: [MMOItems]

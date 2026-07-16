@@ -1,0 +1,65 @@
+# ============================================
+# 批量扩展附魔：营火之心 (Campfire Heart)
+# EN: Bulk extended enchantment: Campfire Heart (营火之心)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: campfire_heart
+enabled: true
+curse: false
+max-level: 3
+rarity: dustlight
+group: defensive
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 22
+villager-trade-price-range:
+  - 8
+  - 22
+
+codex-pools:
+  dustlight: 18
+  moonlit: 6
+
+effects:
+  - trigger: EXTINGUISH
+    cooldown: 90
+    conditions:
+      - type: chance
+        value: "{level} * 10"
+    actions:
+      - type: HEAL
+        value: "{level}"
+      - type: PARTICLE
+        particle: "CAMPFIRE_COSY_SMOKE"
+        count: 5
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "block.fire.extinguish"
+        volume: "0.5"
+        pitch: "1.2"
+        at: "SELF"

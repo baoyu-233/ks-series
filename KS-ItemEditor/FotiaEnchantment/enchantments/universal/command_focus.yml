@@ -1,0 +1,67 @@
+# ============================================
+# 批量扩展附魔：指令专注 (Command Focus)
+# EN: Bulk extended enchantment: Command Focus (指令专注)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: command_focus
+enabled: true
+curse: false
+max-level: 3
+rarity: dustlight
+group: utility
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 22
+villager-trade-price-range:
+  - 8
+  - 22
+
+codex-pools:
+  dustlight: 18
+  moonlit: 6
+
+effects:
+  - trigger: RUN_COMMAND
+    cooldown: 80
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: ADD_POTION_SELF
+        potion: "LUCK"
+        duration: "{level} * 40"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "ENCHANT"
+        count: 6
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "block.enchantment_table.use"
+        volume: "0.4"
+        pitch: "1.5"
+        at: "SELF"

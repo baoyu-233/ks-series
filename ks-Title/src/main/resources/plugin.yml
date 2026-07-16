@@ -1,0 +1,26 @@
+name: ks-Title
+version: "1.0.0"
+main: org.kstitle.KsTitle
+api-version: "1.20"
+description: ks-Series 自研称号插件 — 取代 PlayerTitle：无数量上限、商店GUI、属性加成、原生动画称号、条件解锁
+softdepend: [ks-core, Vault, PlaceholderAPI]
+commands:
+  title:
+    description: 称号系统
+    aliases: [kstitle]
+    usage: |
+      /title help — 查看完整指令帮助
+      /title — 打开称号GUI（浏览/佩戴/购买）
+      /title title <add|del|list|desc|require|edit> ... — 称号定义管理（照抄PlayerTitle指令习惯）
+      /title player <add|del|set|stop|list> <玩家> [id] — 玩家持有/佩戴管理
+      /title buff <add|del|edit|list> ... — 属性加成管理
+      /title frame <add|clear|remove> ... — 动画帧管理（ks-Title 自带扩展）
+      /title web — 获取 Web 管理令牌（管理员）
+    permission: kstitle.use
+permissions:
+  kstitle.use:
+    description: 使用称号系统（打开GUI、佩戴、购买）
+    default: true
+  kstitle.admin:
+    description: 管理称号定义、发放/收回、Web管理面板
+    default: op

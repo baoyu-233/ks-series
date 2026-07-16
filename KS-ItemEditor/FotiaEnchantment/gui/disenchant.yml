@@ -1,0 +1,70 @@
+# ============================================
+# 祛魔 GUI
+# EN: Disenchant GUI
+# ============================================
+# layout 每行必须为 9 个字符，字符通过 roles 绑定到功能槽位。
+# EN: Each layout row must contain 9 characters; roles bind characters to functional slots.
+# 文本支持 MiniMessage、旧颜色码 &/§、&#RRGGBB 和 lang:语言键。
+# EN: Text supports MiniMessage, legacy &/§ color codes, &#RRGGBB, and lang: language keys.
+# items 下的物品支持 material、modeldata、tooltip-style、itemmodel、name、lore。
+# EN: Items support material, modeldata, tooltip-style, itemmodel, name, and lore.
+
+rows: 4
+title: "lang:disenchant-gui.title"
+fill-empty: true
+
+layout:
+  - "####Q##T#"
+  - "#########"
+  - "LLLLLLLLL"
+  - "##C#H#O##"
+
+roles:
+  background: "#"
+  equipment: "Q"
+  stone: "T"
+  enchantments: "L"
+  cancel: "C"
+  info: "H"
+  confirm: "O"
+
+items:
+  background:
+    material: BLACK_STAINED_GLASS_PANE
+    name: "<!i><dark_gray> "
+    lore: []
+
+  equipment:
+    material: ARMOR_STAND
+    name: "lang:disenchant-gui.place-item"
+    lore: []
+
+  stone:
+    material: AMETHYST_SHARD
+    name: "lang:disenchant-gui.place-stone"
+    lore: []
+
+  enchantment:
+    material: ENCHANTED_BOOK
+    name: "lang:disenchant-gui.enchantment-name"
+    lore:
+      - "{status_lines}"
+
+  cancel:
+    material: RED_STAINED_GLASS_PANE
+    name: "lang:disenchant-gui.cancel"
+    lore:
+      - "lang:disenchant-gui.cancel-hint"
+
+  info:
+    material: PAPER
+    name: "lang:disenchant-gui.info-title"
+    lore:
+      - "lang:disenchant-gui.success-chance"
+      - "{mode_hint}"
+
+  confirm:
+    material: LIME_STAINED_GLASS_PANE
+    name: "lang:disenchant-gui.confirm"
+    lore:
+      - "lang:disenchant-gui.confirm-hint"

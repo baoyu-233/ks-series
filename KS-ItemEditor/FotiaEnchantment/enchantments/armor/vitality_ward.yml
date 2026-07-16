@@ -1,0 +1,54 @@
+# ============================================
+# 批量扩展附魔：活力守护 (Vitality Ward)
+# EN: Bulk extended enchantment: Vitality Ward (活力守护)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: vitality_ward
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: defensive
+category: armor
+
+applicable-items:
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: TIMER_10S
+    cooldown: 200
+    conditions:
+      - type: health_below
+        value: 45
+    actions:
+      - type: HEAL
+        value: "{level} * 1.2"
+      - type: PARTICLE
+        particle: "HEART"
+        count: 5
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.player.levelup"
+        volume: "0.4"
+        pitch: "1.8"
+        at: "SELF"

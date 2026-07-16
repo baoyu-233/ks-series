@@ -1,0 +1,40 @@
+# ============================================
+# 附魔组定义
+# EN: Enchantment group definitions
+# 同组附魔在同一物品上的数量受限
+# EN: Enchantments in the same group are limited on the same item
+# max-per-item: 同一物品上该组附魔最大数量
+# EN: max-per-item: maximum number of enchantments from this group on one item
+# ============================================
+
+fire:
+  max-per-item: 2
+  description: "火焰系附魔"
+
+ice:
+  max-per-item: 2
+  description: "冰霜系附魔"
+
+lightning:
+  max-per-item: 2
+  description: "雷电系附魔"
+
+defensive:
+  max-per-item: 3
+  description: "防御系附魔"
+
+offensive:
+  max-per-item: 3
+  description: "攻击系附魔"
+
+utility:
+  max-per-item: 3
+  description: "实用系附魔"
+
+movement:
+  max-per-item: 2
+  description: "移动系附魔"
+
+mining:
+  max-per-item: 2
+  description: "采矿系附魔"

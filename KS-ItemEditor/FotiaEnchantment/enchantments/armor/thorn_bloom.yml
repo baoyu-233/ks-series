@@ -1,0 +1,51 @@
+# ============================================
+# 批量扩展附魔：荆棘绽放 (Thorn Bloom)
+# EN: Bulk extended enchantment: Thorn Bloom (荆棘绽放)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: thorn_bloom
+enabled: true
+curse: false
+max-level: 5
+rarity: aureate
+group: defensive
+category: armor
+
+applicable-items:
+  - CHESTPLATE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 6
+villager-trade-price-range:
+  - 28
+  - 64
+
+codex-pools:
+  aureate: 10
+  divine: 3
+
+effects:
+  - trigger: TAKE_ENTITY_DAMAGE
+    cooldown: 120
+    conditions:
+      - type: chance
+        value: "{level} * 7"
+    actions:
+      - type: THORNS
+        value: "{level} * 1.4"
+      - type: PARTICLE
+        particle: "HAPPY_VILLAGER"
+        count: 16
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.evoker_fangs.attack"
+        volume: "0.5"
+        pitch: "1.2"
+        at: "SELF"

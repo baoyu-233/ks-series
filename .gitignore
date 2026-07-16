@@ -1,0 +1,38 @@
+# Maven and IDE output
+**/target/
+**/.vite/
+.idea/
+.vscode/
+*.iml
+*.class
+
+# Runtime data and local server state
+test_1_21/
+backup/
+deploy_package/
+output/
+scratchpad/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+*.tmp
+*.bak
+*.bak.*
+
+# Local tooling and dependencies
+.agents/
+.claude/
+mcsm-panel/
+**/node_modules/
+
+# Credentials and local secrets
+.env
+.env.*
+*.pem
+*.key
+*token*.json
+test_token.json
+build_all.ps1

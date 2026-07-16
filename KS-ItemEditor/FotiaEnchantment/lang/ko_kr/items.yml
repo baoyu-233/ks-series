@@ -1,0 +1,51 @@
+# ============================================
+# Custom item names and descriptions (English)
+# ============================================
+
+starweave-fragment:
+  name: "<!i><yellow>Starweave Fragment"
+  lore:
+    - "<!i><gray>Collect to craft a Stellaris Codex"
+    - "<!i><gray>Required: <white>{cost}"
+    - ""
+    - "<!i><dark_gray>Obtained from killing mobs or mining"
+
+stellaris-codex:
+  name: "<!i>{rarity_color}Stellaris Codex"
+  lore:
+    - "<!i><gray>Right-click to reveal enchantment"
+    - "<!i><gray>Quality: {rarity_color}{rarity_name}"
+    - ""
+    - "<!i><dark_gray>Reveals a random enchanted book"
+
+stellaris-codex-preview:
+  name: "<!i><yellow>Random Stellaris Codex"
+  lore:
+    - "<!i><gray>Quality is rolled after crafting"
+    - "<!i><gray>Quality: <yellow>Revealed after crafting"
+    - ""
+    - "<!i><dark_gray>Preview does not show the final quality"
+
+disenchant-shard:
+  name: "<!i><green>Disenchant Shard"
+  lore:
+    - "<!i><gray>Randomly remove <white>1</white> enchantment"
+    - "<!i><gray>Success rate: <white>80%"
+    - ""
+    - "<!i><dark_gray>Right-click to use"
+
+disenchant-crystal:
+  name: "<!i><aqua>Disenchant Crystal"
+  lore:
+    - "<!i><gray>Select up to <white>3</white> enchantments to remove"
+    - "<!i><gray>Success rate: <white>90%"
+    - ""
+    - "<!i><dark_gray>Right-click to use"
+
+disenchant-gem:
+  name: "<!i><light_purple>Disenchant Gem"
+  lore:
+    - "<!i><gray>Select up to <white>5</white> enchantments to remove"
+    - "<!i><gray>Success rate: <white>100%"
+    - ""
+    - "<!i><dark_gray>Right-click to use"

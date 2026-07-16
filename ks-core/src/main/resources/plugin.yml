@@ -1,0 +1,27 @@
+name: ks-core
+version: 1.1.0
+main: org.kscore.KsCore
+api-version: '1.21'
+description: ks-Series 核心 Web 网关 — 统一路由分发、Token 鉴权、子插件管理、跨服数据中枢预留
+authors: [you]
+loadbefore: [KS-ItemEditor, ksHWP, ks-Eco]
+
+commands:
+  kscore:
+    description: ks-core 管理命令（重载配置、查看状态）
+    usage: /kscore [reload|status]
+    aliases: [ksc]
+    permission: kscore.admin
+  announce:
+    description: 查看城邦公告栏（立法动态+官方公告）
+    usage: /announce
+    aliases: [ann, announcements, bulletin, gonggao]
+    permission: kscore.web
+
+permissions:
+  kscore.admin:
+    description: 允许管理 ks-core
+    default: op
+  kscore.web:
+    description: 允许访问 ks-core Web 服务
+    default: true

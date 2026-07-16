@@ -1,0 +1,52 @@
+# ============================================
+# 批量扩展附魔：守护甲壳 (Guardian Shell)
+# EN: Bulk extended enchantment: Guardian Shell (守护甲壳)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: guardian_shell
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: defensive
+category: armor
+
+applicable-items:
+  - CHESTPLATE
+  - LEGGINGS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: TAKE_DAMAGE
+    cooldown: 80
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: DAMAGE_REDUCE
+        value: "{level} * 5"
+      - type: PARTICLE
+        particle: "ENCHANT"
+        count: 10
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "item.shield.block"
+        volume: "0.5"
+        pitch: "1.1"
+        at: "SELF"

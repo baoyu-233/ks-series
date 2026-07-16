@@ -1,0 +1,52 @@
+# ============================================
+# 批量扩展附魔：回响箭 (Echo Arrow)
+# EN: Bulk extended enchantment: Echo Arrow (回响箭)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: echo_arrow
+enabled: true
+curse: false
+max-level: 3
+rarity: dustlight
+group: utility
+category: ranged
+
+applicable-items:
+  - BOW
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 22
+villager-trade-price-range:
+  - 8
+  - 22
+
+codex-pools:
+  dustlight: 18
+  moonlit: 6
+
+effects:
+  - trigger: BOW_ATTACK
+    cooldown: 45
+    conditions:
+      - type: chance
+        value: "{level} * 11"
+      - type: target_is_living
+    actions:
+      - type: DAMAGE_ADD
+        value: "{level} * 0.7"
+      - type: PARTICLE
+        particle: "NOTE"
+        count: 8
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "block.note_block.pling"
+        volume: "0.6"
+        pitch: "1.6"
+        at: "TARGET"

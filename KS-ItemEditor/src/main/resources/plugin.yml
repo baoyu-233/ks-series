@@ -1,0 +1,35 @@
+name: KS-ItemEditor
+version: 1.5.0
+main: org.itemedit.ItemEditor
+api-version: '1.21'
+description: GUI 物品编辑器 - 名称 / Lore / 突破上限附魔 / ItemsAdder 套模型 / 武器精炼 / 网页设计器
+authors: [you]
+softdepend: [ks-core, ItemsAdder, FotiaEnchantment, MythicMobs]
+
+commands:
+  itemedit:
+    description: 管理员物品编辑器（全功能）
+    usage: /itemedit [web|reload]
+    aliases: [ie, itemeditor]
+    permission: itemedit.admin
+  refine:
+    description: 玩家武器精炼（消耗兑换券）
+    usage: /refine
+    aliases: [ref]
+    permission: itemedit.refine
+  design:
+    description: 打开网页物品设计器
+    usage: /design [load <模板码>]
+    aliases: [designer, wedit]
+    permission: itemedit.design
+
+permissions:
+  itemedit.admin:
+    description: 允许使用管理员物品编辑器
+    default: op
+  itemedit.refine:
+    description: 允许使用玩家武器精炼
+    default: true
+  itemedit.design:
+    description: 允许使用网页物品设计器
+    default: true

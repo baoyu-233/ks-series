@@ -1,0 +1,53 @@
+# ============================================
+# 批量扩展附魔：刃舞节奏 (Blade Tempo)
+# EN: Bulk extended enchantment: Blade Tempo (刃舞节奏)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: blade_tempo
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: movement
+category: melee
+
+applicable-items:
+  - SWORD
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: MELEE_ATTACK_COMBO
+    cooldown: 70
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+      - type: target_is_living
+    actions:
+      - type: SPEED_BOOST
+        value: "{level} - 1"
+        duration: "{level} * 35"
+      - type: PARTICLE
+        particle: "SWEEP_ATTACK"
+        count: 8
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.player.attack.sweep"
+        volume: "0.5"
+        pitch: "1.3"
+        at: "SELF"

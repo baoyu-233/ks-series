@@ -1,0 +1,53 @@
+# ============================================
+# 批量扩展附魔：滑翔恩典 (Glider Grace)
+# EN: Bulk extended enchantment: Glider Grace (滑翔恩典)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: glider_grace
+enabled: true
+curse: false
+max-level: 4
+rarity: radiant
+group: movement
+category: armor
+
+applicable-items:
+  - ELYTRA
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: ELYTRA_GLIDE
+    cooldown: 160
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: ADD_POTION_SELF
+        potion: "SLOW_FALLING"
+        duration: "{level} * 50"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "CLOUD"
+        count: 12
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "item.elytra.flying"
+        volume: "0.4"
+        pitch: "1.4"
+        at: "SELF"

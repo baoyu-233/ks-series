@@ -1,0 +1,884 @@
+# ============================================================
+# ks-Eco 经济核心配置文件
+# 版本: 1.1.0
+# 路径: plugins/ks-Eco/config.yml
+# ============================================================
+
+# ------------------------------------------------------------------
+# market — 市场系统配置
+# ------------------------------------------------------------------
+market:
+
+  # 玩家挂单最大数量（每人）
+  max-listings-per-player: 20
+
+  # 挂单过期时间（小时），0 = 永不过期
+  listing-expire-hours: 168
+
+  # 交易税率（比例，0.0 ~ 1.0）
+  tax-rate: 0.02
+
+  # 最低交易税（货币单位）
+  min-tax: 1.0
+
+  # 是否启用市场 GUI
+  gui-enabled: true
+
+# Internal floor valuation is used by the official low-price market sweep.
+# Players may list below this value; qualifying listings can then be acquired by the state buyer.
+market-protection:
+  enabled: true
+  internal-fallback-unit-value: 1.0
+  # Vanilla enchantments always use the middle tier. FE IDs not listed below do too.
+  fe-basic-per-level: 30.0
+  fe-mid-per-level: 60.0
+  fe-advanced-per-level: 100.0
+  fe-enchantment-tiers:
+    # Fill in real FotiaEnchantment IDs only. IDs not listed use MID.
+    # money_repair: BASIC
+  # Only used by market floor protection for materials not in official-buy.default-items.
+  # Official buy itself never reads this map.
+  internal-reference-prices:
+    STICK: 0.25
+    OAK_PLANKS: 0.5
+    SPRUCE_PLANKS: 0.5
+    BIRCH_PLANKS: 0.5
+    JUNGLE_PLANKS: 0.5
+    ACACIA_PLANKS: 0.5
+    DARK_OAK_PLANKS: 0.5
+    CHERRY_PLANKS: 0.5
+    MANGROVE_PLANKS: 0.5
+    BAMBOO_PLANKS: 0.5
+    CRIMSON_PLANKS: 0.75
+    WARPED_PLANKS: 0.75
+    CRAFTING_TABLE: 2.0
+    CHEST: 4.0
+    BARREL: 4.0
+    FURNACE: 8.0
+    BLAST_FURNACE: 65.0
+    SMOKER: 12.0
+    HOPPER: 55.0
+    DISPENSER: 12.0
+    DROPPER: 10.0
+    PISTON: 16.0
+    STICKY_PISTON: 28.0
+    OBSERVER: 18.0
+    REDSTONE_TORCH: 6.0
+    REPEATER: 18.0
+    COMPARATOR: 24.0
+    CLOCK: 130.0
+    COMPASS: 45.0
+    MAP: 12.0
+    BOOK: 8.0
+    BOOKSHELF: 26.0
+    ENCHANTING_TABLE: 410.0
+    ANVIL: 320.0
+    GRINDSTONE: 8.0
+    SMITHING_TABLE: 8.0
+    LOOM: 8.0
+    CARTOGRAPHY_TABLE: 8.0
+    BREWING_STAND: 30.0
+    CAULDRON: 70.0
+    BUCKET: 30.0
+    WATER_BUCKET: 30.0
+    LAVA_BUCKET: 30.0
+    MILK_BUCKET: 30.0
+    SHEARS: 20.0
+    FLINT_AND_STEEL: 11.0
+    FISHING_ROD: 8.0
+    BOW: 10.0
+    CROSSBOW: 18.0
+    SHIELD: 8.0
+    LEAD: 16.0
+    NAME_TAG: 50.0
+    SADDLE: 80.0
+    ELYTRA: 500.0
+    TOTEM_OF_UNDYING: 300.0
+    NETHER_STAR: 1200.0
+    BEACON: 1500.0
+    DRAGON_EGG: 5000.0
+    END_CRYSTAL: 260.0
+    BLAZE_POWDER: 9.0
+    GHAST_TEAR: 30.0
+    NETHER_WART: 8.0
+    GLOWSTONE_DUST: 4.0
+    GLOWSTONE: 16.0
+    QUARTZ_BLOCK: 48.0
+    SLIME_BLOCK: 108.0
+    HONEY_BLOCK: 32.0
+    TNT: 38.0
+    FIREWORK_ROCKET: 3.0
+    FIREWORK_STAR: 8.0
+    PAPER: 0.75
+    LEATHER_HORSE_ARMOR: 24.0
+    IRON_HORSE_ARMOR: 80.0
+    GOLDEN_HORSE_ARMOR: 200.0
+    DIAMOND_HORSE_ARMOR: 600.0
+    IRON_NUGGET: 1.1
+    GOLD_NUGGET: 2.8
+    NETHERITE_INGOT: 900.0
+    DIAMOND_BLOCK: 900.0
+    EMERALD_BLOCK: 720.0
+    IRON_BLOCK: 90.0
+    GOLD_BLOCK: 225.0
+    COPPER_BLOCK: 72.0
+    LAPIS_BLOCK: 36.0
+    REDSTONE_BLOCK: 45.0
+    COAL_BLOCK: 27.0
+    RAW_IRON_BLOCK: 27.0
+    RAW_GOLD_BLOCK: 72.0
+    RAW_COPPER_BLOCK: 18.0
+    WHITE_BED: 8.0
+    TORCH: 1.0
+    LANTERN: 12.0
+    SOUL_LANTERN: 15.0
+    ITEM_FRAME: 11.0
+    GLOW_ITEM_FRAME: 20.0
+    PAINTING: 9.0
+    ARMOR_STAND: 8.0
+    MINECART: 50.0
+    CHEST_MINECART: 54.0
+    HOPPER_MINECART: 105.0
+    BOAT: 3.0
+    OAK_SIGN: 3.0
+    WHITE_DYE: 3.0
+    BLACK_DYE: 4.0
+    GLASS_BOTTLE: 1.0
+    EXPERIENCE_BOTTLE: 25.0
+    POTION: 20.0
+    SPLASH_POTION: 25.0
+    LINGERING_POTION: 35.0
+    # Building materials and natural blocks. These are internal market floors only.
+    GRASS_BLOCK: 1.0
+    PODZOL: 1.5
+    MYCELIUM: 2.0
+    ROOTED_DIRT: 1.2
+    COARSE_DIRT: 1.0
+    MUD: 1.2
+    MUDDY_MANGROVE_ROOTS: 1.5
+    MOSS_BLOCK: 1.5
+    MOSS_CARPET: 0.4
+    CALCITE: 1.5
+    TUFF: 1.2
+    TUFF_BRICKS: 1.8
+    POLISHED_TUFF: 1.5
+    DEEPSLATE: 1.1
+    COBBLED_DEEPSLATE: 1.1
+    POLISHED_DEEPSLATE: 1.4
+    DEEPSLATE_BRICKS: 1.6
+    DEEPSLATE_TILES: 1.8
+    BLACKSTONE: 1.3
+    POLISHED_BLACKSTONE: 1.6
+    POLISHED_BLACKSTONE_BRICKS: 1.8
+    BASALT: 1.4
+    SMOOTH_BASALT: 1.8
+    SOUL_SAND: 2.0
+    SOUL_SOIL: 2.0
+    MAGMA_BLOCK: 16.0
+    CRYING_OBSIDIAN: 18.0
+    GILDED_BLACKSTONE: 8.0
+    PRISMARINE: 5.0
+    PRISMARINE_BRICKS: 6.0
+    DARK_PRISMARINE: 7.0
+    SEA_LANTERN: 22.0
+    SPONGE: 40.0
+    WET_SPONGE: 40.0
+    DRIPSTONE_BLOCK: 1.5
+    POINTED_DRIPSTONE: 1.5
+    AMETHYST_BLOCK: 60.0
+    BUDDING_AMETHYST: 100.0
+    SMALL_AMETHYST_BUD: 4.0
+    MEDIUM_AMETHYST_BUD: 8.0
+    LARGE_AMETHYST_BUD: 12.0
+    AMETHYST_CLUSTER: 18.0
+    SCULK: 3.0
+    SCULK_CATALYST: 100.0
+    SCULK_SHRIEKER: 30.0
+    SCULK_SENSOR: 28.0
+    CALIBRATED_SCULK_SENSOR: 35.0
+    OCHRE_FROGLIGHT: 50.0
+    VERDANT_FROGLIGHT: 50.0
+    PEARLESCENT_FROGLIGHT: 50.0
+    END_ROD: 10.0
+    PURPUR_BLOCK: 12.0
+    PURPUR_PILLAR: 14.0
+    CHORUS_FLOWER: 16.0
+    CHORUS_PLANT: 6.0
+    # Ores and mineral blocks which are not official buy entries themselves.
+    COAL_ORE: 3.0
+    DEEPSLATE_COAL_ORE: 3.0
+    COPPER_ORE: 2.0
+    DEEPSLATE_COPPER_ORE: 2.0
+    IRON_ORE: 3.0
+    DEEPSLATE_IRON_ORE: 3.0
+    GOLD_ORE: 8.0
+    DEEPSLATE_GOLD_ORE: 8.0
+    REDSTONE_ORE: 5.0
+    DEEPSLATE_REDSTONE_ORE: 5.0
+    LAPIS_ORE: 4.0
+    DEEPSLATE_LAPIS_ORE: 4.0
+    DIAMOND_ORE: 100.0
+    DEEPSLATE_DIAMOND_ORE: 100.0
+    EMERALD_ORE: 80.0
+    DEEPSLATE_EMERALD_ORE: 80.0
+    NETHER_GOLD_ORE: 6.0
+    NETHER_QUARTZ_ORE: 12.0
+    # Wood derivatives, foliage, plants and renewable materials.
+    OAK_WOOD: 2.0
+    SPRUCE_WOOD: 2.0
+    BIRCH_WOOD: 2.0
+    JUNGLE_WOOD: 2.0
+    ACACIA_WOOD: 2.0
+    DARK_OAK_WOOD: 2.0
+    CHERRY_WOOD: 2.0
+    MANGROVE_WOOD: 2.0
+    CRIMSON_HYPHAE: 3.0
+    WARPED_HYPHAE: 3.0
+    STRIPPED_OAK_LOG: 2.0
+    STRIPPED_SPRUCE_LOG: 2.0
+    STRIPPED_BIRCH_LOG: 2.0
+    STRIPPED_JUNGLE_LOG: 2.0
+    STRIPPED_ACACIA_LOG: 2.0
+    STRIPPED_DARK_OAK_LOG: 2.0
+    STRIPPED_CHERRY_LOG: 2.0
+    STRIPPED_MANGROVE_LOG: 2.0
+    STRIPPED_CRIMSON_STEM: 3.0
+    STRIPPED_WARPED_STEM: 3.0
+    OAK_SAPLING: 1.0
+    SPRUCE_SAPLING: 1.0
+    BIRCH_SAPLING: 1.0
+    JUNGLE_SAPLING: 1.0
+    ACACIA_SAPLING: 1.0
+    DARK_OAK_SAPLING: 1.0
+    CHERRY_SAPLING: 2.0
+    MANGROVE_PROPAGULE: 2.0
+    AZALEA: 2.0
+    FLOWERING_AZALEA: 3.0
+    AZALEA_LEAVES: 1.0
+    FLOWERING_AZALEA_LEAVES: 1.5
+    VINE: 1.0
+    GLOW_LICHEN: 1.0
+    LILY_PAD: 2.0
+    SMALL_DRIPLEAF: 2.0
+    BIG_DRIPLEAF: 3.0
+    SPORE_BLOSSOM: 8.0
+    HANGING_ROOTS: 1.0
+    NETHER_SPROUTS: 1.0
+    CRIMSON_FUNGUS: 3.0
+    WARPED_FUNGUS: 3.0
+    CRIMSON_ROOTS: 1.0
+    WARPED_ROOTS: 1.0
+    WEEPING_VINES: 1.0
+    TWISTING_VINES: 1.0
+    # Dyes, wool, colored construction blocks and glass variants.
+    WHITE_DYE: 3.0
+    ORANGE_DYE: 3.5
+    MAGENTA_DYE: 4.0
+    LIGHT_BLUE_DYE: 3.5
+    YELLOW_DYE: 3.0
+    LIME_DYE: 3.5
+    PINK_DYE: 3.5
+    GRAY_DYE: 3.5
+    LIGHT_GRAY_DYE: 3.5
+    CYAN_DYE: 4.0
+    PURPLE_DYE: 4.0
+    BLUE_DYE: 4.0
+    BROWN_DYE: 3.0
+    GREEN_DYE: 4.0
+    RED_DYE: 3.0
+    BLACK_DYE: 4.0
+    ORANGE_WOOL: 3.5
+    MAGENTA_WOOL: 4.0
+    LIGHT_BLUE_WOOL: 3.5
+    YELLOW_WOOL: 3.0
+    LIME_WOOL: 3.5
+    PINK_WOOL: 3.5
+    GRAY_WOOL: 3.5
+    LIGHT_GRAY_WOOL: 3.5
+    CYAN_WOOL: 4.0
+    PURPLE_WOOL: 4.0
+    BLUE_WOOL: 4.0
+    BROWN_WOOL: 3.0
+    GREEN_WOOL: 4.0
+    RED_WOOL: 3.0
+    BLACK_WOOL: 4.0
+    WHITE_CARPET: 1.0
+    ORANGE_CARPET: 1.0
+    MAGENTA_CARPET: 1.0
+    LIGHT_BLUE_CARPET: 1.0
+    YELLOW_CARPET: 1.0
+    LIME_CARPET: 1.0
+    PINK_CARPET: 1.0
+    GRAY_CARPET: 1.0
+    LIGHT_GRAY_CARPET: 1.0
+    CYAN_CARPET: 1.0
+    PURPLE_CARPET: 1.0
+    BLUE_CARPET: 1.0
+    BROWN_CARPET: 1.0
+    GREEN_CARPET: 1.0
+    RED_CARPET: 1.0
+    BLACK_CARPET: 1.0
+    WHITE_CONCRETE: 5.0
+    ORANGE_CONCRETE: 5.5
+    MAGENTA_CONCRETE: 6.0
+    LIGHT_BLUE_CONCRETE: 5.5
+    YELLOW_CONCRETE: 5.0
+    LIME_CONCRETE: 5.5
+    PINK_CONCRETE: 5.5
+    GRAY_CONCRETE: 5.5
+    LIGHT_GRAY_CONCRETE: 5.5
+    CYAN_CONCRETE: 6.0
+    PURPLE_CONCRETE: 6.0
+    BLUE_CONCRETE: 6.0
+    BROWN_CONCRETE: 5.0
+    GREEN_CONCRETE: 6.0
+    RED_CONCRETE: 5.0
+    BLACK_CONCRETE: 6.0
+    WHITE_TERRACOTTA: 4.0
+    ORANGE_TERRACOTTA: 4.5
+    MAGENTA_TERRACOTTA: 5.0
+    LIGHT_BLUE_TERRACOTTA: 4.5
+    YELLOW_TERRACOTTA: 4.0
+    LIME_TERRACOTTA: 4.5
+    PINK_TERRACOTTA: 4.5
+    GRAY_TERRACOTTA: 4.5
+    LIGHT_GRAY_TERRACOTTA: 4.5
+    CYAN_TERRACOTTA: 5.0
+    PURPLE_TERRACOTTA: 5.0
+    BLUE_TERRACOTTA: 5.0
+    BROWN_TERRACOTTA: 4.0
+    GREEN_TERRACOTTA: 5.0
+    RED_TERRACOTTA: 4.0
+    BLACK_TERRACOTTA: 5.0
+    WHITE_STAINED_GLASS: 4.0
+    ORANGE_STAINED_GLASS: 4.5
+    MAGENTA_STAINED_GLASS: 5.0
+    LIGHT_BLUE_STAINED_GLASS: 4.5
+    YELLOW_STAINED_GLASS: 4.0
+    LIME_STAINED_GLASS: 4.5
+    PINK_STAINED_GLASS: 4.5
+    GRAY_STAINED_GLASS: 4.5
+    LIGHT_GRAY_STAINED_GLASS: 4.5
+    CYAN_STAINED_GLASS: 5.0
+    PURPLE_STAINED_GLASS: 5.0
+    BLUE_STAINED_GLASS: 5.0
+    BROWN_STAINED_GLASS: 4.0
+    GREEN_STAINED_GLASS: 5.0
+    RED_STAINED_GLASS: 4.0
+    BLACK_STAINED_GLASS: 5.0
+    # Redstone, rails, storage, transport and utility blocks.
+    REDSTONE_LAMP: 14.0
+    DAYLIGHT_DETECTOR: 24.0
+    TARGET: 18.0
+    NOTE_BLOCK: 6.0
+    JUKEBOX: 110.0
+    LECTERN: 12.0
+    CHISELED_BOOKSHELF: 14.0
+    BEE_NEST: 20.0
+    BEEHIVE: 30.0
+    BELL: 90.0
+    CONDUIT: 420.0
+    LODESTONE: 210.0
+    RESPAWN_ANCHOR: 65.0
+    LIGHTNING_ROD: 20.0
+    COPPER_BULB: 12.0
+    TRIAL_SPAWNER: 500.0
+    VAULT: 500.0
+    RAIL: 2.0
+    POWERED_RAIL: 10.0
+    DETECTOR_RAIL: 10.0
+    ACTIVATOR_RAIL: 8.0
+    OAK_BOAT: 3.0
+    SPRUCE_BOAT: 3.0
+    BIRCH_BOAT: 3.0
+    JUNGLE_BOAT: 3.0
+    ACACIA_BOAT: 3.0
+    DARK_OAK_BOAT: 3.0
+    CHERRY_BOAT: 3.0
+    MANGROVE_BOAT: 3.0
+    BAMBOO_RAFT: 3.0
+    OAK_CHEST_BOAT: 7.0
+    SPRUCE_CHEST_BOAT: 7.0
+    BIRCH_CHEST_BOAT: 7.0
+    JUNGLE_CHEST_BOAT: 7.0
+    ACACIA_CHEST_BOAT: 7.0
+    DARK_OAK_CHEST_BOAT: 7.0
+    CHERRY_CHEST_BOAT: 7.0
+    MANGROVE_CHEST_BOAT: 7.0
+    BAMBOO_CHEST_RAFT: 7.0
+    # Combat, exploration and rare loot.
+    TRIDENT: 180.0
+    MACE: 450.0
+    HEAVY_CORE: 350.0
+    BREEZE_ROD: 60.0
+    WIND_CHARGE: 8.0
+    ECHO_SHARD: 120.0
+    RECOVERY_COMPASS: 180.0
+    GOAT_HORN: 50.0
+    TURTLE_HELMET: 80.0
+    TURTLE_SCUTE: 20.0
+    ARMADILLO_SCUTE: 20.0
+    WOLF_ARMOR: 160.0
+    NAUTILUS_SHELL: 35.0
+    HEART_OF_THE_SEA: 400.0
+    WITHER_ROSE: 45.0
+    DRAGON_BREATH: 35.0
+    ENDER_EYE: 30.0
+    BREEZE_SPAWN_EGG: 500.0
+    ALLAY_SPAWN_EGG: 800.0
+    # Templates, discs and non-renewable progression resources.
+    NETHERITE_UPGRADE_SMITHING_TEMPLATE: 350.0
+    SENTRY_ARMOR_TRIM_SMITHING_TEMPLATE: 120.0
+    DUNE_ARMOR_TRIM_SMITHING_TEMPLATE: 120.0
+    COAST_ARMOR_TRIM_SMITHING_TEMPLATE: 120.0
+    WILD_ARMOR_TRIM_SMITHING_TEMPLATE: 120.0
+    TIDE_ARMOR_TRIM_SMITHING_TEMPLATE: 160.0
+    WARD_ARMOR_TRIM_SMITHING_TEMPLATE: 160.0
+    VEX_ARMOR_TRIM_SMITHING_TEMPLATE: 160.0
+    RIB_ARMOR_TRIM_SMITHING_TEMPLATE: 180.0
+    SNOUT_ARMOR_TRIM_SMITHING_TEMPLATE: 180.0
+    EYE_ARMOR_TRIM_SMITHING_TEMPLATE: 220.0
+    SPIRE_ARMOR_TRIM_SMITHING_TEMPLATE: 260.0
+    WAYFINDER_ARMOR_TRIM_SMITHING_TEMPLATE: 160.0
+    RAISER_ARMOR_TRIM_SMITHING_TEMPLATE: 160.0
+    SHAPER_ARMOR_TRIM_SMITHING_TEMPLATE: 160.0
+    HOST_ARMOR_TRIM_SMITHING_TEMPLATE: 160.0
+    FLOW_ARMOR_TRIM_SMITHING_TEMPLATE: 180.0
+    BOLT_ARMOR_TRIM_SMITHING_TEMPLATE: 180.0
+    MUSIC_DISC_13: 60.0
+    MUSIC_DISC_CAT: 80.0
+    MUSIC_DISC_BLOCKS: 100.0
+    MUSIC_DISC_CHIRP: 100.0
+    MUSIC_DISC_FAR: 100.0
+    MUSIC_DISC_MALL: 100.0
+    MUSIC_DISC_MELLOHI: 100.0
+    MUSIC_DISC_STAL: 100.0
+    MUSIC_DISC_STRAD: 100.0
+    MUSIC_DISC_WARD: 140.0
+    MUSIC_DISC_11: 140.0
+    MUSIC_DISC_WAIT: 120.0
+    MUSIC_DISC_OTHERSIDE: 180.0
+    MUSIC_DISC_RELIC: 220.0
+    MUSIC_DISC_5: 200.0
+    MUSIC_DISC_PIGSTEP: 260.0
+    DISC_FRAGMENT_5: 25.0
+    # Foods and animal products not bought directly by the state.
+    BEEF: 6.0
+    PORKCHOP: 5.0
+    CHICKEN: 4.0
+    MUTTON: 4.5
+    RABBIT: 3.5
+    COD: 4.0
+    SALMON: 5.0
+    TROPICAL_FISH: 6.0
+    PUFFERFISH: 8.0
+    COOKED_COD: 8.0
+    COOKED_SALMON: 10.0
+    CAKE: 35.0
+    COOKIE: 1.5
+    PUMPKIN_PIE: 8.0
+    RABBIT_STEW: 20.0
+    MUSHROOM_STEW: 10.0
+    BEETROOT_SOUP: 8.0
+    SUSPICIOUS_STEW: 25.0
+    GOLDEN_CARROT: 35.0
+    GLISTERING_MELON_SLICE: 30.0
+    # Shulker boxes are valued from their contents plus empty-box-value by code.
+    SHULKER_BOX: 55.0
+    WHITE_SHULKER_BOX: 55.0
+    ORANGE_SHULKER_BOX: 55.0
+    MAGENTA_SHULKER_BOX: 55.0
+    LIGHT_BLUE_SHULKER_BOX: 55.0
+    YELLOW_SHULKER_BOX: 55.0
+    LIME_SHULKER_BOX: 55.0
+    PINK_SHULKER_BOX: 55.0
+    GRAY_SHULKER_BOX: 55.0
+    LIGHT_GRAY_SHULKER_BOX: 55.0
+    CYAN_SHULKER_BOX: 55.0
+    PURPLE_SHULKER_BOX: 55.0
+    BLUE_SHULKER_BOX: 55.0
+    BROWN_SHULKER_BOX: 55.0
+    GREEN_SHULKER_BOX: 55.0
+    RED_SHULKER_BOX: 55.0
+    BLACK_SHULKER_BOX: 55.0
+
+# The state buyer only purchases already-listed items below its calculated floor.
+official-market-sweep:
+  enabled: true
+  interval-seconds: 90
+  sample-size: 8
+
+# ------------------------------------------------------------------
+# official-buy — 官方收购配置（可量产物品）
+# ------------------------------------------------------------------
+# 官方只收购、不直售。收购价 = basePrice × (1 + totalOffset)，
+# totalOffset 由 price-volatility 一节的算法算出，见下方说明。
+# ------------------------------------------------------------------
+official-buy:
+
+  enabled: true
+
+  # 旧版波动幅度配置，已被 price-volatility.max-fluctuation 取代，保留字段避免报错
+  price-fluctuation: 0.3
+
+  # 价格刷新间隔（分钟）：每隔这么久重算一次波动漂移 + 超卖折扣
+  price-refresh-minutes: 60
+
+  # ============================================================
+  # 官方收购物品价格表（可量产：矿物、作物、掉落物、原木等）
+  # 基准价基于: 获取难度 × 用途价值 × 市场供需
+  # ============================================================
+  default-items:
+
+    # ---- 贵金属与宝石 (Tier 1: 高价值) ----
+    - material: DIAMOND
+      base-price: 100.0
+    - material: EMERALD
+      base-price: 80.0
+    - material: NETHERITE_SCRAP
+      base-price: 200.0
+    - material: ANCIENT_DEBRIS
+      base-price: 180.0
+
+    # ---- 冶炼金属 (Tier 2: 中高价值) ----
+    - material: GOLD_INGOT
+      base-price: 25.0
+    - material: IRON_INGOT
+      base-price: 10.0
+    - material: NETHER_QUARTZ
+      base-price: 12.0
+    - material: AMETHYST_SHARD
+      base-price: 15.0
+    - material: COPPER_INGOT
+      base-price: 8.0
+    - material: LAPIS_LAZULI
+      base-price: 4.0
+
+    # ---- 矿物原矿 (Tier 3: 原材料) ----
+    - material: RAW_GOLD
+      base-price: 8.0
+    - material: RAW_IRON
+      base-price: 3.0
+    - material: RAW_COPPER
+      base-price: 2.0
+    - material: COAL
+      base-price: 3.0
+    - material: REDSTONE
+      base-price: 5.0
+    - material: FLINT
+      base-price: 1.0
+
+    # ---- 粮食作物 (Tier 4: 农作物) ----
+    - material: WHEAT
+      base-price: 2.0
+    - material: CARROT
+      base-price: 3.0
+    - material: POTATO
+      base-price: 3.0
+    - material: BEETROOT
+      base-price: 2.0
+    - material: BREAD
+      base-price: 4.0
+    - material: SUGAR_CANE
+      base-price: 2.0
+    - material: BAMBOO
+      base-price: 1.0
+    - material: CACTUS
+      base-price: 3.0
+    - material: KELP
+      base-price: 1.0
+    - material: SEA_PICKLE
+      base-price: 5.0
+
+    # ---- 水果与特产 (Tier 5: 采集品) ----
+    - material: APPLE
+      base-price: 5.0
+    - material: GOLDEN_APPLE
+      base-price: 30.0
+    - material: MELON_SLICE
+      base-price: 1.0
+    - material: PUMPKIN
+      base-price: 4.0
+    - material: SWEET_BERRIES
+      base-price: 2.0
+    - material: GLOW_BERRIES
+      base-price: 6.0
+    - material: CHORUS_FRUIT
+      base-price: 8.0
+    - material: COCOA_BEANS
+      base-price: 5.0
+    - material: BROWN_MUSHROOM
+      base-price: 2.0
+    - material: RED_MUSHROOM
+      base-price: 2.0
+
+    # ---- 熟食肉类 (Tier 6: 烹饪品) ----
+    - material: COOKED_BEEF
+      base-price: 12.0
+    - material: COOKED_PORKCHOP
+      base-price: 10.0
+    - material: COOKED_CHICKEN
+      base-price: 8.0
+    - material: COOKED_MUTTON
+      base-price: 9.0
+    - material: COOKED_RABBIT
+      base-price: 7.0
+    - material: COOKED_COD
+      base-price: 8.0
+    - material: COOKED_SALMON
+      base-price: 10.0
+
+    # ---- 怪物掉落 (Tier 7: 战利品) ----
+    - material: ROTTEN_FLESH
+      base-price: 1.0
+    - material: BONE
+      base-price: 3.0
+    - material: STRING
+      base-price: 4.0
+    - material: SPIDER_EYE
+      base-price: 5.0
+    - material: GUNPOWDER
+      base-price: 8.0
+    - material: ENDER_PEARL
+      base-price: 15.0
+    - material: SLIME_BALL
+      base-price: 12.0
+    - material: BLAZE_ROD
+      base-price: 18.0
+    - material: GHAST_TEAR
+      base-price: 30.0
+    - material: MAGMA_CREAM
+      base-price: 15.0
+    - material: PHANTOM_MEMBRANE
+      base-price: 20.0
+    - material: SHULKER_SHELL
+      base-price: 50.0
+    - material: WITHER_SKELETON_SKULL
+      base-price: 100.0
+    - material: LEATHER
+      base-price: 3.0
+    - material: FEATHER
+      base-price: 2.0
+    - material: RABBIT_HIDE
+      base-price: 2.0
+    - material: ARROW
+      base-price: 2.0
+    - material: EGG
+      base-price: 1.0
+
+    # ---- 原木与木材 (Tier 8: 林业资源) ----
+    - material: OAK_LOG
+      base-price: 2.0
+    - material: SPRUCE_LOG
+      base-price: 2.0
+    - material: BIRCH_LOG
+      base-price: 2.0
+    - material: JUNGLE_LOG
+      base-price: 2.0
+    - material: ACACIA_LOG
+      base-price: 2.0
+    - material: DARK_OAK_LOG
+      base-price: 2.0
+    - material: CHERRY_LOG
+      base-price: 2.0
+    - material: MANGROVE_LOG
+      base-price: 2.0
+    - material: CRIMSON_STEM
+      base-price: 3.0
+    - material: WARPED_STEM
+      base-price: 3.0
+
+    # ---- 基础建材 (Tier 9: 建筑原料) ----
+    - material: STONE
+      base-price: 1.0
+    - material: COBBLESTONE
+      base-price: 1.0
+    - material: DIRT
+      base-price: 1.0
+    - material: SAND
+      base-price: 1.0
+    - material: GRAVEL
+      base-price: 1.0
+    - material: CLAY
+      base-price: 2.0
+    - material: GLASS
+      base-price: 3.0
+    - material: TERRACOTTA
+      base-price: 3.0
+    - material: OBSIDIAN
+      base-price: 10.0
+    - material: NETHERRACK
+      base-price: 1.0
+    - material: END_STONE
+      base-price: 5.0
+    - material: SNOWBALL
+      base-price: 1.0
+    - material: ICE
+      base-price: 2.0
+    - material: PACKED_ICE
+      base-price: 5.0
+    - material: BLUE_ICE
+      base-price: 15.0
+
+    # ---- 染料与装饰 (Tier 10: 装饰材料) ----
+    - material: WHITE_WOOL
+      base-price: 3.0
+    - material: INK_SAC
+      base-price: 4.0
+    - material: GLOW_INK_SAC
+      base-price: 8.0
+    - material: HONEYCOMB
+      base-price: 6.0
+    - material: HONEY_BOTTLE
+      base-price: 8.0
+
+# ------------------------------------------------------------------
+# price-volatility — 市场波动模拟（仅作为数据库无记录时的启动默认值，
+# 运行时以 web 管理端/数据库为准，改这里的值需要重启或等 web 端覆盖）
+# ------------------------------------------------------------------
+# 收购价 = basePrice × (1 + totalOffset)
+# totalOffset = clamp(driftValue × maxFluctuation − supplyPressure × maxFluctuation, ±maxFluctuation)
+#   - supplyPressure：由玩家真实卖给官方的成交量算出的"近期供需压力"（∈[-1,1]，双向：
+#     近期卖得比历史基线多=供过于求=打折；卖得比基线少=供不应求=加价，
+#     滑动时间窗口内的旧记录会自然"消退"，不需要人工衰减）
+#   - driftValue：均值回归的随机游走（∈[-1,1]），模拟"市场自己在波动"；管理员可以给某个物品
+#     设置 trend-bias 做"大手导向"，driftValue 会逐渐被拉向目标值而不是瞬间跳变
+# ------------------------------------------------------------------
+price-volatility:
+
+  # 总开关：关闭后 driftValue 立即清零冻结，价格只受真实超卖影响，不再自动波动
+  enabled: true
+
+  # 波动率上限（±比例，如 0.3 = ±30%），web 管理端可实时覆盖
+  max-fluctuation: 0.3
+
+  # 每次刷新的随机扰动幅度（标准差）
+  step-std-dev: 0.03
+
+  # 大手导向的牵引速度：越大，管理员设置的 trend-bias 生效越快（也越容易被玩家看出是人为的）
+  pull-strength: 0.15
+
+  # 无导向时 driftValue 自然回归 0 的速度
+  natural-reversion-rate: 0.05
+
+  # 超卖压力统计的滑动时间窗口（小时）：窗口外的卖出记录不再计入压力
+  oversupply-window-hours: 24
+
+  # 计算"该物品历史正常卖出量"的回看天数（自动校准基线，无需给每个物品单独配置）
+  baseline-lookback-days: 14
+
+  # 全新物品/冷门物品没有历史成交时的兜底基线量，避免第一笔交易就打到最深折扣
+  default-baseline-qty: 64
+
+  # 游戏内波动报告的发布间隔（小时）
+  report-interval-hours: 6
+
+  # 波动报告里列出涨跌幅最大的几个物品
+  report-top-n: 5
+
+# ------------------------------------------------------------------
+# shulker-box — 潜影盒深度解析配置
+# ------------------------------------------------------------------
+shulker-box:
+
+  # 最大递归深度（防止恶意嵌套导致性能问题）
+  max-recursion-depth: 3
+
+  # 是否将潜影盒内物品计入交易总价
+  count-contents: true
+
+  # 空潜影盒基础价值
+  # Used only by market-floor valuation. The official buyer pays only for accepted contents.
+  empty-box-value: 55.0
+
+# ------------------------------------------------------------------
+# storage — 暂存箱配置
+# ------------------------------------------------------------------
+storage:
+
+  # 每个玩家暂存箱最大容量（格数）
+  max-slots: 54
+
+  # 物品暂存最大天数（0 = 永久）
+  max-days: 30
+
+# Player item delivery under /trade send. All values can also be changed from the admin web panel.
+transport:
+  enabled: true
+  # Same-world deliveries within this distance are free.
+  free-distance: 8.0
+  base-fee: 10.0
+  per-block-fee: 0.05
+  cross-world-surcharge: 500.0
+  minimum-fee: 1.0
+  # 0 means no upper fee cap.
+  maximum-fee: 0.0
+
+# Player money transfers. Tax is charged only on the portion above tax-free-amount.
+# The recipient always receives the full transfer amount; the sender pays tax in addition.
+transfer:
+  tax-free-amount: 1000.0
+  # Used only when ks-Eco-tax is unavailable. With the tax module loaded, PLAYER_TRANSFER controls the rate.
+  tax-rate-fallback: 0.01
+
+# Server-authoritative pricing and bounds for plots purchased inside dungeon instances.
+realestate:
+  instance-plot-price-per-block: 100.0
+  instance-plot-min-price: 1000.0
+  instance-plot-max-area: 65536
+  instance-plot-max-radius: 256
+
+# Enterprise levels are set explicitly by administrators. Other systems read
+# level and modifiers through EnterpriseLevelManager as the single authority.
+enterprise-levels:
+  max-level: 10
+  land-perk-multipliers:
+    1: 1.00
+    2: 1.05
+    3: 1.10
+    4: 1.15
+    5: 1.20
+    6: 1.26
+    7: 1.32
+    8: 1.38
+    9: 1.44
+    10: 1.50
+
+# ------------------------------------------------------------------
+# extra-modules — 子模块加载配置
+# ------------------------------------------------------------------
+extra-modules:
+
+  # 是否启用 extra 模块加载
+  enabled: true
+
+  # extra 模块目录（相对于 plugins/ks-Eco/）
+  directory: "extra"
+
+  # 已启用的模块列表（留空 = 加载 extra/ 下全部 JAR）
+  # 注意：模块 ID 必须全小写（代码中 JAR 文件名 strip 版本号后 toLowerCase 匹配）
+  enabled-modules: []
+
+# ------------------------------------------------------------------
+# player-features — 玩家功能开放控制（逐步开放经济插件用）
+# ------------------------------------------------------------------
+# 控制每个功能是否对普通玩家开放（指令/游戏内GUI图标/网页Tab/网页API 全部受控）。
+# 拥有 kseco.admin 权限的玩家不受此限制。
+# 暂存箱(storage)、纳税记录查询不在此名单中，始终对玩家开放，不受此处影响。
+# 推荐通过网页管理后台「功能开放」面板勾选，立即生效；也可直接改这里后 /kseco-admin reload。
+player-features:
+  market: true
+  bank: true
+  transfer: true
+  enterprise: true
+  bidding: true
+  trade: true
+  exchange: true
+  realestate: true
+  dungeon: true
+  politic: true
+  blindbox: true
+  ent_blindbox: true
+  limited_sale: true
+  compensation: true
+  invites: true

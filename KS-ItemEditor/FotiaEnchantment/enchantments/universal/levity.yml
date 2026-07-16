@@ -1,0 +1,67 @@
+# ============================================
+# 批量扩展附魔：轻盈 (Levity)
+# EN: Bulk extended enchantment: Levity (轻盈)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: levity
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: movement
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: JUMP
+    cooldown: 80
+    conditions:
+      - type: chance
+        value: "{level} * 9"
+    actions:
+      - type: ADD_POTION_SELF
+        potion: "JUMP_BOOST"
+        duration: "{level} * 35"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "CLOUD"
+        count: 8
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.rabbit.jump"
+        volume: "0.5"
+        pitch: "1.6"
+        at: "SELF"

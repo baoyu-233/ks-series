@@ -1,0 +1,55 @@
+# ============================================
+# 批量扩展附魔：雷霆鞭击 (Thunder Lash)
+# EN: Bulk extended enchantment: Thunder Lash (雷霆鞭击)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: thunder_lash
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: lightning
+category: melee
+
+applicable-items:
+  - SWORD
+  - AXE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: MELEE_ATTACK
+    cooldown: 90
+    conditions:
+      - type: chance
+        value: "{level} * 6"
+      - type: target_is_living
+    actions:
+      - type: LIGHTNING
+        damage: "{level}"
+      - type: DAMAGE_ADD
+        value: "{level}"
+      - type: PARTICLE
+        particle: "ELECTRIC_SPARK"
+        count: 20
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.lightning_bolt.thunder"
+        volume: "0.5"
+        pitch: "1.5"
+        at: "TARGET"

@@ -1,0 +1,52 @@
+# ============================================
+# 批量扩展附魔：反击火花 (Riposte Spark)
+# EN: Bulk extended enchantment: Riposte Spark (反击火花)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: riposte_spark
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: defensive
+category: melee
+
+applicable-items:
+  - SWORD
+  - SHIELD
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: SHIELD_BLOCK
+    cooldown: 80
+    conditions:
+      - type: chance
+        value: "{level} * 9"
+    actions:
+      - type: THORNS
+        value: "{level} * 1.2"
+      - type: PARTICLE
+        particle: "ELECTRIC_SPARK"
+        count: 14
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "item.shield.block"
+        volume: "0.8"
+        pitch: "1.2"
+        at: "SELF"

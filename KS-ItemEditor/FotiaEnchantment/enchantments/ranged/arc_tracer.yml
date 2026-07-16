@@ -1,0 +1,53 @@
+# ============================================
+# 批量扩展附魔：电弧追踪 (Arc Tracer)
+# EN: Bulk extended enchantment: Arc Tracer (电弧追踪)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: arc_tracer
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: lightning
+category: ranged
+
+applicable-items:
+  - BOW
+  - CROSSBOW
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: PROJECTILE_HIT_ENTITY
+    cooldown: 95
+    conditions:
+      - type: chance
+        value: "{level} * 7"
+      - type: target_is_living
+    actions:
+      - type: LIGHTNING
+        damage: "{level} * 0.7"
+      - type: PARTICLE
+        particle: "ELECTRIC_SPARK"
+        count: 20
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "block.beacon.power_select"
+        volume: "0.5"
+        pitch: "1.8"
+        at: "TARGET"

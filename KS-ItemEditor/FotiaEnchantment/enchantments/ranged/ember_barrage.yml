@@ -1,0 +1,54 @@
+# ============================================
+# 批量扩展附魔：燃烬齐射 (Ember Barrage)
+# EN: Bulk extended enchantment: Ember Barrage (燃烬齐射)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: ember_barrage
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: fire
+category: ranged
+
+applicable-items:
+  - CROSSBOW
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: CROSSBOW_ATTACK
+    cooldown: 90
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+      - type: target_is_living
+    actions:
+      - type: DAMAGE_MULTIPLY
+        value: "1 + {level} * 0.07"
+      - type: IGNITE_TARGET
+        duration: "{level} * 20"
+      - type: PARTICLE
+        particle: "FLAME"
+        count: 18
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "item.crossbow.hit"
+        volume: "0.7"
+        pitch: "1.2"
+        at: "TARGET"

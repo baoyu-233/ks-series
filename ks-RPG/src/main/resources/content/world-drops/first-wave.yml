@@ -1,0 +1,21 @@
+frostwaste_whelp:
+  scoreboard-tag: KS_Frostwaste_Whelp
+  drops:
+    - type: MATERIAL
+      id: KS_FIELD_SCRAP
+      chance: 1.0
+      minimum: 4
+      maximum: 6
+    - type: MATERIAL
+      id: KS_FROST_SCALE
+      chance: 0.70
+      minimum: 2
+      maximum: 4
+    - type: MATERIAL
+      id: KS_WHELP_CORE
+      chance: 0.18
+      amount: 1
+    - type: MISCELLANEOUS
+      id: KS_FIELD_ARMAMENT_CACHE
+      chance: 0.015
+      amount: 1

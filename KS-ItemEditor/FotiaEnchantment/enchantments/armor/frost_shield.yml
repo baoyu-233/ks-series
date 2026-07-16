@@ -1,0 +1,86 @@
+# ============================================
+# 霜冻护盾 (Frost Shield)
+# EN: Frost Shield (霜冻护盾)
+# 受到攻击且血量较低时，冻结攻击者并减速
+# ============================================
+
+# 附魔ID（唯一标识，不可重复）
+# EN: Enchantment ID; must be unique
+id: frost_shield
+
+# 是否启用此附魔
+# EN: Whether this enchantment is enabled
+enabled: true
+
+# 最大等级
+# EN: Maximum level
+max-level: 4
+
+# 稀有度（对应 rarity.yml 中定义的稀有度ID）
+# EN: Rarity ID defined in rarity.yml
+rarity: radiant
+
+# 所属附魔组（对应 groups.yml）
+# EN: Enchantment group defined in groups.yml
+group: ice
+
+# 可应用的物品类型
+# EN: Applicable item types
+applicable-items:
+  - CHESTPLATE
+  - LEGGINGS
+
+# 冲突的附魔ID列表（与烈焰之刃互斥）
+# EN: Conflicting enchantment IDs; mutually exclusive with Blazing Blade
+conflicts:
+  - blazing_blade
+
+# 获取方式配置
+# EN: Acquisition method configuration
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  loot-table: true
+
+# 附魔台权重（影响附魔台中出现概率）
+# EN: Enchanting table weight; affects chance to appear
+enchanting-table-weight: 10
+
+# 星芒魔典抽取池配置
+# EN: Stellaris Codex roll pool configuration
+codex-pools:
+  radiant: 10
+  aureate: 5
+
+# 效果配置（核心：Trigger → Condition → Effect 管道）
+# EN: Effect configuration; core pipeline is Trigger -> Condition -> Effect
+effects:
+  # 受到实体攻击且血量低时触发
+  - trigger: TAKE_ENTITY_DAMAGE
+    conditions:
+      # 概率触发
+      # EN: Chance-based trigger
+      - type: chance
+        value: "{level} * 15"
+      # 当自身血量低于50%时触发（危机保护）
+      - type: health_below
+        value: "50"
+    actions:
+      # 给攻击者施加缓慢效果
+      - type: ADD_POTION_TARGET
+        potion: SLOWNESS
+        duration: "{level} * 40"
+        amplifier: "{level} - 1"
+      # 冰霜粒子特效
+      - type: PARTICLE
+        particle: SNOWFLAKE
+        count: 15
+      # 播放冰冻音效
+      - type: SOUND
+        sound: block.powder_snow.step
+        volume: 0.8
+        pitch: 0.6
+    # 冷却时间（tick）
+    # EN: Cooldown time in ticks
+    cooldown: 120

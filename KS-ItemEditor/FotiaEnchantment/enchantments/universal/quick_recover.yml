@@ -1,0 +1,67 @@
+# ============================================
+# 批量扩展附魔：快速复苏 (Quick Recover)
+# EN: Bulk extended enchantment: Quick Recover (快速复苏)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: quick_recover
+enabled: true
+curse: false
+max-level: 4
+rarity: radiant
+group: defensive
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: HEAL
+    cooldown: 100
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: ADD_POTION_SELF
+        potion: "REGENERATION"
+        duration: "{level} * 35"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "HEART"
+        count: 5
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.player.levelup"
+        volume: "0.4"
+        pitch: "1.6"
+        at: "SELF"

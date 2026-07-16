@@ -1,0 +1,55 @@
+# ============================================
+# 批量扩展附魔：炽焰射击 (Flare Shot)
+# EN: Bulk extended enchantment: Flare Shot (炽焰射击)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: flare_shot
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: fire
+category: ranged
+
+applicable-items:
+  - BOW
+  - CROSSBOW
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: BOW_ATTACK
+    cooldown: 70
+    conditions:
+      - type: chance
+        value: "{level} * 7"
+      - type: target_is_living
+    actions:
+      - type: DAMAGE_ADD
+        value: "{level} * 1.2"
+      - type: IGNITE_TARGET
+        duration: "{level} * 30"
+      - type: PARTICLE
+        particle: "FLAME"
+        count: 14
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.blaze.shoot"
+        volume: "0.6"
+        pitch: "1.4"
+        at: "TARGET"

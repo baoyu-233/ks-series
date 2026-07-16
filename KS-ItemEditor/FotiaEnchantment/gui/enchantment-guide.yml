@@ -1,0 +1,114 @@
+# ============================================
+# 附魔图鉴 GUI
+# EN: Enchantment guide GUI
+# ============================================
+# layout 每行必须为 9 个字符，字符通过 roles 绑定到功能槽位。
+# EN: Each layout row must contain 9 characters; roles bind characters to functional slots.
+# 文本支持 MiniMessage、旧颜色码 &/§、&#RRGGBB 和 lang:语言键。
+# EN: Text supports MiniMessage, legacy &/§ color codes, &#RRGGBB, and lang: language keys.
+# items 下的物品支持 material、modeldata、tooltip-style、itemmodel、name、lore。
+# EN: Items support material, modeldata, tooltip-style, itemmodel, name, and lore.
+
+rows: 6
+title: "lang:guide-gui.title"
+fill-empty: true
+
+layout:
+  - "#A#MRDTU#"
+  - "EEEEEEEEE"
+  - "EEEEEEEEE"
+  - "EEEEEEEEE"
+  - "EEEEEEEEE"
+  - "P###X###N"
+
+roles:
+  background: "#"
+  category-all: "A"
+  category-melee: "M"
+  category-ranged: "R"
+  category-armor: "D"
+  category-tools: "T"
+  category-universal: "U"
+  enchantments: "E"
+  previous-page: "P"
+  close: "X"
+  next-page: "N"
+
+items:
+  background:
+    material: BLACK_STAINED_GLASS_PANE
+    name: "<!i><dark_gray> "
+    lore: []
+
+  category-all:
+    material: BOOKSHELF
+    name: "{active_prefix}{category_name}"
+    lore:
+      - "lang:guide-gui.click-to-switch-category"
+
+  category-melee:
+    material: IRON_SWORD
+    name: "{active_prefix}{category_name}"
+    lore:
+      - "lang:guide-gui.click-to-switch-category"
+
+  category-ranged:
+    material: BOW
+    name: "{active_prefix}{category_name}"
+    lore:
+      - "lang:guide-gui.click-to-switch-category"
+
+  category-armor:
+    material: IRON_CHESTPLATE
+    name: "{active_prefix}{category_name}"
+    lore:
+      - "lang:guide-gui.click-to-switch-category"
+
+  category-tools:
+    material: IRON_PICKAXE
+    name: "{active_prefix}{category_name}"
+    lore:
+      - "lang:guide-gui.click-to-switch-category"
+
+  category-universal:
+    material: NETHER_STAR
+    name: "{active_prefix}{category_name}"
+    lore:
+      - "lang:guide-gui.click-to-switch-category"
+
+  enchantment:
+    material: ENCHANTED_BOOK
+    glow: true
+    name: "lang:guide-gui.enchantment-name"
+    lore:
+      - "lang:guide-gui.rarity-line"
+      - "lang:guide-gui.category-line"
+      - "lang:guide-gui.group-line"
+      - "lang:guide-gui.max-level"
+      - "lang:guide-gui.applicable-line"
+      - "{curse_line}"
+      - ""
+      - "{description_lines}"
+      - ""
+      - "{effect_lines}"
+    description-line: "<!i><dark_gray>  - <gray>{description}"
+    effect-action-line: "lang:guide-gui.effect-action-line"
+
+  previous-page:
+    material: ARROW
+    name: "lang:guide-gui.prev-page"
+    lore:
+      - "lang:guide-gui.jump-page"
+
+  close:
+    material: BARRIER
+    name: "lang:guide-gui.close"
+    lore:
+      - "lang:guide-gui.close-hint"
+      - "lang:guide-gui.page-info"
+
+  next-page:
+    material: ARROW
+    name: "lang:guide-gui.next-page"
+    lore:
+      - "lang:guide-gui.jump-page"

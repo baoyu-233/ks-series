@@ -1,0 +1,58 @@
+# ============================================
+# 批量扩展附魔：余烬护卫 (Ember Guard)
+# EN: Bulk extended enchantment: Ember Guard (余烬护卫)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: ember_guard
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: fire
+category: armor
+
+applicable-items:
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: FIRE_DAMAGE
+    cooldown: 80
+    conditions:
+      - type: chance
+        value: "{level} * 10"
+    actions:
+      - type: DAMAGE_REDUCE
+        value: "{level} * 8"
+      - type: ADD_POTION_SELF
+        potion: "FIRE_RESISTANCE"
+        duration: "{level} * 45"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "FLAME"
+        count: 8
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "item.armor.equip_chain"
+        volume: "0.5"
+        pitch: "1.2"
+        at: "SELF"

@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KSECO · 个人接入终端</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+<link rel="stylesheet" href="assets/player.css">
+</head>
+<body>
+<div id="toast-box"></div>
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()"><div class="modal" id="modalContent"></div></div>
+<button class="mobile-nav-toggle" id="mobileNavToggle" type="button" aria-label="打开导航" title="打开导航"><i data-lucide="menu"></i></button>
+<div class="mobile-nav-backdrop" id="mobileNavBackdrop"></div>
+
+<aside id="sidebar">
+<div class="sb-profile">
+  <div class="avatar-ring"><img id="profileAvatar" src="https://mc-heads.net/avatar/MHF_Steve/64" alt="" onerror="this.style.visibility='hidden'"/></div>
+  <div class="p-name" id="profileName">经济面板</div>
+  <div class="p-id" id="profileId">登录中...</div>
+</div>
+<nav class="sb-nav">
+<div class="nav-hub active" data-label="个人终端 · MY TERMINAL">
+  <button class="hub-label" type="button" data-hub-nav="terminal" onclick="switchHub('terminal')">个人终端 TERMINAL</button>
+  <a class="active" data-nav="terminal" onclick="switchTab('terminal')"><span>干员总览</span></a>
+  <a data-nav="my-tax" onclick="switchTab('my-tax')"><span>税收记录</span></a>
+  <a data-feature="invites" data-nav="my-invites" onclick="switchTab('my-invites')"><span>合资邀请 <span id="inviteBadge" style="display:none;background:#F8E71C;color:#000;padding:1px 6px;border-radius:2px;font-size:10px;">0</span></span></a>
+</div>
+<div class="nav-hub" data-label="交易网络 · THE GRID">
+  <button class="hub-label" type="button" data-hub-nav="grid-hub" onclick="switchHub('grid-hub')">交易网络 THE GRID</button>
+  <a data-nav="public-info" onclick="switchTab('public-info')"><span>市场行情</span></a>
+  <a data-feature="bank" data-nav="my-banks" onclick="switchTab('my-banks')"><span>资金网络</span></a>
+</div>
+<div class="nav-hub" data-label="实业控制 · MY EMPIRES">
+  <button class="hub-label" type="button" data-hub-nav="empires-hub" onclick="switchHub('empires-hub')">实业控制 EMPIRES</button>
+  <a data-feature="enterprise" data-nav="my-enterprises" onclick="switchTab('my-enterprises')"><span>我的企业</span></a>
+  <a data-feature="realestate" data-nav="realestate" onclick="switchTab('realestate')"><span>实业地块</span></a>
+  <a data-feature="bidding" data-nav="bidding" onclick="switchTab('bidding')"><span>招投标</span></a>
+  <a data-feature="politic" data-nav="politic" onclick="switchTab('politic')"><span>元老院</span></a>
+</div>
+<div class="nav-hub" data-label="极客娱乐 · QUESTS &amp; DROPS">
+  <button class="hub-label" type="button" data-hub-nav="drops-hub" onclick="switchHub('drops-hub')">极客娱乐 DROPS</button>
+  <a data-nav="mo" onclick="switchTab('mo')"><span>主任务 MO</span></a>
+  <a data-feature="blindbox" data-nav="blindbox" onclick="switchTab('blindbox')"><span>盲盒卡池</span></a>
+  <a data-feature="ent_blindbox" data-nav="ent-blindbox" onclick="switchTab('ent-blindbox')"><span>企业卡池</span></a>
+</div>
+</nav>
+<div class="sb-footer" id="playerInfo">加载中...</div>
+</aside>
+
+<div id="main">
+<div class="page-eyebrow" id="pageEyebrow">个人终端 · MY TERMINAL</div>
+<h1 id="pageTitle">干员总览 // MY TERMINAL</h1>
+<div id="banNotice" style="display:none;background:rgba(255,51,85,.08);border:1px solid rgba(255,51,85,.5);border-left:3px solid #FF3355;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#FF8FA3;box-shadow:0 0 18px rgba(255,51,85,.15);"></div>
+
+<!-- ====== My Banks ====== -->
+<!-- ====== MY TERMINAL 个人终端 ====== -->
+<div class="tab-section active" id="tab-terminal">
+<div class="term-hero">
+  <div class="term-id">
+    <div class="term-avatar-frame"><img id="termAvatar" src="https://mc-heads.net/body/MHF_Steve/100" alt="" onerror="this.style.visibility='hidden'"/></div>
+    <div class="term-meta">
+      <div class="term-eyebrow">OPERATIVE PROFILE // 干员档案</div>
+      <div class="term-name" id="termName">连接中…</div>
+      <div class="term-uuid" id="termUuid">AWAITING UPLINK</div>
+      <div><span class="badge badge-active" id="termStatus">NEON-LINK ONLINE</span></div>
+    </div>
+  </div>
+  <div class="term-net">
+    <div class="term-net-label">NET WORTH // 估算净资产</div>
+    <div class="term-net-val" id="termNet">—</div>
+    <div class="term-net-sub" id="termNetSub">钱包 + 存款 + 企业资产 + 地块估值</div>
+  </div>
+</div>
+<div class="stats-row" id="termStats"><div class="stat-card"><div class="stat-val">…</div><div class="stat-label">SYNCING</div></div></div>
+<div class="card"><h3>名下产业 // MY HOLDINGS</h3><div id="termHoldings" style="display:flex;flex-wrap:wrap;gap:8px;">加载中…</div></div>
+<div class="card"><h3>最近税单 // RECENT TAX</h3><div class="table-wrap" style="max-height:230px;"><table><thead><tr><th>类别</th><th>基数</th><th>税额</th><th>时间</th></tr></thead><tbody id="termTaxBody"></tbody></table></div></div>
+</div>
+
+<!-- ====== THE GRID 交易网络总览 ====== -->
+<div class="tab-section" id="tab-grid-hub">
+<div class="stats-row" id="gridHubStats"></div>
+<div class="hub-launch-grid">
+  <button class="hub-module" type="button" onclick="switchTab('public-info')"><i data-lucide="chart-no-axes-combined"></i><span><b>市场行情</b><small>官方材料价格与税率</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('my-banks')"><i data-lucide="landmark"></i><span><b>资金网络</b><small>存款、贷款、银行经营</small></span><i data-lucide="chevron-right"></i></button>
+</div>
+<div class="card"><h3>在售挂单</h3><div class="table-wrap"><table><thead><tr><th>物品</th><th>卖家</th><th>数量</th><th>单价</th><th>总价</th><th></th></tr></thead><tbody id="gridHubListings"></tbody></table></div></div>
+<div class="card"><h3>官方材料</h3><div class="table-wrap"><table><thead><tr><th>材料</th><th>基础价</th><th>当前收购</th><th>七日均价</th><th>趋势</th><th></th></tr></thead><tbody id="gridHubPrices"></tbody></table></div></div>
+</div>
+
+<!-- ====== MY EMPIRES 实业控制总览 ====== -->
+<div class="tab-section" id="tab-empires-hub">
+<div class="stats-row" id="empiresHubStats"></div>
+<div class="hub-launch-grid">
+  <button class="hub-module" type="button" onclick="switchTab('my-enterprises')"><i data-lucide="building-2"></i><span><b>我的企业</b><small>成员、融资、分红、审计</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('realestate')"><i data-lucide="map"></i><span><b>实业地块</b><small>自有地块、可购区域、房屋</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('bidding')"><i data-lucide="briefcase-business"></i><span><b>招投标</b><small>项目、采购与投标</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('politic')"><i data-lucide="scale"></i><span><b>元老院</b><small>城邦公告、提案、投票</small></span><i data-lucide="chevron-right"></i></button>
+</div>
+<div class="card"><h3>我的企业</h3><div class="table-wrap"><table><thead><tr><th>企业</th><th>行业</th><th>资产</th><th>成员</th><th>状态</th><th></th></tr></thead><tbody id="empiresHubEnts"></tbody></table></div></div>
+<div class="card"><h3>我的地块</h3><div class="table-wrap"><table><thead><tr><th>区域</th><th>世界</th><th>范围</th><th>购入价</th><th>副本权限</th><th></th></tr></thead><tbody id="empiresHubPlots"></tbody></table></div></div>
+</div>
+
+<!-- ====== QUESTS & DROPS 极客娱乐总览 ====== -->
+<div class="tab-section" id="tab-drops-hub">
+<div class="stats-row" id="dropsHubStats"></div>
+<div class="hub-launch-grid">
+  <button class="hub-module" type="button" onclick="switchTab('mo')"><i data-lucide="radio-tower"></i><span><b>主任务 MO</b><small>全服共同目标与进度</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('blindbox')"><i data-lucide="package-open"></i><span><b>个人盲盒</b><small>概率、保底、抽取记录</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('ent-blindbox')"><i data-lucide="package-open"></i><span><b>企业卡池</b><small>企业公户与等级限定</small></span><i data-lucide="chevron-right"></i></button>
+</div>
+<div class="card"><h3>主任务态势</h3><div id="dropsHubMo" class="hub-feed"></div></div>
+<div class="card"><h3>开放卡池</h3><div id="dropsHubPools" class="hub-pool-grid"></div></div>
+</div>
+
+<div class="tab-section" id="tab-mo">
+<div class="card"><h3>MO 主任务</h3>
+<div id="moList">加载中...</div>
+</div>
+</div>
+
+<div class="tab-section" id="tab-my-banks">
+<div class="inline-tabs">
+  <button class="inline-tab active" onclick="switchBankSub('overview',event)">账户总览</button>
+  <button class="inline-tab" onclick="switchBankSub('browse',event)">全部银行</button>
+  <button class="inline-tab" onclick="switchBankSub('create',event)">创建银行</button>
+  <button class="inline-tab" onclick="switchBankSub('manage',event)">银行管理</button>
+</div>
+<!-- Sub: Overview -->
+<div class="bank-sub active" id="bank-sub-overview">
+<div class="stats-row" id="myBankKpis"></div>
+<div class="card" id="ks-card-depwd"><h3>存款 / 取款</h3>
+<div class="form-row">
+<label>银行ID<br><input id="depBankId" placeholder="银行ID"/></label>
+<label>金额<br><input id="depAmount" type="number" step="1" value="1000"/></label>
+<button class="btn btn-sm" onclick="doDeposit()">存款</button>
+<button class="btn btn-sm btn-danger" onclick="doWithdraw()">取款</button>
+</div>
+</div>
+<div class="card"><h3>我的银行账户</h3><div class="ks-entity-grid" id="bankCards"></div></div>
+<div class="card"><h3>王国开发银行</h3><div id="guidanceBankCard" style="color:#888;font-size:12px;">正在读取引导贷款政策...</div></div>
+<div class="card"><h3>🏷 抵押物拍卖</h3>
+<button class="btn btn-sm" onclick="loadCollateralAuctions()">刷新拍卖</button>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>拍卖ID</th><th>资产</th><th>当前价</th><th>结束时间</th><th>操作</th></tr></thead><tbody id="auctionBody"></tbody></table></div>
+</div>
+<div class="card"><h3>我的贷款</h3>
+<div class="table-wrap"><table><thead><tr><th>贷款ID</th><th>银行ID</th><th>本金</th><th>剩余</th><th>利率</th><th>状态</th><th>操作</th></tr></thead><tbody id="loanBody"></tbody></table></div>
+</div>
+<div class="card"><h3>我的贷款申请</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">在"全部银行"中选择银行并点击"申请贷款"提交，等待银行审批后会自动放款到此处的"我的贷款"。</p>
+<div class="table-wrap"><table><thead><tr><th>申请ID</th><th>银行ID</th><th>金额</th><th>期限(天)</th><th>状态</th><th>申请时间</th></tr></thead><tbody id="myLoanReqBody"></tbody></table></div>
+</div>
+</div>
+<!-- Sub: Browse All Banks -->
+<div class="bank-sub" id="bank-sub-browse">
+<div class="card"><h3>🏦 全部银行</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">查看所有银行及其存/贷利率。首次存款自动开户；贷款申请提交后由银行审批。</p>
+<button class="btn btn-sm" onclick="loadAllBanks()">🔍 刷新</button>
+<div class="ks-entity-grid" id="allBanksGrid" style="margin-top:10px;"></div>
+</div>
+</div>
+<!-- Sub: Create Bank -->
+<div class="bank-sub" id="bank-sub-create">
+<div class="card"><h3>🏦 创建银行</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">独资: 资产 ≥ 50,000 | 合资: ≥ 2人，总资产 ≥ 100,000</p>
+<div class="form-row">
+<label>银行名称<br><input id="bkName" placeholder="银行名称"/></label>
+<label>初始资本<br><input id="bkCapital" type="number" step="1" value="100000"/></label>
+<label>类型<br><select id="bkType"><option value="COMMERCIAL">商业银行</option></select></label>
+</div>
+<div class="form-row">
+<label>合资人 ID (逗号分隔，留空=独资)<br><input id="bkCoOwners" class="player-picker" data-player-list="csv" placeholder="玩家名1,玩家名2" style="width:300px;"/></label>
+<button class="btn" onclick="createMyBank()">创建银行</button>
+</div>
+</div>
+</div>
+<!-- Sub: Manage -->
+<div class="bank-sub" id="bank-sub-manage">
+<div class="card" id="ks-bank-members"><h3>👥 银行成员管理</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">选择一个你拥有的银行来管理成员</p>
+<label>银行ID<br><input id="mgmtBankId" placeholder="输入银行ID后点加载" style="margin-bottom:8px;"/></label>
+<button class="btn btn-sm" onclick="loadBankMembers()">🔍 加载成员</button>
+<div class="form-row" style="margin-top:8px;">
+<label>新成员 ID<br><input id="newBankMemberUuid" class="player-picker" placeholder="输入玩家 ID"/></label>
+<label>初始岗位<br><input value="普通成员" disabled/></label>
+<button class="btn btn-sm btn-success" onclick="addBankMember()">添加成员</button>
+</div>
+<div style="margin-top:10px;"><h4>当前成员</h4>
+<div class="table-wrap"><table><thead><tr><th>UUID</th><th>名称</th><th>角色</th><th>加入时间</th><th>操作</th></tr></thead><tbody id="bankMemberBody"></tbody></table></div>
+</div>
+</div>
+<div class="card" id="ks-bank-invite"><h3>📨 邀请玩家合资</h3>
+<div class="form-row">
+<label>银行ID<br><input id="inviteBankId2" placeholder="你的银行ID"/></label>
+<label>受邀人UUID<br><input id="inviteeBankUuid" class="player-picker" placeholder="玩家名/UUID"/></label>
+<button class="btn btn-sm" onclick="sendBankInvite()">发送邀请</button>
+</div>
+</div>
+<div class="card" id="ks-bank-rates"><h3>📈 设置本行利率</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">利率必须落在央行允许的浮动区间内，超出会被拒绝。</p>
+<div class="form-row">
+<label>银行ID<br><input id="setRateBankId" placeholder="你的银行ID"/></label>
+<label>贷款利率<br><input id="setRateLoan" type="number" step="0.001" placeholder="如 0.05"/></label>
+<label>存款利率（每结算周期）<br><input id="setRateDeposit" type="number" step="0.001" placeholder="如 0.01"/></label>
+<label>本行准备金率<br><input id="setReserveRatio" type="number" min="0" max="1" step="0.01" placeholder="如 0.15"/></label>
+<button class="btn btn-sm btn-success" onclick="setMyBankRate()">💾 保存利率</button>
+</div>
+</div>
+<div class="card" id="ks-bank-loan-issue"><h3>💰 发放贷款</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">仅银行所有者或拥有 APPROVE_LOAN 权限的成员可放贷。</p>
+<div class="form-row">
+<label>银行ID<br><input id="loanIssueBankId" placeholder="你的银行ID"/></label>
+<label>借款人UUID<br><input id="loanBorrower" class="player-picker" placeholder="玩家名/UUID"/></label>
+<label>本金<br><input id="loanPrincipal" type="number" step="1" value="10000"/></label>
+<label>期限(天)<br><input id="loanTermDays" type="number" value="30"/></label>
+<button class="btn btn-sm btn-success" onclick="issueMyLoan()">💰 放贷</button>
+</div>
+</div>
+<div class="card" id="ks-bank-loan-requests"><h3>📋 待审批贷款申请</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">玩家在"全部银行"自助提交的贷款申请，批准后自动放款。</p>
+<div class="form-row">
+<label>银行ID<br><input id="loanReqBankId" placeholder="你的银行ID"/></label>
+<button class="btn btn-sm" onclick="loadLoanRequests()">🔍 加载申请</button>
+</div>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>申请ID</th><th>申请人</th><th>金额</th><th>期限(天)</th><th>申请时间</th><th>操作</th></tr></thead><tbody id="loanReqBody"></tbody></table></div>
+</div>
+</div>
+</div>
+
+<!-- ====== My Enterprises ====== -->
+<div class="tab-section" id="tab-my-enterprises">
+<div class="inline-tabs">
+  <button class="inline-tab active" onclick="switchEntSub('overview',event)">企业总览</button>
+  <button class="inline-tab" onclick="switchEntSub('browse',event)">企业列表</button>
+  <button class="inline-tab" onclick="switchEntSub('create',event)">创建企业</button>
+  <button class="inline-tab" onclick="switchEntSub('manage',event)">企业管理</button>
+</div>
+<!-- Sub: Overview -->
+<div class="ent-sub active" id="ent-sub-overview">
+<div class="stats-row" id="myEntKpis"></div>
+<div class="card"><h3>我的企业</h3><div class="ks-entity-grid" id="entCards"></div></div>
+<div class="card"><h3>🏆 企业 50 强</h3>
+<div class="table-wrap"><table><thead><tr><th>#</th><th>企业名称</th><th>玩家数</th><th>当前资产</th></tr></thead><tbody id="enterpriseTop50Body"></tbody></table></div>
+</div>
+<div class="card"><h3>分红记录</h3>
+<div class="table-wrap"><table><thead><tr><th>分红ID</th><th>企业</th><th>金额</th><th>税额</th><th>时间</th></tr></thead><tbody id="myDivBody"></tbody></table></div>
+</div>
+</div>
+<!-- Sub: Browse All Enterprises -->
+<div class="ent-sub" id="ent-sub-browse">
+<div class="card"><h3>🏢 全部企业</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">查看所有企业（含注册资本/行业/员工数）。加入企业需要由企业管理人员发送邀请。</p>
+<button class="btn btn-sm" onclick="loadAllEnterprises()">🔍 刷新</button>
+<div class="ks-entity-grid" id="allEntsGrid" style="margin-top:10px;"></div>
+</div>
+</div>
+<!-- Sub: Create Enterprise -->
+<div class="ent-sub" id="ent-sub-create">
+<div class="card"><h3>🏢 注册私有企业</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">注册资本将从你的账户扣除。合资请在"企业管理"中邀请。</p>
+<div class="form-row">
+<label>企业名称<br><input id="entName" placeholder="企业名称"/></label>
+<label>注册资本<br><input id="entCapital" type="number" step="1" value="50000"/></label>
+<label>区域<br><input id="entRegion" placeholder="注册区域"/></label>
+</div>
+<div class="form-row">
+<label>合资人 ID (逗号分隔，留空=独资)<br><input id="entCoOwners" class="player-picker" data-player-list="csv" placeholder="玩家名1,玩家名2" style="width:300px;"/></label>
+<button class="btn" onclick="createMyEnterprise()">注册企业</button>
+</div>
+</div>
+</div>
+<!-- Sub: Manage -->
+<div class="ent-sub" id="ent-sub-manage">
+<div class="card" id="ks-ent-divtrend" style="display:none;"><h3>📈 分红走势</h3><div id="entDivTrend"></div></div>
+<div class="card" id="ks-ent-members"><h3>👥 企业成员管理</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">选择一个你拥有的企业来管理成员和权限</p>
+<label>企业ID<br><input id="mgmtEntId" placeholder="输入企业ID后点加载" style="margin-bottom:8px;"/></label>
+<button class="btn btn-sm" onclick="loadEntMembers()">🔍 加载成员</button>
+<div class="form-row" style="margin-top:8px;">
+<label>新成员 ID<br><input id="newEntMemberUuid" class="player-picker" placeholder="输入玩家 ID"/></label>
+<label>角色<br><select id="newEntMemberRole"><option value="MEMBER">成员</option><option value="MANAGER">经理</option></select></label>
+<label>薪资<br><input id="newEntMemberSalary" type="number" step="1" value="0" placeholder="薪资"/></label>
+<button class="btn btn-sm btn-success" onclick="addEntMember()">添加成员</button>
+</div>
+<div style="margin-top:10px;"><h4>当前成员</h4>
+<div class="table-wrap"><table><thead><tr><th>UUID</th><th>名称</th><th>角色</th><th>薪资</th><th>加入时间</th><th>操作</th></tr></thead><tbody id="entMemberBody"></tbody></table></div>
+</div>
+</div>
+<div class="card" id="ks-ent-dividend"><h3>💰 企业注资与分红</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">仅企业所有者可操作。可分别设置本次从公户发放的比例，以及每位所有者获得税后分红的占比。</p>
+<div class="form-row">
+<label>企业ID<br><input id="entFinanceId" placeholder="你的企业ID"/></label>
+<label>注资金额<br><input id="entInjectAmount" type="number" min="1" step="1" value="1000"/></label>
+<button class="btn btn-sm btn-success" onclick="injectEnterpriseCapital()">注资</button>
+</div>
+<div class="form-row">
+<label>每次分红比例 (%)<br><input id="entDividendRate" type="number" min="0" max="100" step="0.01" value="0"/></label>
+<button class="btn btn-sm" onclick="saveEnterpriseDividendRate()">保存比例</button>
+<button class="btn btn-sm btn-primary" onclick="distributeEnterpriseDividend()">按当前比例发放分红</button>
+</div>
+<div class="form-row">
+<label>所有者分红占比<br><input id="entDividendShares" class="player-picker" data-player-list="shares" placeholder="玩家名:60,玩家名:40" style="width:360px;"/></label>
+<button class="btn btn-sm" onclick="saveEnterpriseDividendShares()">保存所有者占比</button>
+</div>
+<div class="form-row" style="margin-top:10px;">
+<label>本次分红总额<br><input id="entCustomDividendAmount" type="number" min="1" step="1" value="1000"/></label>
+<label>分红成员与比例<br><input id="entCustomDividendShares" class="player-picker" data-player-list="shares" placeholder="玩家名:60,玩家名:40" style="width:360px;"/></label>
+<button class="btn btn-sm" onclick="previewCustomEnterpriseDividend()">预览税额与到手</button>
+<button class="btn btn-sm btn-success" onclick="distributeCustomEnterpriseDividend()">按方案发放</button>
+</div>
+</div>
+<div class="card" id="ks-ent-finance"><h3>🏦 企业融资与开户行</h3>
+<div class="form-row">
+<label>企业 ID<br><input id="efEnterpriseId" placeholder="你的企业ID"/></label>
+<label>开户银行 ID<br><input id="efBankId" placeholder="先选择开户行"/></label>
+<button class="btn btn-sm" onclick="selectCorporateBank()">切换开户行</button>
+<button class="btn btn-sm" onclick="loadEnterpriseFinance()">刷新贷款</button>
+</div>
+<div class="form-row" style="margin-top:8px;">
+<label>融资用途<br><select id="efPurpose"><option value="EXPANSION">扩产</option><option value="REAL_ESTATE_DEVELOPMENT">地产开发</option><option value="PROJECT_DEPOSIT">项目保证金</option><option value="LOGISTICS_NETWORK">物流网络</option></select></label>
+<label>金额<br><input id="efAmount" type="number" min="1" step="1" value="10000"/></label>
+<label>期限（天）<br><input id="efTerm" type="number" min="1" step="1" value="30"/></label>
+<label>抵押类型<br><select id="efCollateralType"><option value="PLOT">地块</option><option value="HOUSE">住宅</option><option value="PROJECT_CONTRACT">中标项目</option><option value="INVENTORY">估值库存</option></select></label>
+<label>抵押物 ID<br><input id="efCollateralRef" placeholder="地块/房屋/项目ID"/></label>
+<label>抵押率<br><input id="efLtv" type="number" min="0.01" max="0.75" step="0.01" value="0.6"/></label>
+<button class="btn btn-success" onclick="requestEnterpriseFinance()">申请融资</button>
+</div>
+<div class="table-wrap" style="margin-top:10px;"><table><thead><tr><th>贷款ID</th><th>银行</th><th>用途</th><th>未偿</th><th>利率</th><th>状态</th><th>操作</th></tr></thead><tbody id="efLoanBody"></tbody></table></div>
+<div style="margin-top:12px;"><h4>可抵押的估值库存</h4><button class="btn btn-sm" onclick="loadEnterpriseInventory()">刷新库存</button>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>批次ID</th><th>说明</th><th>数量</th><th>估值</th><th>状态</th></tr></thead><tbody id="efInventoryBody"></tbody></table></div></div>
+</div>
+<div class="card" id="ks-ent-salary"><h3>💵 发放员工工资</h3>
+<div class="form-row"><label>企业 ID<br><input id="salaryEnterpriseId" placeholder="你的企业ID"/></label><label>员工 ID<br><input id="salaryEmployee" class="player-picker" placeholder="员工名/UUID"/></label><button class="btn btn-sm btn-success" onclick="payEnterpriseSalary()">发放本期工资</button></div>
+<p style="color:#888;font-size:11px;margin-top:8px;">按成员管理中设置的薪资金额，从企业公户转入该员工在企业开户行的存款账户。</p>
+</div>
+<div class="card" id="ks-ent-invite"><h3>📨 邀请玩家合资</h3>
+<div class="form-row">
+<label>企业ID<br><input id="inviteEntId2" placeholder="你的企业ID"/></label>
+<label>受邀人UUID<br><input id="inviteeEntUuid" class="player-picker" placeholder="玩家名/UUID"/></label>
+<button class="btn btn-sm" onclick="sendEntInvite()">发送邀请</button>
+</div>
+</div>
+</div>
+</div>
+
+<!-- ====== 招投标 ====== -->
+<div class="tab-section" id="tab-bidding">
+<div class="inline-tabs">
+  <button class="inline-tab active" onclick="switchBidSub('projects',event)">工程招标</button>
+  <button class="inline-tab" onclick="switchBidSub('procurement',event)">采购招标</button>
+  <button class="inline-tab" onclick="switchBidSub('mybids',event)">我的投标记录</button>
+  <button class="inline-tab" onclick="switchBidSub('publish',event)">我的发布/评标</button>
+</div>
+<div class="stats-row" id="bidKpis"></div>
+<div class="bid-sub active" id="bid-sub-projects">
+<div class="card"><h3>🎯 招标项目列表</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">企业/个人均可投标。国企/官方项目强制综合评分定标；私企项目可被自主指定中标。点击卡片查看详情与投标排名。</p>
+<button class="btn btn-sm" onclick="loadProjectsBrowse()">🔍 刷新</button>
+<div class="ks-entity-grid" id="bidProjGrid" style="margin-top:10px;"></div>
+</div>
+</div>
+<div class="bid-sub" id="bid-sub-procurement">
+<div class="card"><h3>🛒 企业采购需求</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">作为供应商（企业或个人）投标，最低价自动定标或由企业手动指定。点击卡片查看详情。</p>
+<button class="btn btn-sm" onclick="loadProcurementsBrowse()">🔍 刷新</button>
+<div class="ks-entity-grid" id="bidProcGrid" style="margin-top:10px;"></div>
+</div>
+</div>
+<div class="bid-sub" id="bid-sub-mybids">
+<div class="card"><h3>📋 我的工程招标投标</h3>
+<button class="btn btn-sm" onclick="loadMyBids()">🔍 刷新</button>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>项目</th><th>投标方式</th><th>投标金额</th><th>投标状态</th><th>项目状态</th><th>投标时间</th><th>操作</th></tr></thead><tbody id="myProjBidBody"></tbody></table></div>
+</div>
+<div class="card"><h3>📋 我的采购投标</h3>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>采购</th><th>投标方式</th><th>单价/总价</th><th>投标状态</th><th>采购状态</th><th>投标时间</th></tr></thead><tbody id="myProcBidBody"></tbody></table></div>
+</div>
+</div>
+<div class="bid-sub" id="bid-sub-publish">
+<div class="ks-action-tiles">
+  <button class="ks-action-tile" onclick="ksDrill('发布工程招标 // NEW PROJECT',['ks-card-pj-publish'])"><span class="kat-ico">📢</span>发布工程招标</button>
+  <button class="ks-action-tile magenta" onclick="ksDrill('发布采购需求 // NEW PROCUREMENT',['ks-card-pc-publish'])"><span class="kat-ico">🛒</span>发布采购需求</button>
+</div>
+<div class="ks-drill-stash">
+<div class="card" id="ks-card-pj-publish"><h3>📢 发布工程招标</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">以你有项目管理权限的企业名义发布招标，其他玩家或企业可投标。官方招标仅管理员可发布。</p>
+<div class="form-row">
+<label>发布方<br><select id="pjPubType"><option value="ENTERPRISE">以企业名义</option></select></label>
+<label id="pjPubEntWrap">企业ID<br><select id="pjPubEntId"></select></label>
+<label>标题<br><input id="pjTitle" placeholder="项目标题"/></label>
+</div>
+<div class="form-row">
+<label>预算<br><input id="pjBudget" type="number" step="1" value="10000"/></label>
+<label>预付款比例<br><input id="pjPrepay" type="number" step="0.01" value="0.3"/></label>
+<label>违约金比例<br><input id="pjPenalty" type="number" step="0.01" value="0.1"/></label>
+<label>截止(天后)<br><input id="pjDeadlineDays" type="number" step="1" value="7"/></label>
+<label>地点<br><input id="pjLocation" placeholder="可选"/></label>
+</div>
+<div class="form-row">
+<label>保证金要求<br><select id="pjDepositRatio"><option value="0">不要求保证金</option><option value="0.05">5% (中标金额)</option><option value="0.1">10% (中标金额)</option><option value="0.2">20% (中标金额)</option></select></label>
+<label>保证金缴纳时限(小时)<br><input id="pjDepositHours" type="number" step="1" value="24"/></label>
+</div>
+<div class="form-row">
+<label><input type="checkbox" id="pjSubcontract" checked/> 允许分包</label>
+<label><input type="checkbox" id="pjConsortium" checked/> 允许联合体投标</label>
+<button class="btn btn-primary" onclick="publishMyProject()">发布招标</button>
+</div>
+</div>
+</div>
+<div class="card"><h3>📋 我发布的工程招标</h3>
+<button class="btn btn-sm" onclick="loadMyPublished()">🔍 刷新</button>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>ID</th><th>标题</th><th>预算</th><th>投标数</th><th>状态</th><th>操作</th></tr></thead><tbody id="myPubProjBody"></tbody></table></div>
+</div>
+<div class="ks-drill-stash">
+<div class="card" id="ks-card-pc-publish"><h3>🛒 发布采购需求</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">从你拥有的企业公户出预算，向其他玩家/企业征集供货报价，由你评标定标（自动取最低价或手动指定）。</p>
+<div class="form-row">
+<label>企业ID<br><select id="pcPubEntId"></select></label>
+<label>标题<br><input id="pcTitle" placeholder="采购标题"/></label>
+<label>数量<br><input id="pcQuantity" type="number" step="1" value="1"/></label>
+<label>预算<br><input id="pcBudget" type="number" step="1" value="1000"/></label>
+</div>
+<div class="form-row">
+<label>需求说明<br><input id="pcItemDesc" placeholder="可选" style="width:300px;"/></label>
+<button class="btn btn-primary" onclick="publishMyProcurement()">发布采购</button>
+</div>
+</div>
+</div>
+<div class="card"><h3>📋 我发布的采购需求</h3>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>ID</th><th>标题</th><th>预算</th><th>投标数</th><th>状态</th><th>操作</th></tr></thead><tbody id="myPubProcBody"></tbody></table></div>
+</div>
+</div>
+</div>
+
+<!-- ====== My Invites ====== -->
+<div class="tab-section" id="tab-my-invites">
+<div class="card"><h3>待处理的合资邀请</h3>
+<div class="table-wrap"><table><thead><tr><th>邀请ID</th><th>目标</th><th>类型</th><th>邀请人</th><th>时间</th><th>操作</th></tr></thead><tbody id="inviteBody"></tbody></table></div>
+</div>
+</div>
+
+<!-- ====== BlindBox ====== -->
+<div class="tab-section" id="tab-blindbox">
+<div class="inline-tabs">
+  <button class="inline-tab active" onclick="switchBbSub('pools',event)">盲盒池</button>
+  <button class="inline-tab" onclick="switchBbSub('history',event)">抽取记录</button>
+</div>
+<div class="bb-sub active" id="bb-sub-pools">
+<div class="card"><h3>🎁 盲盒池</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">价格按池固定，抽取按权重随机。每池可配置 RARE/EPIC/LEGENDARY 等不同等级保底。</p>
+<div class="ks-entity-grid" id="bbPoolCards"></div>
+</div>
+</div>
+<div class="bb-sub" id="bb-sub-history">
+<div class="card"><h3>📜 我的抽取记录</h3>
+<div class="table-wrap"><table><thead><tr><th>时间</th><th>池</th><th>物品</th><th>稀有度</th></tr></thead><tbody id="bbHistoryBody"></tbody></table></div>
+</div>
+</div>
+</div>
+
+<!-- ====== Enterprise BlindBox ====== -->
+<div class="tab-section" id="tab-ent-blindbox">
+<div class="ent-bb-sub active" id="ent-bb-sub-pools">
+<div class="card"><h3>🏢 企业盲盒池</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">从企业公户（CORP-BANK）扣款。卡池可限制行业、地块类型和最低企业等级。</p>
+<div class="form-row">
+<label>选择企业<br><select id="entBbPoolEntId" onchange="loadEntBbPools()"></select></label>
+<label>行业<br><span id="entBbIndustry" style="padding:7px 10px;color:#00E5FF;">—</span></label>
+<label>公户余额<br><span id="entBbCorpBal" style="padding:7px 10px;color:#4caf50;">—</span></label>
+</div>
+<div class="ks-entity-grid" id="entBbPoolCards"></div>
+</div>
+</div>
+</div>
+
+<!-- ====== Real Estate ====== -->
+<div class="tab-section" id="tab-realestate">
+<div class="inline-tabs">
+  <button class="inline-tab active" onclick="switchReSub('plots',event)">我的地块</button>
+  <button class="inline-tab" onclick="switchReSub('browse',event)">浏览可购</button>
+  <button class="inline-tab" onclick="switchReSub('houses',event)">🏠 商品房市场</button>
+  <button class="inline-tab" onclick="switchReSub('perks',event)">🌾 地块福利</button>
+</div>
+<div class="re-sub active" id="re-sub-plots">
+<div class="card"><h3>🏞 我的地块 · 点击行查看详情</h3>
+<div class="table-wrap"><table><thead><tr><th>地块ID</th><th>所有者</th><th>区域</th><th>世界</th><th>范围</th><th>购入价</th><th>年税</th><th>购入时间</th><th>副本权限</th></tr></thead><tbody id="myRePlotsBody"></tbody></table></div>
+</div>
+</div>
+<div class="re-sub" id="re-sub-browse">
+<section class="re-map-workspace" aria-label="房地产区域地图">
+  <header class="re-map-header">
+    <div class="re-map-heading"><i data-lucide="map"></i><div><h2>区域地图与地块交易</h2><small id="reModuleHint2">REAL ESTATE NETWORK</small></div></div>
+    <div class="re-map-actions">
+      <label class="re-map-world-label" for="reWorldSelect">世界<select id="reWorldSelect" onchange="setReWorld(this.value)"><option value="world">world</option></select></label>
+      <button class="re-map-icon-btn" type="button" onclick="loadReBrowse(true)" title="刷新区域数据" aria-label="刷新区域数据"><i data-lucide="refresh-cw"></i></button>
+    </div>
+  </header>
+  <div class="re-map-kpis" id="reMapKpis" aria-live="polite">
+    <div class="re-map-kpi"><span>当前世界区域</span><b class="cyan">—</b></div>
+    <div class="re-map-kpi"><span>可购区域</span><b class="green">—</b></div>
+    <div class="re-map-kpi"><span>已登记地块</span><b class="magenta">—</b></div>
+    <div class="re-map-kpi"><span>在售底价合计</span><b class="amber">—</b></div>
+  </div>
+  <div class="re-map-layout">
+    <div class="re-map-stage">
+      <div class="re-map-stagebar">
+        <div class="re-map-mode" role="group" aria-label="地图操作模式">
+          <button class="active" type="button" data-re-map-mode="pan" onclick="setReMapMode('pan')"><i data-lucide="hand"></i><span>浏览</span></button>
+          <button type="button" data-re-map-mode="select" onclick="setReMapMode('select')"><i data-lucide="mouse-pointer-2"></i><span>框选范围</span></button>
+        </div>
+        <button id="reMap3dBtn" class="re-map-icon-btn" type="button" onclick="openRegionVoxelViewer()" disabled title="框选后查看建筑 3D" aria-label="查看所选区域 3D"><i data-lucide="box"></i></button>
+        <div class="re-map-legend" aria-label="地图图例">
+          <span><i class="re-map-swatch residential"></i>住宅</span><span><i class="re-map-swatch commercial"></i>商业</span><span><i class="re-map-swatch industrial"></i>工业</span><span><i class="re-map-swatch agricultural"></i>农业</span><span><i class="re-map-swatch sold"></i>已登记地块</span>
+        </div>
+      </div>
+      <div class="re-map-canvas-wrap">
+        <canvas id="reBrowseCanvas" tabindex="0" aria-label="房地产区域坐标地图"></canvas>
+        <div class="re-map-mapstatus" id="reBrowseStatus">等待区域数据</div>
+        <div class="re-map-coord" id="reBrowseCoord">X — · Z —</div>
+        <div class="re-map-selection" id="reMapSelectionText">未框选购买范围</div>
+        <div class="re-map-empty" id="reMapEmpty">当前世界没有可显示的区域</div>
+        <div class="re-map-zoom">
+          <button class="re-map-icon-btn" type="button" onclick="reBrowseMap&&reBrowseMap.zoomIn()" title="放大" aria-label="放大地图"><i data-lucide="plus"></i></button>
+          <button class="re-map-icon-btn" type="button" onclick="reBrowseMap&&reBrowseMap.zoomOut()" title="缩小" aria-label="缩小地图"><i data-lucide="minus"></i></button>
+          <button class="re-map-icon-btn" type="button" onclick="reBrowseMap&&reBrowseMap.center()" title="居中显示" aria-label="地图居中"><i data-lucide="focus"></i></button>
+        </div>
+      </div>
+    </div>
+    <aside class="re-map-side">
+      <div class="re-map-side-head" id="reZoneDetail"><span class="eyebrow">SELECTED DISTRICT</span><h3>选择一个区域</h3></div>
+      <div class="re-map-price"><h4>当前世界区域底价分布</h4><div class="re-price-bars" id="rePriceBars"></div></div>
+      <div class="re-map-zone-list-head"><h4>区域索引</h4><span id="reZoneListCount">0 ZONES</span></div>
+      <div class="re-map-zone-list" id="reZoneList"></div>
+    </aside>
+  </div>
+  <div class="re-map-register">
+    <div class="re-map-register-head"><h3>可购区域登记册</h3><span id="reBrowseTableMeta">0 条记录</span></div>
+    <div class="table-wrap"><table><thead><tr><th>区域</th><th>规划</th><th>底价</th><th>年税率</th><th>登记地块</th><th>房屋容量</th><th>坐标范围</th><th>副本权限</th><th>操作</th></tr></thead><tbody id="reBrowseBody"></tbody></table></div>
+  </div>
+</section>
+</div>
+<div class="re-sub" id="re-sub-houses">
+<div class="card"><h3>🏠 商品房市场</h3>
+<p style="color:#888;font-size:11px;">浏览玩家/企业挂牌出售的房屋。下单购买请到游戏内 <code>/market</code> → 🏠 商品房 完成（网页只读浏览 + 3D 预览）。上架自己的房屋用游戏内 <code>/house sell &lt;房屋ID&gt; &lt;价格&gt;</code>。</p>
+<div class="table-wrap"><table><thead><tr><th>名称</th><th>房屋ID</th><th>卖家</th><th>世界</th><th>范围</th><th>价格</th><th>操作</th></tr></thead><tbody id="houseMarketBody"></tbody></table></div>
+</div>
+</div>
+<div class="re-sub" id="re-sub-perks">
+<div class="card"><h3>🌾 地块福利</h3>
+<p style="color:#888;font-size:11px;">买地不强制——农业/工业用地只是多一份额外福利，不影响正常经营。</p>
+<div id="landPerkSummary" style="font-size:13px;margin-bottom:10px;">加载中...</div>
+<div id="landPerkDetails" style="font-size:12px;color:#aaa;line-height:1.8;"></div>
+</div>
+</div>
+</div>
+
+<!-- ====== 商品房 3D 体素查看器 ====== -->
+<div id="houseVoxelModal" style="display:none;position:fixed;inset:0;background:#000c;z-index:9999;align-items:center;justify-content:center;">
+<div class="house-voxel-dialog" style="background:#10131A;border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:12px;width:min(90vw,720px);">
+<div class="house-voxel-head" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+<h3 style="margin:0;font-size:14px;color:#e8e8f0;">🏠 房屋 3D 渲染预览</h3>
+<div style="display:flex;align-items:center;gap:8px;">
+<label style="font-size:11px;color:#aaa;">光照:</label>
+<select id="houseVoxelLightPreset" onchange="applyVoxelLightPreset(this.value)" style="font-size:11px;">
+<option value="day">☀️ 日光</option>
+<option value="sunset">🌇 黄昏</option>
+<option value="night">🌙 夜晚</option>
+<option value="studio">💡 工作室</option>
+</select>
+<button id="houseVoxelCloseBtn" class="btn btn-sm" onclick="closeHouseVoxelViewer()">✖ 关闭</button>
+</div>
+</div>
+<div id="houseVoxelStatus" style="font-size:11px;color:#888;margin-bottom:6px;">加载中...</div>
+<div id="houseVoxelSize" style="font-size:11px;color:#9ad;margin-bottom:6px;"></div>
+<div id="houseVoxelCanvasWrap" style="width:100%;height:480px;background:#07080C;border-radius:10px;overflow:hidden;"></div>
+<p style="color:#666;font-size:10px;margin-top:6px;">鼠标拖拽旋转 / 滚轮缩放。方块材质从官方资源贴图 CDN 加载；楼梯/台阶/栅栏/墙/活板门/门/栅栏门已用简化外形+真实贴图渲染（门/栅栏门固定按关闭姿态，楼梯不区分转角形状）；床/按钮/压力板/地毯/铁轨等仍用近似颜色立方体。</p>
+</div>
+</div>
+
+<!-- ====== 元老院 / 政治 ====== -->
+<div class="tab-section" id="tab-politic">
+<div class="stats-row" id="politicKpis"></div>
+<div class="card"><h3>🏛 我的身份 <a href="/announce" target="_blank" style="float:right;font-size:12px;color:#00E5FF;text-decoration:none;">📢 公告栏 →</a></h3>
+<div id="politicMyOffice" style="font-size:13px;">加载中...</div>
+</div>
+<div class="card"><h3>🏛 元老院构成</h3>
+<div id="politicOffices" style="font-size:12px;color:#aaa;">加载中...</div>
+</div>
+<div class="card"><h3>📢 城邦公告 / 立法动态 <span id="annRefresh" style="font-size:10px;color:#667;"></span></h3>
+<div id="politicAnnouncements" style="font-size:12px;max-height:300px;overflow-y:auto;">加载中...</div>
+</div>
+<div class="card"><h3>🛡 保民官选举（全民投票）</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">人人可投一票（可改票），得票最多的前 N 名（N=保民官席位）将在本轮投票截止时自动就任。元老/执政官/骑士/管理员不具备候选资格。</p>
+<div id="tribuneElectionInfo" style="font-size:12px;color:#aaa;margin-bottom:8px;">加载中...</div>
+<div class="form-row">
+<label>候选人<br><input id="tribuneVoteUuid" class="player-picker" placeholder="玩家名/UUID"/></label>
+<button class="btn btn-sm btn-primary" onclick="castTribuneVote()">🗳 投票</button>
+</div>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>#</th><th>候选人</th><th>票数</th></tr></thead><tbody id="tribuneTallyBody"></tbody></table></div>
+</div>
+<div class="card" id="politicProposeCard" style="display:none;"><h3>📜 发起立法提案</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">执政官 / 骑士可发起提案。选择提案类型后按表单填写即可，系统自动生成法案——<b>无需手写 JSON</b>。提案颁布后会自动写入对应的税收 / 银行 / 地产系统。</p>
+<button class="btn btn-primary" onclick="openProposalComposer()">➕ 新建提案</button>
+</div>
+<div class="card"><h3>📋 提案列表</h3>
+<div class="form-row">
+<label>状态过滤<br><select id="propFilter" onchange="loadProposals()">
+  <option value="">全部</option>
+  <option value="PROPOSED">待表决</option>
+  <option value="SENATE_VOTING">元老院表决中</option>
+  <option value="TRIBUNE_REVIEW">保民官审查中</option>
+  <option value="VETOED">已否决</option>
+  <option value="SENATE_OVERRIDE">覆议中</option>
+  <option value="ENACTED">已颁布</option>
+  <option value="REJECTED">已驳回</option>
+</select></label>
+<button class="btn btn-sm" onclick="loadProposals()">🔍 刷新</button>
+</div>
+<div class="table-wrap" style="max-height:420px;"><table><thead><tr><th>ID</th><th>标题</th><th>类型</th><th>提案人</th><th>状态</th><th>操作</th></tr></thead><tbody id="proposalBody"></tbody></table></div>
+</div>
+</div>
+
+<!-- ====== My Tax Records ====== -->
+<div class="tab-section" id="tab-my-tax">
+<div class="card"><h3>我的纳税记录</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>类别</th><th>基数</th><th>税率</th><th>税额</th><th>时间</th></tr></thead><tbody id="taxBody"></tbody></table></div>
+</div>
+</div>
+
+<!-- ====== Public Info: Prices & Tax Rates ====== -->
+<div class="tab-section" id="tab-public-info">
+<div class="card">
+  <h3>📦 官方收购价格表</h3>
+  <p style="color:#aaa;font-size:11px;margin-bottom:8px;">以下物品可在 <b>/market → 官方收购</b> 出售给官方。价格随市场需求实时波动。</p>
+  <div class="table-wrap">
+    <table><thead><tr><th>物品中文名</th><th>英文材质</th><th>基础价</th><th>当前收购价</th><th>趋势</th><th>市场均价(7日)</th></tr></thead>
+    <tbody id="pubPriceBody"><tr><td colspan="6" style="color:#666;">加载中...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<div class="card" style="margin-top:12px;">
+  <h3>📋 交易税率一览</h3>
+  <p style="color:#aaa;font-size:11px;margin-bottom:8px;">各类经济活动所适用的交易税率（契税/交易税），由管理员或元老院颁布设定。</p>
+  <div class="table-wrap">
+    <table><thead><tr><th>税种</th><th>税率</th><th>说明</th></tr></thead>
+    <tbody id="pubTaxBody"><tr><td colspan="3" style="color:#666;">加载中...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<div class="card" style="margin-top:12px;">
+  <h3>🏭 企业综合税率（按行业）</h3>
+  <p style="color:#aaa;font-size:11px;margin-bottom:8px;">企业所得税、分红税因行业不同而有所差异，以下为各行业综合适用税率。</p>
+  <div class="table-wrap">
+    <table><thead><tr><th>行业</th><th>企业所得税</th><th>分红税</th><th>市场交易税</th></tr></thead>
+    <tbody id="pubIndustryBody"><tr><td colspan="4" style="color:#666;">加载中...</td></tr></tbody>
+    </table>
+  </div>
+  <p style="color:#666;font-size:10px;margin-top:6px;">📌 地块持有税（年化）由区域规划时单独设定，不同区域税率不同，购地前请向管理员确认。</p>
+</div>
+</div>
+
+</div>
+
+<script src="assets/player-core.js"></script>
+<script src="assets/player-player-picker.js"></script>
+<script src="assets/player-labels.js"></script>
+<script src="assets/player-smart-inputs.js"></script>
+<script src="assets/player-motion.js"></script>
+<script src="assets/player-drill.js"></script>
+<script src="assets/player-shell.js"></script>
+<script src="assets/player-side-sheet.js"></script>
+<script src="assets/player-cards.js"></script>
+
+<!-- ===== 玩家UUID选择器 (player picker) ===== -->
+<datalist id="ksPlayerOptions"></datalist>
+
+
+<datalist id="ksSmartPlayerOptions"></datalist>
+<datalist id="ksSmartBankOptions"></datalist>
+<datalist id="ksSmartEnterpriseOptions"></datalist>
+
+
+
+
+
+
+
+
+</body>
+</html>

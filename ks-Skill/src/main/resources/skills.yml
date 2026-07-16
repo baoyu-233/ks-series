@@ -1,0 +1,52 @@
+# ============================================================
+# ks-Skill 技能配置
+# ------------------------------------------------------------
+# 每个条目 = 一个触发器 + 判定(概率/冷却/条件) + 要施放的 MythicMobs 技能 + 谁能获得(bindings)
+#
+# trigger 可选:
+#   ON_DAMAGED   玩家受到伤害时
+#   ON_ATTACK    玩家造成伤害时(近战或弹射物)
+#   ON_KILL      玩家击杀生物时
+#   ON_INTERVAL  周期性(用 interval-seconds 控制间隔, 常驻光环/粒子用)
+#   ON_SNEAK     玩家按下潜行时
+#
+# bindings 满足任一来源即视为“拥有”该技能:
+#   titles       佩戴指定称号ID(PlayerTitle 的 buff 称号)
+#   permissions  拥有任一权限节点(任何权限插件通用, 如 LuckPerms)
+#   items        手持/穿戴带此标记的物品(物品 PDC ksskill:mark 的值)
+#   —— 另有“指令授予”来源, 用 /ksskill grant 授予, 不在此配置
+#
+# mythic-skill: 命中后要施放的 MythicMobs 技能名(定义在 MythicMobs/Skills/*.yml)
+# worlds:       世界限制(可选) — 只在列出的世界生效; 留空/删除 = 所有世界。世界名区分大小写。
+# ============================================================
+skills:
+
+  # A级「代码特工」防火墙协议: 受到近战伤害时 10% 概率触发, 8 秒内部冷却
+  # 当前限制为仅在副本世界 ks-dungeon-world 生效; 想全世界生效就把 worlds 改成 []
+  firewall_protocol:
+    display: "&6防火墙协议"
+    trigger: ON_DAMAGED
+    chance: 0.10
+    cooldown: 8
+    mythic-skill: ks_firewall
+    worlds: [ks-dungeon-world]
+    conditions:
+      damage-causes: [ENTITY_ATTACK, ENTITY_SWEEP_ATTACK]
+    bindings:
+      titles: [72]
+      permissions: ["ksskill.firewall"]
+      items: []
+
+  # S级「创世骇客」黑客矩阵光环: 常驻每 2 秒喷一圈绿色粒子(纯视觉)
+  # 注: S级 4% 吸血是 PlayerTitle 的静态属性 buff, 不在此(此处只做粒子光环)
+  hacker_matrix_aura:
+    display: "&a黑客矩阵"
+    trigger: ON_INTERVAL
+    interval-seconds: 2
+    chance: 1.0
+    cooldown: 0
+    mythic-skill: ks_matrix_aura
+    bindings:
+      titles: [71]
+      permissions: []
+      items: []

@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>ks-Inherit 物品继承管理</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;padding:20px}
+h1{color:#58a6ff;font-size:20px;margin-bottom:4px}
+.sub{color:#8b949e;font-size:13px;margin-bottom:16px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:16px}
+.card h3{color:#58a6ff;margin-bottom:10px;font-size:15px}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+input,select,button{padding:6px 12px;background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px}
+button{cursor:pointer;background:#238636;border-color:#2ea043;color:#fff;font-weight:600}
+button:hover{background:#2ea043}
+button.danger{background:#da3633;border-color:#f85149}
+button.danger:hover{background:#f85149}
+button.warn{background:#9e6a03;border-color:#bb8009}
+button.warn:hover{background:#bb8009}
+button.small{padding:2px 8px;font-size:11px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #21262d;vertical-align:top}
+th{background:#0d1117;color:#8b949e;font-weight:600;position:sticky;top:0}
+tr:hover{background:#1c2128}
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600}
+.badge-pending{background:#9e6a03;color:#fff}
+.badge-approved{background:#1f6feb;color:#fff}
+.badge-rejected{background:#da3633;color:#fff}
+.badge-delivered{background:#238636;color:#fff}
+.ench-tag{display:inline-block;background:#1f6feb33;color:#58a6ff;padding:1px 6px;border-radius:4px;margin:2px;font-size:11px}
+.attr-row{color:#8b949e;font-size:11px;margin:1px 0}
+.attr-val{color:#ff7b72;font-weight:600}
+.lore-line{color:#c9d1d9;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px}
+.toast{position:fixed;top:12px;right:12px;padding:10px 20px;border-radius:6px;font-size:13px;z-index:999;animation:fadeIn .3s}
+.toast-ok{background:#238636;color:#fff}
+.toast-err{background:#da3633;color:#fff}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+.detail-row{cursor:pointer}
+.detail-expand{display:none;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px;margin-top:4px}
+.token-row{margin-bottom:10px;display:flex;gap:8px;align-items:center}
+</style>
+</head>
+<body>
+<h1>📦 ks-Inherit 物品继承管理</h1>
+<p class="sub">审阅 → 批准 → 发放到玩家背包 (OpenInv)</p>
+
+<div class="card token-row">
+<label style="font-size:12px;color:#8b949e">Admin Token:</label>
+<input id="authToken" placeholder="Bearer token or ?token= param" style="width:400px;font-family:monospace;font-size:11px">
+<button onclick="setToken()">🔑 设置</button>
+<span id="authStatus" style="font-size:11px;color:#8b949e;"></span>
+</div>
+
+<div class="card">
+<div class="filters">
+<select id="statusFilter" onchange="loadItems()">
+<option value="">全部状态</option><option value="PENDING" selected>待审</option>
+<option value="APPROVED">已批准</option><option value="REJECTED">已拒绝</option><option value="DELIVERED">已发放</option>
+</select>
+<input id="playerUuid" class="player-picker" placeholder="玩家名/UUID (可选)" style="width:260px">
+<button onclick="loadItems()">🔍 查询</button>
+<button class="danger" onclick="batchReject()" style="margin-left:auto">拒绝所选</button>
+<button onclick="batchApprove()">批准所选</button>
+<button class="warn" onclick="batchDeliver()">发放所选</button>
+</div>
+</div>
+
+<div class="card" style="max-height:70vh;overflow-y:auto">
+<table><thead><tr>
+<th style="width:30px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
+<th>ID</th><th>玩家</th><th>物品</th><th>详情</th><th>状态</th><th>操作</th>
+</tr></thead><tbody id="itemsBody"></tbody></table>
+<div id="stats" style="margin-top:8px;color:#8b949e;font-size:12px"></div>
+</div>
+
+<script>
+var allItems=[],selected=new Set(),_token='',_tokenFail=false;
+
+// Try to get token from page URL
+(function(){
+ var m=location.search.match(/[?&]token=([^&]+)/);
+ if(m){_token=m[1];document.getElementById('authToken').value=_token;document.getElementById('authStatus').textContent='✅ from URL';}
+})();
+
+function setToken(){
+ _token=document.getElementById('authToken').value.trim();
+ _tokenFail=false;
+ document.getElementById('authStatus').textContent=_token?'✅ 已设置':'';
+ loadItems();
+}
+
+async function api(method,url,body){
+ var opts={method:method,headers:{'Content-Type':'application/json'}};
+ if(_token)opts.headers['Authorization']='Bearer '+_token;
+ if(body)opts.body=JSON.stringify(body);
+ var r=await fetch(url,opts);
+ if(r.status===401){_tokenFail=true;return{error:'token 无效或过期，请重新获取'};}
+ return r.json();
+}
+
+async function loadItems(){
+ if(_tokenFail){document.getElementById('itemsBody').innerHTML='<tr><td colspan="7" style="color:#f85149;text-align:center">Token 无效！请从 <a href="/ks-Eco/admin" target="_blank">ks-Eco 管理面板</a> 复制 admin token</td></tr>';return;}
+ var s=document.getElementById('statusFilter').value;
+ var p=document.getElementById('playerUuid').value.trim();
+ var ps=new URLSearchParams();
+ if(s)ps.set('status',s);
+ if(p)ps.set('playerUuid',p);
+ var d=await api('GET','/ks-Inherit/api/items?'+ps.toString());
+ if(_tokenFail){loadItems();return;}
+ allItems=d.items||[];
+ selected.clear();
+ render();
+ document.getElementById('stats').textContent='共 '+d.count+' 条';
+}
+
+function render(){
+ var tb=document.getElementById('itemsBody'),h='';
+ (allItems||[]).forEach(function(item,idx){
+   var id='item_'+item.id;
+   var badge='badge-'+(item.status||'PENDING').toLowerCase();
+
+   h+='<tr class="detail-row" onclick="toggleDetail(\''+id+'\')">';
+   h+='<td><input type="checkbox" '+(selected.has(item.id)?'checked':'')+' onclick="event.stopPropagation();toggleSelect('+item.id+')"></td>';
+   h+='<td>'+item.id+'</td>';
+   h+='<td><span title="'+he(item.player_uuid||'')+'">'+he(item.player_name||'?')+'</span></td>';
+   h+='<td>'+he(item.display_name_plain||item.item_name||item.item_type||'?')+'</td>';
+   h+='<td style="font-size:11px">'+summaryHtml(item)+'</td>';
+   h+='<td><span class="badge '+badge+'">'+item.status+'</span></td>';
+   h+='<td onclick="event.stopPropagation()">'+actionBtns(item)+'</td>';
+   h+='</tr>';
+
+   // Expanded detail row
+   h+='<tr class="detail-expand" id="'+id+'"><td colspan="7">'+detailHtml(item)+'</td></tr>';
+ });
+ tb.innerHTML=h||'<tr><td colspan="7" style="color:#666;text-align:center">暂无记录</td></tr>';
+}
+
+function summaryHtml(item){
+ var p=[];
+ // Enchantment tags
+ if(item.enchants_detail){
+   var en=item.enchants_detail;
+   Object.entries(en).slice(0,4).forEach(function(e){p.push('<span class="ench-tag">'+e[1].name+' '+e[1].level+'</span>');});
+   if(Object.keys(en).length>4)p.push('<span class="ench-tag">...+'+(Object.keys(en).length-4)+'</span>');
+ }
+ // Attribute count
+ if(item.attributes&&item.attributes.length){
+   p.push(' <span style="color:#ff7b72">⚔'+item.attributes.length+'项属性</span>');
+ }
+ // Lore preview
+ if(item.lore_lines&&item.lore_lines.length){
+   p.push(' <span style="color:#8b949e">💬'+item.lore_lines.length+'行</span>');
+ }
+ if(item.unbreakable) p.push(' <span style="color:#d2a8ff">🔒</span>');
+ if(item.custom_model_data) p.push(' <span style="color:#ffa657">CMD:'+item.custom_model_data+'</span>');
+ return p.join(' ')||'<span style="color:#666">-</span>';
+}
+
+function detailHtml(item){
+ var h='<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+
+ // Left: enchantments
+ h+='<div><b style="color:#58a6ff">附魔</b>';
+ if(item.enchants_detail){
+   h+='<div style="margin-top:4px">';
+   Object.entries(item.enchants_detail).forEach(function(e){
+     h+='<span class="ench-tag">'+e[1].name+' <b>'+e[1].level+'</b></span> ';
+   });
+   h+='</div>';
+ }else{h+='<div style="color:#666">无</div>';}
+ h+='</div>';
+
+ // Right: attributes
+ h+='<div><b style="color:#ff7b72">主手/装备属性</b>';
+ if(item.attributes&&item.attributes.length){
+   h+='<div style="margin-top:4px">';
+   item.attributes.forEach(function(a){
+     var opName=a.operation==='ADD_NUMBER'?'+':(a.operation==='MULTIPLY_SCALAR_1'?'×':'');
+     var slot=SLOT_CN[a.slot]||a.slot||'任意';
+     h+='<div class="attr-row">'+a.name+' <span class="attr-val">'+opName+String(a.amount).replace(/^-/,'-').replace(/^[^+-]/,'+')+'</span> <span style="color:#666">['+slot+']</span></div>';
+   });
+   h+='</div>';
+ }else{h+='<div style="color:#666">无</div>';}
+ h+='</div>';
+
+ // Bottom full width: lore
+ h+='<div style="grid-column:1/-1"><b style="color:#c9d1d9">物品 Lore</b>';
+ if(item.lore_lines&&item.lore_lines.length){
+   h+='<div style="margin-top:4px">';
+   item.lore_lines.forEach(function(l){h+='<div class="lore-line">'+he(l)+'</div>';});
+   h+='</div>';
+ }else{h+='<div style="color:#666">无</div>';}
+ h+='</div>';
+
+ // Other info
+ h+='<div style="grid-column:1/-1;font-size:11px;color:#666">';
+ if(item.unbreakable) h+='🔒 不可破坏 | ';
+ if(item.custom_model_data) h+='CustomModelData: '+item.custom_model_data+' | ';
+ h+='Item Type: '+item.item_type;
+ h+='</div>';
+
+ h+='</div>';
+ return h;
+}
+
+var SLOT_CN={"HAND":"主手","MAINHAND":"主手","OFF_HAND":"副手","OFFHAND":"副手","FEET":"靴子","LEGS":"护腿","CHEST":"胸甲","HEAD":"头盔","BODY":"身体","ANY":"任意"};
+
+function actionBtns(item){
+ var s='';
+ if(item.status==='PENDING'){
+   s+='<button class="small" onclick="approveOne('+item.id+')">批准</button> ';
+   s+='<button class="small danger" onclick="rejectOne('+item.id+')">拒绝</button>';
+ }else if(item.status==='APPROVED'){
+   s+='<button class="small warn" onclick="deliverOne('+item.id+')">发放</button>';
+ }else{s+='<span style="color:#666">-</span>';}
+ return s;
+}
+
+function toggleDetail(id){
+ var el=document.getElementById(id);
+ el.style.display=el.style.display==='table-row'?'none':'table-row';
+}
+
+function toggleSelect(id){if(selected.has(id))selected.delete(id);else selected.add(id);render();}
+function toggleSelectAll(){
+ if(document.getElementById('selectAll').checked){allItems.forEach(function(i){selected.add(i.id)});}
+ else{selected.clear();}
+ render();
+}
+function he(s){return String(s||'').replace(/&/g,'&').replace(/</g,'<').replace(/>/g,'>')}
+function toast(m,c){var e=document.createElement('div');e.className='toast toast-'+(c||'ok');e.textContent=m;document.body.appendChild(e);setTimeout(function(){e.remove()},3000)}
+
+async function approveOne(id){
+ var d=await api('POST','/ks-Inherit/api/approve',{id:id});
+ if(d.message){toast(d.message,'ok');loadItems()}else toast(d.error||'err','err')
+}
+async function rejectOne(id){
+ var d=await api('POST','/ks-Inherit/api/reject',{id:id});
+ if(d.message){toast(d.message,'ok');loadItems()}else toast(d.error||'err','err')
+}
+async function deliverOne(id){
+ var d=await api('POST','/ks-Inherit/api/deliver',{id:id});
+ if(d.message){toast(d.message,'ok');loadItems()}else toast(d.error||'err','err')
+}
+async function batchApprove(){await batch('PENDING',approveOne)}
+async function batchReject(){await batch('',rejectOne)}
+async function batchDeliver(){await batch('APPROVED',deliverOne)}
+async function batch(status,fn){
+ var ids=Array.from(selected).filter(function(id){
+   var it=allItems.find(function(i){return i.id===id});
+   return it&&(status===''||it.status===status);
+ });
+ if(!ids.length){toast('请选择物品','err');return}
+ for(var i=0;i<ids.length;i++)await fn(ids[i]);
+}
+loadItems();
+</script>
+
+<!-- ===== 玩家UUID选择器 (player picker) — 数据源来自 ks-Eco ===== -->
+<datalist id="ksPlayerOptions"></datalist>
+<script>
+(function(){
+  var _t=null, BASE='/ks-Eco';
+  function refill(q){
+    var dl=document.getElementById('ksPlayerOptions'); if(!dl) return;
+    fetch(BASE+'/api/players/search?q='+encodeURIComponent(q||''))
+      .then(function(r){return r.json();})
+      .then(function(d){
+        var ps=(d&&d.players)||[];
+        dl.innerHTML=ps.map(function(p){
+          return '<option value="'+p.uuid+'">'+(p.name||'?')+(p.online?' 🟢在线':' ⚫离线')+'</option>';
+        }).join('');
+      }).catch(function(){});
+  }
+  function wire(inp){
+    if(inp.dataset.ksPicker) return;
+    inp.dataset.ksPicker='1';
+    inp.setAttribute('list','ksPlayerOptions');
+    inp.setAttribute('autocomplete','off');
+    if(!inp.title) inp.title='输入玩家名搜索，从下拉选择以自动填入UUID';
+    inp.addEventListener('focus',function(){ refill(inp.value); });
+    inp.addEventListener('input',function(){
+      clearTimeout(_t); var q=inp.value;
+      _t=setTimeout(function(){ refill(q); }, 200);
+    });
+  }
+  window.ksWirePlayerPickers=function(root){
+    (root||document).querySelectorAll('input.player-picker').forEach(wire);
+  };
+  if(document.readyState!=='loading') window.ksWirePlayerPickers();
+  else document.addEventListener('DOMContentLoaded',function(){window.ksWirePlayerPickers();});
+})();
+</script>
+</body>
+</html>

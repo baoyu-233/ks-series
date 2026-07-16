@@ -1,0 +1,55 @@
+# ============================================
+# 批量扩展附魔：烬火收割 (Ash Reaver)
+# EN: Bulk extended enchantment: Ash Reaver (烬火收割)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: ash_reaver
+enabled: true
+curse: false
+max-level: 5
+rarity: divine
+group: fire
+category: melee
+
+applicable-items:
+  - SWORD
+  - AXE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 3
+villager-trade-price-range:
+  - 44
+  - 96
+
+codex-pools:
+  divine: 8
+
+effects:
+  - trigger: KILL_STREAK
+    cooldown: 140
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: HEAL
+        value: "{level} * 2"
+      - type: ADD_POTION_SELF
+        potion: "STRENGTH"
+        duration: "{level} * 30"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "SOUL_FIRE_FLAME"
+        count: 20
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.wither.spawn"
+        volume: "0.4"
+        pitch: "1.6"
+        at: "SELF"

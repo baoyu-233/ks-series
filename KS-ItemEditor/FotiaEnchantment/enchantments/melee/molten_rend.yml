@@ -1,0 +1,54 @@
+# ============================================
+# 批量扩展附魔：熔岩撕裂 (Molten Rend)
+# EN: Bulk extended enchantment: Molten Rend (熔岩撕裂)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: molten_rend
+enabled: true
+curse: false
+max-level: 4
+rarity: radiant
+group: fire
+category: melee
+
+applicable-items:
+  - AXE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: MELEE_ATTACK
+    cooldown: 80
+    conditions:
+      - type: chance
+        value: "{level} * 6"
+      - type: target_is_living
+    actions:
+      - type: DAMAGE_MULTIPLY
+        value: "1 + {level} * 0.08"
+      - type: IGNITE_TARGET
+        duration: "{level} * 30"
+      - type: PARTICLE
+        particle: "LAVA"
+        count: 6
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "block.lava.pop"
+        volume: "0.7"
+        pitch: "0.9"
+        at: "TARGET"

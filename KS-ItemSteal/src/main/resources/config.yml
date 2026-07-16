@@ -1,0 +1,12 @@
+# 命中后缀(全大写)。对 Material 名做 endsWith 匹配。
+# 重点:用 _AXE 而不是 AXE,否则会把镐子(DIAMOND_PICKAXE 等)一起拿走;
+#       _AXE 只匹配 ..._AXE,不匹配 ..._PICKAXE。
+suffixes:
+  - _SWORD       # 所有剑
+  - _AXE         # 所有斧(不含镐)
+  - SHIELD       # 盾
+  - TRIDENT      # 三叉戟
+# 想加更多自己解开注释/补充:
+#  - BOW         # 注意:CROSSBOW 也以 BOW 结尾,会一起匹配
+#  - CROSSBOW
+#  - _HOE

@@ -1,0 +1,31 @@
+# ks-Eco-RealEstateDungeon 默认配置（纯副本生成插件）
+# 通过 Web API POST /ks-Eco/api/realestate-dungeon/config 热更新
+# 标记 [即时] = 修改后立刻生效，[副本] = 下次副本开启时生效
+#
+# 注：房产相关配置（开发费/契税/容积率）已迁至 ks-Eco-RealEstate 插件。
+
+# 副本门票
+ticket:
+  default_price: 500.0          # [即时] 默认门票价格（队长开本付一张）
+
+# 复活机制
+revive:
+  base_cost: 200.0              # [即时] 第一次复活费用
+  exponent: 1.8                 # [即时] 指数增长倍率: cost = base * exponent^(n-1)
+  max_revives_per_player: 10    # [即时] 每人最大复活次数
+
+# 网格系统（虚空世界）
+grid:
+  world_name: "ks-dungeon-world"  # [副本] 虚空世界名
+  spacing: 5000                   # [副本] 网格间距
+  max_grids: 64                   # [副本] 最大网格数
+  clean_timeout_seconds: 120      # [即时] 副本结束后网格回收延迟
+  instance_timeout_minutes: 60    # [即时] 副本超时（模板 timeLimit 可覆盖）
+
+# 地图（FAWE 贴 schematic，需服务器装 FastAsyncWorldEdit；可选 MythicMobs 刷怪）
+# 授图流程：建好房间 → 刷怪点放告示牌(第1行[mm] 第2行 怪物名:等级) → 玩家出生点放[spawn]牌
+#          → //copy（站在出生点）→ //schem save <图名> → 把图名填进模板的「地图」字段
+map:
+  base_y: 64           # [副本] 贴图基准高度，clipboard 原点对齐到 (网格中心X, base_y, 网格中心Z)
+  arena_radius: 256    # [副本] 清场/清画布水平半径（以网格中心为原点）。须 ≥ 单个 schematic 水平尺寸的一半
+  spawn_mobs: true     # [即时] 是否扫描 [mm] 告示牌并刷 MythicMobs

@@ -1,0 +1,45 @@
+id: coinbound_pickaxe
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: mining
+category: tools
+
+applicable-items:
+  - PICKAXE
+  - AXE
+  - SHOVEL
+  - HOE
+  - SHEARS
+  - FISHING_ROD
+  - FLINT_AND_STEEL
+  - BRUSH
+  - CARROT_ON_A_STICK
+  - WARPED_FUNGUS_ON_A_STICK
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+
+enchanting-table-weight: 8
+villager-trade-price-range:
+  - 24
+  - 56
+
+codex-pools:
+  radiant: 8
+  aureate: 4
+
+effects:
+  - trigger: DAMAGE_ITEM
+    cooldown: 20
+    conditions:
+      - type: chance
+        value: "0"
+    actions:
+      - type: HELD_ITEM_REPAIR
+        value: "0"

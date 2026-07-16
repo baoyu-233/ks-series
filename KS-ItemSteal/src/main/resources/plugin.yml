@@ -1,0 +1,14 @@
+name: KS-ItemSteal
+version: 1.0.2
+main: com.steal.ItemSteal
+api-version: '1.21'
+author: you
+description: Generic lossless item steal/return for bosses and players.
+commands:
+  itemsteal:
+    description: 夺取/归还兵刃控制
+    usage: /itemsteal <steal|givebow|return|reload>
+permissions:
+  itemsteal.admin:
+    description: 管理命令(givebow/return/reload)
+    default: op

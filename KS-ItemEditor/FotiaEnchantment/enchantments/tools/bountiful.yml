@@ -1,0 +1,68 @@
+# ============================================
+# 丰收 (Bountiful)
+# EN: Bountiful (丰收)
+# 挖掘方块时有概率获得额外掉落物
+# 等级越高概率和额外数量越多
+# ============================================
+
+# 附魔ID（唯一标识，不可重复）
+# EN: Enchantment ID; must be unique
+id: bountiful
+
+# 是否启用此附魔
+# EN: Whether this enchantment is enabled
+enabled: true
+
+# 最大等级
+# EN: Maximum level
+max-level: 5
+
+# 稀有度（对应 rarity.yml 中定义的稀有度ID）
+# EN: Rarity ID defined in rarity.yml
+rarity: dustlight
+
+# 所属附魔组（对应 groups.yml）
+# EN: Enchantment group defined in groups.yml
+group: utility
+
+# 可应用的物品类型
+# EN: Applicable item types
+applicable-items:
+  - PICKAXE
+  - SHOVEL
+  - HOE
+
+# 冲突的附魔ID列表（与自动熔炼冲突）
+conflicts:
+  - auto_smelt
+
+# 获取方式配置
+# EN: Acquisition method configuration
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  loot-table: true
+
+# 附魔台权重（影响附魔台中出现概率，常见）
+enchanting-table-weight: 25
+
+# 星芒魔典抽取池配置
+# EN: Stellaris Codex roll pool configuration
+codex-pools:
+  dustlight: 20
+  moonlit: 10
+
+# 效果配置（核心：Trigger → Condition → Effect 管道）
+# EN: Effect configuration; core pipeline is Trigger -> Condition -> Effect
+effects:
+  # 挖掘方块时概率获得额外掉落
+  - trigger: MINE_BLOCK
+    conditions:
+      # 概率触发，等级越高越容易触发
+      - type: chance
+        value: "{level} * 10"
+    actions:
+      # 额外掉落物（倍率随等级增加）
+      - type: BONUS_DROP
+        multiplier: "{level} * 0.5 + 1"

@@ -1,0 +1,30 @@
+# ============================================================
+# ks-Skill 默认 MythicMobs 技能
+# 由 ks-Skill 在启用时释放到此目录(仅当文件不存在时, 不覆盖你的修改)。
+# 调整击退力度/粒子颜色/音效后运行  mm reload skills  即时生效, 无需重启或重编译插件。
+# ============================================================
+
+# A级 防火墙协议: 蓝色能量屏障向外扩散 + 电弧 + 三层音效 + 强力反震 + 减速虚弱压制
+ks_firewall:
+  Skills:
+  # --- 视觉: 三层递增半径的蓝色能量环(delay 做向外扩散动画) ---
+  - effect:particlering{particle=dust_color_transition;color1=#3aa0ff;color2=#00e5ff;radius=1;points=45;size=0.9;speed=0;y=0.3} @self
+  - effect:particlering{particle=dust_color_transition;color1=#3aa0ff;color2=#00e5ff;radius=2.2;points=60;size=0.9;speed=0;y=0.4;delay=2} @self
+  - effect:particlering{particle=dust_color_transition;color1=#44aaff;color2=#00e5ff;radius=3.6;points=75;size=0.9;speed=0;y=0.5;delay=4} @self
+  # --- 视觉: 竖直电弧火花 + 光柱感 ---
+  - effect:particles{particle=electric_spark;amount=35;hSpread=1.3;vSpread=1.6;speed=0.06} @self
+  - effect:particles{particle=end_rod;amount=20;hSpread=1;vSpread=1.2;speed=0.02} @self
+  # --- 音效: 护盾激活 + 高频电流 + 低频冲击 ---
+  - effect:sound{s=block.conduit.deactivate;v=1.3;p=1.6} @self
+  - effect:sound{s=block.beacon.deactivate;v=0.9;p=1.9} @self
+  - effect:sound{s=entity.zombie.attack_iron_door;v=0.7;p=0.6} @self
+  # --- 击退: 强力向外反震 4 格内实体 ---
+  - throw{velocity=16;velocityY=6} @EntitiesInRadius{r=4}
+  # --- 战斗压制: 被反震的敌人减速 + 虚弱 3 秒 ---
+  - potion{type=SLOWNESS;duration=60;level=1} @EntitiesInRadius{r=4}
+  - potion{type=WEAKNESS;duration=60;level=1} @EntitiesInRadius{r=4}
+
+# S级 黑客矩阵: 常驻绿色粒子光环(纯视觉)
+ks_matrix_aura:
+  Skills:
+  - effect:particles{particle=happy_villager;amount=12;hSpread=0.6;vSpread=1;speed=0} @Self

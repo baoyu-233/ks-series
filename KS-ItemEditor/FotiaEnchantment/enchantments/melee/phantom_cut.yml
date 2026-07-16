@@ -1,0 +1,57 @@
+# ============================================
+# 批量扩展附魔：幻影切割 (Phantom Cut)
+# EN: Bulk extended enchantment: Phantom Cut (幻影切割)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: phantom_cut
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: offensive
+category: melee
+
+applicable-items:
+  - SWORD
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: MELEE_ATTACK
+    cooldown: 85
+    conditions:
+      - type: chance
+        value: "{level} * 7"
+      - type: target_is_living
+      - type: is_sprinting
+    actions:
+      - type: DAMAGE_ADD
+        value: "{level} * 1.5"
+      - type: ADD_POTION_SELF
+        potion: "SPEED"
+        duration: "{level} * 25"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "SMOKE"
+        count: 16
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.phantom.flap"
+        volume: "0.5"
+        pitch: "1.5"
+        at: "SELF"

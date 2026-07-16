@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KSECO · Web 测试台</title>
+<link rel="stylesheet" href="assets/test.css">
+</head>
+<body>
+<header class="testbar">
+  <div class="testbar-brand"><span class="mark">KSECO</span><span>WEB TEST BENCH</span></div>
+  <div class="control-group" aria-label="页面">
+    <button class="mode-btn active" type="button" data-view="admin">管理员端</button>
+    <button class="mode-btn" type="button" data-view="player">玩家端</button>
+  </div>
+  <div class="control-group" aria-label="数据场景">
+    <button class="scenario-btn active" type="button" data-scenario="normal">正常数据</button>
+    <button class="scenario-btn" type="button" data-scenario="empty">空数据</button>
+    <button class="scenario-btn" type="button" data-scenario="error">接口故障</button>
+    <button class="scenario-btn" type="button" data-scenario="slow">慢接口</button>
+  </div>
+  <div class="testbar-actions">
+    <span id="frameStatus" class="status">正在载入</span>
+    <button id="reloadFrame" class="icon-btn" type="button" title="刷新当前页面" aria-label="刷新当前页面">↻</button>
+    <button id="openFrame" class="icon-btn" type="button" title="在独立窗口打开" aria-label="在独立窗口打开">↗</button>
+  </div>
+</header>
+<main class="viewport-shell">
+  <iframe id="appFrame" title="KSECO 正式页面测试视图"></iframe>
+</main>
+<script src="assets/test.js"></script>
+</body>
+</html>

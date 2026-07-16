@@ -1,0 +1,57 @@
+# ============================================
+# 批量扩展附魔：背水一战 (Last Stand)
+# EN: Bulk extended enchantment: Last Stand (背水一战)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: last_stand
+enabled: true
+curse: false
+max-level: 5
+rarity: divine
+group: defensive
+category: armor
+
+applicable-items:
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 3
+villager-trade-price-range:
+  - 44
+  - 96
+
+codex-pools:
+  divine: 8
+
+effects:
+  - trigger: NEAR_DEATH
+    cooldown: 240
+    conditions:
+      - type: chance
+        value: "{level} * 10"
+    actions:
+      - type: HEAL
+        value: "{level} * 2.5"
+      - type: ADD_POTION_SELF
+        potion: "RESISTANCE"
+        duration: "{level} * 40"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "TOTEM_OF_UNDYING"
+        count: 20
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "item.totem.use"
+        volume: "0.6"
+        pitch: "1.1"
+        at: "SELF"

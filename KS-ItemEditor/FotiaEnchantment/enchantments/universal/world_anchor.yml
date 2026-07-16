@@ -1,0 +1,67 @@
+# ============================================
+# 批量扩展附魔：世界锚定 (World Anchor)
+# EN: Bulk extended enchantment: World Anchor (世界锚定)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: world_anchor
+enabled: true
+curse: false
+max-level: 4
+rarity: radiant
+group: defensive
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: CHANGE_WORLD
+    cooldown: 180
+    conditions:
+      - type: chance
+        value: "{level} * 9"
+    actions:
+      - type: ADD_POTION_SELF
+        potion: "RESISTANCE"
+        duration: "{level} * 60"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "PORTAL"
+        count: 14
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "block.respawn_anchor.set_spawn"
+        volume: "0.5"
+        pitch: "1.2"
+        at: "SELF"

@@ -1,0 +1,854 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>ksHWP 世界地图</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Segoe UI',sans-serif;margin:0;padding:0;background:#0a0a0a;color:#e0e0e0;overflow:hidden;}
+#app{display:flex;height:100vh;}
+#sidebar{width:280px;min-width:280px;background:#1a1a2e;padding:10px;overflow-y:auto;border-right:1px solid #2a2a4a;z-index:10;font-size:12px;}
+#map{flex:1;position:relative;overflow:hidden;background:#0a0a1a;cursor:crosshair;}
+#map canvas{position:absolute;top:0;left:0;}
+.world-btn{display:block;width:100%;padding:5px 8px;margin:2px 0;background:#16213e;border:1px solid #2a2a4a;color:#e0e0e0;border-radius:4px;cursor:pointer;text-align:left;font-size:12px;}
+.world-btn:hover{background:#1a3a5e;border-color:#00d4ff;}
+.world-btn.active{background:#00d4ff33;border-color:#00d4ff;color:#00d4ff;}
+.section-title{color:#00d4ff;font-size:12px;font-weight:bold;margin:10px 0 4px;border-bottom:1px solid #2a2a4a;padding-bottom:3px;}
+.layer-toggle{display:flex;align-items:center;padding:3px 6px;margin:2px 0;background:#16213e;border-radius:3px;font-size:11px;cursor:pointer;}
+.layer-toggle:hover{background:#1a3a5e;}
+.layer-toggle input[type=checkbox]{margin-right:6px;cursor:pointer;}
+.layer-toggle label{cursor:pointer;flex:1;display:flex;align-items:center;gap:4px;}
+.layer-toggle .dot{display:inline-block;width:8px;height:8px;border-radius:50%;}
+#search-box{width:100%;padding:4px 6px;background:#0a0a1a;border:1px solid #2a2a4a;color:#e0e0e0;border-radius:4px;margin:3px 0;font-size:11px;}
+#type-filter{width:100%;padding:4px 6px;background:#0a0a1a;border:1px solid #2a2a4a;color:#e0e0e0;border-radius:4px;margin:3px 0;font-size:11px;}
+#annotations-list{max-height:160px;overflow-y:auto;}
+.anno-item{background:#16213e;padding:5px 6px;margin:2px 0;border-radius:3px;font-size:10px;cursor:pointer;border-left:3px solid #888;position:relative;}
+.anno-item:hover{background:#1a3a5e;}
+.anno-item .coords{color:#666;font-size:9px;}
+.anno-item .del{position:absolute;right:4px;top:50%;transform:translateY(-50%);color:#f44;cursor:pointer;font-size:11px;background:#f4433633;border:1px solid #f44;border-radius:3px;padding:1px 6px;display:none;}
+.anno-item.mine .del{display:inline-block;}
+.btn{background:#00d4ff33;color:#00d4ff;border:1px solid #00d4ff;padding:4px 8px;border-radius:4px;cursor:pointer;margin:3px 2px;font-size:11px;}
+.btn:hover{background:#00d4ff66;}
+.btn-sm{padding:2px 6px;font-size:10px;}
+.btn-danger{background:#f4433633;color:#f44;border-color:#f44;}
+.btn-danger:hover{background:#f4433666;}
+.btn-warn{background:#f4a23633;color:#f90;border-color:#f90;}
+.btn-warn:hover{background:#f4a23666;}
+.btn-hidden{background:#9c27b033;color:#ce93d8;border-color:#ce93d8;display:none;}
+.btn-hidden:hover{background:#9c27b066;}
+.btn-hidden.active{background:#ce93d833;color:#e040fb;}
+input,select{width:100%;padding:4px 6px;background:#0a0a1a;border:1px solid #2a2a4a;color:#e0e0e0;border-radius:4px;margin:2px 0;font-size:11px;}
+.coords-inline{display:flex;gap:4px;}
+.coords-inline input{flex:1;text-align:center;}
+.status{color:#666;font-size:10px;margin-top:4px;}
+.player-dot{font-size:10px;padding:1px 0;}
+.player-hidden{color:#ce93d8;font-style:italic;}
+#hint{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);color:#888;font-size:11px;background:#1a1a2ecc;padding:3px 10px;border-radius:4px;pointer-events:none;z-index:5;}
+#context-menu{position:absolute;display:none;background:#16213e;border:1px solid #00d4ff;border-radius:6px;padding:4px 0;z-index:20;min-width:180px;}
+#context-menu div{padding:6px 14px;cursor:pointer;font-size:11px;color:#e0e0e0;}
+#context-menu div:hover{background:#00d4ff33;color:#00d4ff;}
+#selected-area{position:absolute;border:2px dashed #ff0;background:rgba(255,255,0,0.12);display:none;pointer-events:none;z-index:4;}
+#map-status{position:absolute;top:6px;left:6px;color:#0f0;font-size:10px;background:#1a1a2ecc;padding:2px 8px;border-radius:4px;pointer-events:none;z-index:6;font-family:monospace;}
+#zoom-ctls{position:absolute;top:6px;right:6px;z-index:6;display:flex;flex-direction:column;gap:2px;}
+#zoom-ctls button{width:28px;height:28px;background:#1a1a2ecc;border:1px solid #2a2a4a;color:#00d4ff;font-size:16px;border-radius:4px;cursor:pointer;line-height:1;}
+#zoom-ctls button:hover{background:#00d4ff33;}
+#grid-toggle{position:absolute;bottom:36px;left:6px;z-index:6;}
+#batch-progress{position:absolute;bottom:60px;left:50%;transform:translateX(-50%);color:#0f0;font-size:11px;background:#1a1a2ecc;padding:2px 10px;border-radius:4px;pointer-events:none;z-index:8;display:none;}
+.area-render-bar{display:none;position:absolute;bottom:10px;left:50%;transform:translateX(-50%);z-index:9;gap:6px;align-items:center;background:#16213e;padding:4px 10px;border-radius:6px;border:1px solid #f90;}
+.area-render-bar span{color:#f90;font-size:11px;}
+.area-render-bar button{background:#f4a23633;color:#f90;border:1px solid #f90;padding:3px 8px;border-radius:3px;cursor:pointer;font-size:10px;white-space:nowrap;}
+.area-render-bar button:hover{background:#f4a23666;}
+</style></head><body>
+<div id="app">
+<div id="sidebar">
+<h3 style="color:#00d4ff;margin:0 0 6px;font-size:14px;">ksHWP 世界地图</h3>
+<div class="section-title">维度 / 世界</div>
+<div id="world-list">加载中...</div>
+
+<div class="section-title">图层控制</div>
+<div class="layer-toggle" onclick="toggleLayer('players')">
+<input type="checkbox" id="layer-players" checked onchange="event.stopPropagation();toggleLayer('players')"/>
+<label for="layer-players"><span class="dot" style="background:#0f0;"></span> 玩家标记 <small id="layer-players-info"></small></label>
+</div>
+<div class="layer-toggle" onclick="toggleLayer('annotations')">
+<input type="checkbox" id="layer-annotations" checked onchange="event.stopPropagation();toggleLayer('annotations')"/>
+<label for="layer-annotations"><span class="dot" style="background:#ff0;"></span> 地图备注 <small id="layer-annotations-info"></small></label>
+</div>
+
+<div class="section-title">在线玩家</div>
+<div id="player-list">加载中...</div>
+
+<div class="section-title">区块定位</div>
+<div style="font-size:10px;color:#888;margin-bottom:2px;">输入区块坐标 (cx, cz)</div>
+<div class="coords-inline">
+<input id="jump-cx" placeholder="cx" onkeydown="if(event.key==='Enter')jumpToChunk()"/>
+<input id="jump-cz" placeholder="cz" onkeydown="if(event.key==='Enter')jumpToChunk()"/>
+<button class="btn btn-sm" onclick="jumpToChunk()" style="flex:0 0 auto;">跳转</button>
+</div>
+<div style="font-size:9px;color:#666;" id="jump-preview"></div>
+
+<div class="section-title">搜索备注</div>
+<input id="search-box" placeholder="输入关键词搜索..." oninput="doSearch()"/>
+<select id="type-filter" onchange="doSearch()">
+<option value="">全部类型</option>
+<option value="note">点标注</option><option value="district">城区规划</option>
+<option value="landmark">地标</option><option value="building">建筑</option>
+<option value="farm">农场/牧场</option><option value="road">道路</option>
+<option value="mine">矿场</option><option value="other">其他</option>
+</select>
+<div class="section-title">地图备注 <span id="anno-count" style="color:#888;">(0)</span></div>
+<div id="annotations-list">请先登录</div>
+<div id="anno-form" style="display:none;">
+<div class="section-title" style="margin-top:6px;">添加备注</div>
+<div style="color:#0f0;font-size:10px;" id="anno-coord">右键点击地图选点 / Shift+拖拽框选区域</div>
+<input id="anno-text" placeholder="备注标题..." maxlength="200"/>
+<input id="anno-detail" placeholder="补充说明（可选）..."/>
+<select id="anno-type"><option value="note">点标注</option><option value="district">城区规划</option><option value="landmark">地标</option><option value="building">建筑</option><option value="farm">农场/牧场</option><option value="road">道路</option><option value="mine">矿场</option><option value="other">其他</option></select>
+<div style="display:flex;gap:4px;margin:3px 0;">
+<input type="color" id="anno-color" value="#ffcc00" style="width:32px;height:24px;padding:0;cursor:pointer;"/>
+<button class="btn btn-sm" onclick="addAnnotation()" style="flex:1;">添加备注</button>
+</div>
+</div>
+
+<div class="section-title">系统</div>
+<button class="btn btn-sm btn-hidden" id="hidden-btn" onclick="toggleHidden()" style="margin:2px 0;">👁 隐藏我的坐标</button>
+<div class="coords-inline" style="margin-top:4px;">
+<button class="btn btn-sm" onclick="doBatchRender()" id="batch-btn">批量渲染</button>
+<input id="batch-radius" value="10" style="flex:1;" placeholder="半径"/>
+</div>
+<button class="btn btn-sm btn-warn" id="force-render-all-btn" onclick="doForceRenderAll()" style="margin:2px 0;width:100%;display:none;">⚡ 强制渲染已加载区域</button>
+<button class="btn btn-sm" onclick="doPreRender()" id="prerender-btn" style="margin:2px 0;width:100%;">🔄 预渲染当前视角</button>
+<button class="btn btn-sm btn-danger" id="clear-cache-btn" onclick="doClearCache()" style="margin:2px 0;width:100%;display:none;">🗑 清除磁盘缓存</button>
+<div id="batch-result" style="font-size:10px;color:#0f0;margin-top:2px;"></div>
+<div style="font-size:9px;color:#555;" id="disk-cache-info"></div>
+
+<div class="section-title">导出到 Xaero 小地图</div>
+<button class="btn btn-sm" onclick="sendXaeroChatWaypoints()" style="width:100%;background:#0f83;border-color:#0f8;color:#0f8;">💬 发送路径点到聊天框（推荐）</button>
+<div style="font-size:9px;color:#888;margin-top:2px;line-height:1.5;">
+需要你当前在线。发送后聊天框会出现几条 <code style="color:#0f8;">xaero-waypoint:...</code> 消息，装了 Xaero 的客户端点击即可直接加入小地图，不用碰任何本地文件。
+</div>
+<button class="btn btn-sm" onclick="exportXaeroWaypoints()" style="width:100%;margin-top:4px;">📍 导出路径点文件（备用）</button>
+<div style="font-size:9px;color:#888;margin-top:2px;line-height:1.5;">
+不在线时可用：下载后用记事本打开，把里面的 <code style="color:#0f8;">waypoint:...</code> 行复制/追加到你自己客户端已有的
+<code style="color:#0f8;">xaero/minimap/Multiplayer_&lt;你连接用的服务器地址&gt;/dim%&lt;维度&gt;/mw$default_1.txt</code>
+文件末尾（<b>保留文件原有的 # 注释头，不要整体覆盖</b>）。
+</div>
+
+<div class="status" id="status"></div>
+</div>
+<div id="map">
+<canvas id="map-canvas"></canvas>
+<div id="selected-area"></div>
+<div id="context-menu"></div>
+<div id="area-render-bar" class="area-render-bar">
+<span id="area-render-label">已框选区域</span>
+<button onclick="forceRenderSelectedArea()">⚡ 渲染此区域</button>
+<button onclick="cancelAreaRender()">✕</button>
+</div>
+<div id="map-status">欢迎使用 ksHWP 地图</div>
+<div id="zoom-ctls"><button onclick="changeZoom(1)" title="放大">+</button><button onclick="changeZoom(-1)" title="缩小">−</button></div>
+<button id="grid-toggle" class="btn btn-sm" onclick="toggleGrid()" style="position:absolute;bottom:36px;left:6px;z-index:6;">网格: 关</button>
+<div id="batch-progress"></div>
+<div id="hint">右键: 选点 | Shift+拖拽: 框选 | 滚轮: 缩放 | 左键拖拽: 平移</div>
+</div>
+</div>
+<script>
+var cfg={currentWorld:'world',token:'',zoom:2,panX:0,panZ:0,dragging:false,selecting:false,lastMX:0,lastMY:0,
+    players:[],annotations:[],myAnnotations:[],publicAnnotations:[],
+    selX1:null,selZ1:null,selX2:null,selZ2:null,
+    selPX1:null,selPZ1:null,selPX2:null,selPZ2:null,tileSize:256,showGrid:false,batchRunning:false,isAdmin:false,
+    layers:{players:true,annotations:true},hiddenMode:false,hasHiddenPerm:false,areaRenderActive:false};
+var tileCaches={}; // 世界级图块缓存: { worldName: { "zoom:cx:cz": Image } }
+function tc(){return tileCaches[cfg.currentWorld]=tileCaches[cfg.currentWorld]||{};}
+
+var url=new URL(window.location.href);
+cfg.token=url.searchParams.get('token')||'';
+
+// 检测身份
+if(cfg.token){fetch('/kSHWP/api/whoami?token='+cfg.token).then(function(r){return r.json();}).then(function(d){
+    if(d.authenticated){
+        cfg.isAdmin=d.isAdmin||false;
+        cfg.hiddenMode=d.hidden||false;
+        cfg.hasHiddenPerm=d.hasHiddenPermission||false;
+        updateHiddenUI();
+        if(cfg.hiddenMode){updateHiddenBtn();}
+        // 管理员显示操作按钮
+        if(cfg.isAdmin){
+            document.getElementById('force-render-all-btn').style.display='block';
+            document.getElementById('clear-cache-btn').style.display='block';
+        }
+    }
+});}
+
+// 加载磁盘缓存状态
+function loadCacheStats(){
+    fetch('/kSHWP/api/cache-stats').then(function(r){return r.json();}).then(function(d){
+        var info='磁盘: '+(d.diskTiles||0)+' 图块, '+(d.diskBytes?Math.round(d.diskBytes/1024):0)+' KB';
+        document.getElementById('disk-cache-info').textContent=info;
+    });
+}
+
+function api(p,opt){return fetch('/kSHWP'+p,opt).then(function(r){return r.json();});}
+
+var canvas=document.getElementById('map-canvas');
+var ctx=canvas.getContext('2d');
+var selDiv=document.getElementById('selected-area');
+var ctxMenu=document.getElementById('context-menu');
+var mapDiv=document.getElementById('map');
+
+function resize(){canvas.width=mapDiv.clientWidth;canvas.height=mapDiv.clientHeight;}
+window.addEventListener('resize',function(){resize();redraw();});
+resize();
+
+// --- Layer toggles ---
+function toggleLayer(id){
+    cfg.layers[id]=!cfg.layers[id];
+    var cb=document.getElementById('layer-'+id);
+    if(cb)cb.checked=cfg.layers[id];
+    redraw();
+}
+// Sync checkboxes with cfg
+document.getElementById('layer-players').addEventListener('change',function(e){cfg.layers.players=e.target.checked;redraw();});
+document.getElementById('layer-annotations').addEventListener('change',function(e){cfg.layers.annotations=e.target.checked;redraw();});
+
+// --- World list ---
+function loadWorlds(){api('/api/worlds').then(function(d){
+    var h='';d.worlds.forEach(function(w){h+='<button class="world-btn'+(w.name===cfg.currentWorld?' active':'')+'" onclick="selectWorld(\''+w.name+'\')">'+w.name+' <small style="color:#888;">('+w.dimension+')</small></button>';});
+    document.getElementById('world-list').innerHTML=h;
+});}
+
+// --- Players ---
+function loadPlayers(){api('/api/players').then(function(d){
+    cfg.players=d.players||[];
+    var hiddenCount=0;
+    cfg.players.forEach(function(p){if(p.hidden)hiddenCount++;});
+    var h='';
+    cfg.players.forEach(function(p){
+        var dim={'NORMAL':'主世界','NETHER':'地狱','THE_END':'末地'}[p.environment]||p.environment||p.world;
+        if(p.hidden){
+            h+='<div class="player-dot player-hidden"><span style="color:#ce93d8;">●</span> '+p.name+' <small>['+dim+']</small> <span style="color:#999;">'+p.hint+'</span></div>';
+        }else{
+            h+='<div class="player-dot"><span style="color:#0f0;">●</span> '+p.name+' <small style="color:#888;">['+dim+']</small> <span style="color:#666;">('+p.x+','+p.z+')</span></div>';
+        }
+    });
+    document.getElementById('player-list').innerHTML=h||'<span style="color:#666;">无在线玩家</span>';
+    document.getElementById('layer-players-info').textContent=cfg.players.length+'人在线'+(hiddenCount>0?' ('+hiddenCount+'已隐藏)':'');
+    redraw();
+});}
+
+// --- Annotations ---
+function loadAnnotations(){
+    var u='/api/annotations?world='+cfg.currentWorld;
+    if(cfg.token)u+='&token='+cfg.token;
+    api(u).then(function(d){
+        if(d.error||!cfg.token){document.getElementById('anno-form').style.display='none';}
+        else{document.getElementById('anno-form').style.display='block';}
+        cfg.annotations=d.annotations||[];cfg.myAnnotations=d.myAnnotations||[];cfg.publicAnnotations=d.publicAnnotations||[];
+        renderAnnoList();
+        updateJumpPreview();
+        redraw();
+    });}
+
+function doSearch(){
+    var q=document.getElementById('search-box').value.trim();
+    var type=document.getElementById('type-filter').value;
+    if(!q&&!type){loadAnnotations();return;}
+    var u='/api/annotations/search?token='+cfg.token;
+    if(q)u+='&q='+encodeURIComponent(q);
+    if(type)u+='&type='+type;
+    if(cfg.currentWorld)u+='&world='+cfg.currentWorld;
+    api(u).then(function(d){
+        cfg.annotations=[];cfg.myAnnotations=[];
+        (d.results||[]).forEach(function(a){if(a.mine)cfg.myAnnotations.push(a);else cfg.annotations.push(a);});
+        renderAnnoList();
+        redraw();
+    });
+}
+
+function renderAnnoList(){
+    var all=cfg.annotations.concat(cfg.myAnnotations).concat(cfg.publicAnnotations);
+    var h='';document.getElementById('anno-count').textContent='('+all.length+')';
+    if(all.length===0){document.getElementById('annotations-list').innerHTML='<span style="color:#666;">暂无标注</span>';return;}
+    var typeLabels={note:'点标注',district:'城区规划',landmark:'地标',building:'建筑',farm:'农场/牧场',road:'道路',mine:'矿场',other:'其他'};
+    cfg.publicAnnotations.forEach(function(a){
+        var area=a.x2!==undefined?' → ('+a.x2+','+a.z2+')':'';
+        var delBtn=cfg.isAdmin?'<span class="del" onclick="event.stopPropagation();deletePublicAnno(\''+a.id+'\')">删除</span>':'';
+        h+='<div class="anno-item mine" style="border-left-color:'+(a.color||'#ff4444')+';border-left-width:4px;border-left-style:double;" onclick="focusAnno(\''+a.id+'\','+a.x+','+a.z+')"><b style="color:'+(a.color||'#ff4444')+'">📢 [服务器]</b> ['+(typeLabels[a.type]||a.type)+']<br>'+a.text+'<br><span class="coords">'+a.x+','+a.y+','+a.z+area+'</span>'+delBtn+'</div>';
+    });
+    cfg.annotations.concat(cfg.myAnnotations).forEach(function(a){
+        var cls=a.mine?'anno-item mine':'anno-item';
+        var area=a.x2!==undefined?' → ('+a.x2+','+a.z2+')':'';
+        h+='<div class="'+cls+'" style="border-left-color:'+(a.color||'#ffcc00')+'" onclick="focusAnno(\''+a.id+'\','+a.x+','+a.z+')"><b style="color:'+(a.color||'#ffcc00')+'">'+(a.playerName||'我')+'</b> ['+(typeLabels[a.type]||a.type)+']<br>'+a.text+'<br><span class="coords">'+a.x+','+a.y+','+a.z+area+'</span><span class="del" onclick="event.stopPropagation();deleteAnno(\''+a.id+'\')">删除</span></div>';
+    });
+    document.getElementById('annotations-list').innerHTML=h;
+}
+
+function deletePublicAnno(id){
+    if(!confirm('确定删除此公开标注？'))return;
+    fetch('/kSHWP/api/annotations/public?token='+cfg.token+'&id='+id,{method:'DELETE'}).then(function(r){return r.json();}).then(function(d){
+        if(d.message)loadAnnotations();
+        else alert(d.error);
+    });
+}
+
+function deleteAnno(id){
+    if(!confirm('确定删除此备注？'))return;
+    fetch('/kSHWP/api/annotations?token='+cfg.token+'&id='+id,{method:'DELETE'}).then(function(r){return r.json();}).then(function(d){
+        if(d.message)loadAnnotations();
+        else alert(d.error);
+    });
+}
+
+function focusAnno(id,x,z){
+    var bpp=cfg.tileSize/(16*cfg.zoom);
+    cfg.panX=-x*bpp+canvas.width/2;
+    cfg.panZ=-z*bpp+canvas.height/2;
+    redraw();
+}
+
+// --- Jump to chunk ---
+function jumpToChunk(){
+    var cx=parseInt(document.getElementById('jump-cx').value)||0;
+    var cz=parseInt(document.getElementById('jump-cz').value)||0;
+    var wx=cx*16+8;
+    var wz=cz*16+8;
+    var bpp=cfg.tileSize/(16*cfg.zoom);
+    cfg.panX=-wx*bpp+canvas.width/2;
+    cfg.panZ=-wz*bpp+canvas.height/2;
+    redraw();
+    // 触发预渲染
+    doPreRenderSilent(cx,cz);
+    updateJumpPreview();
+}
+
+function updateJumpPreview(){
+    var cx=parseInt(document.getElementById('jump-cx').value)||0;
+    var cz=parseInt(document.getElementById('jump-cz').value)||0;
+    document.getElementById('jump-preview').textContent='世界: ('+(cx*16)+', '+(cz*16)+') | 当前: '+cfg.currentWorld;
+}
+
+// --- Coordinate math ---
+function pixelToWorld(px,pz){
+    var bpp=(16*cfg.zoom)/cfg.tileSize;
+    return{wx:(px-cfg.panX)*bpp,wz:(pz-cfg.panZ)*bpp};
+}
+function worldToPixel(wx,wz){
+    var bpp=cfg.tileSize/(16*cfg.zoom);
+    return{px:wx*bpp+cfg.panX,pz:wz*bpp+cfg.panZ};
+}
+function blockToChunk(w){return Math.floor(w/16);}
+
+// --- Map rendering ---
+var _redrawTimer=null;
+function scheduleRedraw(){
+    if(_redrawTimer)return;
+    _redrawTimer=requestAnimationFrame(function(){_redrawTimer=null;redraw();});
+}
+function redraw(){
+    ctx.fillStyle='#0a0a1a';ctx.fillRect(0,0,canvas.width,canvas.height);
+    var ts=cfg.tileSize;
+    // Grid
+    if(cfg.showGrid){
+        var bpp=cfg.tileSize/(16*cfg.zoom);
+        var firstWX=Math.floor(pixelToWorld(0,0).wx/16)*16;
+        var firstWZ=Math.floor(pixelToWorld(0,0).wz/16)*16;
+        ctx.strokeStyle='#ffffff66';ctx.lineWidth=1;
+        for(var wx=firstWX;worldToPixel(wx,0).px<canvas.width;wx+=16){
+            var px=worldToPixel(wx,0).px;
+            ctx.beginPath();ctx.moveTo(px+0.5,0);ctx.lineTo(px+0.5,canvas.height);ctx.stroke();
+        }
+        for(var wz=firstWZ;worldToPixel(0,wz).pz<canvas.height;wz+=16){
+            var pz=worldToPixel(0,wz).pz;
+            ctx.beginPath();ctx.moveTo(0,pz+0.5);ctx.lineTo(canvas.width,pz+0.5);ctx.stroke();
+        }
+    }
+    // Base terrain tiles
+    var minTX=Math.floor(-cfg.panX/ts)-1,minTZ=Math.floor(-cfg.panZ/ts)-1;
+    var maxTX=Math.floor((canvas.width-cfg.panX)/ts)+1,maxTZ=Math.floor((canvas.height-cfg.panZ)/ts)+1;
+    for(var tz=minTZ;tz<=maxTZ;tz++){
+        for(var tx=minTX;tx<=maxTX;tx++){
+            var key=cfg.currentWorld+':'+cfg.zoom+':'+tx+':'+tz;
+            var pp={px:tx*ts+cfg.panX,pz:tz*ts+cfg.panZ};
+            if(!tc()[key]){ctx.fillStyle='#111';ctx.fillRect(pp.px,pp.pz,ts-1,ts-1);}
+            else if(tc()[key]!=='loading'){ctx.drawImage(tc()[key],pp.px,pp.pz,ts,ts);}
+            else{ctx.fillStyle='#1a1a2e';ctx.fillRect(pp.px,pp.pz,ts-1,ts-1);}
+            if(!tc()[key]){
+                tc()[key]='loading';
+                (function(k,w,tx,tz){fetch('/kSHWP/api/tile?world='+w+'&x='+tx+'&z='+tz+'&zoom='+cfg.zoom).then(function(r){return r.json();}).then(function(d){
+                    if(d&&d.tile){var img=new Image();img.onload=function(){tc()[k]=img;scheduleRedraw();};img.src='data:image/png;base64,'+d.tile;}
+                    else{delete tc()[k];}
+                }).catch(function(){delete tc()[k];});})(key,cfg.currentWorld,tx,tz);
+            }
+        }
+    }
+    // Annotations layer
+    if(cfg.layers.annotations){
+        // Public annotations
+        cfg.publicAnnotations.forEach(function(a){
+            if(a.x2!==undefined){
+                var p1=worldToPixel(Math.min(a.x,a.x2),Math.min(a.z,a.z2));
+                var p2=worldToPixel(Math.max(a.x,a.x2),Math.max(a.z,a.z2));
+                if(p1.px>canvas.width||p2.px<0||p1.pz>canvas.height||p2.pz<0)return;
+                ctx.strokeStyle=a.color||'#ff4444';ctx.lineWidth=2;ctx.setLineDash([6,2]);
+                ctx.fillStyle=(a.color||'#ff4444')+'22';
+                ctx.fillRect(p1.px,p1.pz,p2.px-p1.px,p2.pz-p1.pz);
+                ctx.strokeRect(p1.px,p1.pz,p2.px-p1.px,p2.pz-p1.pz);
+                ctx.setLineDash([]);
+                ctx.fillStyle=a.color||'#ff4444';ctx.font='bold 11px sans-serif';
+                ctx.fillText('📢 '+(a.text||''),p1.px+4,p1.pz+14);
+            }else{
+                var pp=worldToPixel(a.x,a.z);
+                if(pp.px<0||pp.px>canvas.width||pp.pz<0||pp.pz>canvas.height)return;
+                ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.beginPath();ctx.arc(pp.px,pp.pz,7,0,Math.PI*2);ctx.stroke();
+                ctx.fillStyle=a.color||'#ff4444';ctx.beginPath();ctx.arc(pp.px,pp.pz,6,0,Math.PI*2);ctx.fill();
+                ctx.fillStyle='#fff';ctx.font='bold 10px sans-serif';ctx.fillText('📢 '+(a.text||'').substring(0,12),pp.px+9,pp.pz-4);
+            }
+        });
+        // Area annotations
+        cfg.annotations.concat(cfg.myAnnotations).forEach(function(a){
+            if(a.x2===undefined)return;
+            var p1=worldToPixel(Math.min(a.x,a.x2),Math.min(a.z,a.z2));
+            var p2=worldToPixel(Math.max(a.x,a.x2),Math.max(a.z,a.z2));
+            if(p1.px>canvas.width||p2.px<0||p1.pz>canvas.height||p2.pz<0)return;
+            ctx.strokeStyle=a.color||'#ffcc00';ctx.lineWidth=1;ctx.setLineDash([4,3]);
+            ctx.fillStyle=(a.color||'#ffcc00')+'1a';
+            ctx.fillRect(p1.px,p1.pz,p2.px-p1.px,p2.pz-p1.pz);
+            ctx.strokeRect(p1.px,p1.pz,p2.px-p1.px,p2.pz-p1.pz);
+            ctx.setLineDash([]);
+            ctx.fillStyle=a.color||'#ffcc00';ctx.font='bold 10px sans-serif';
+            ctx.fillText(a.text||'',p1.px+4,p1.pz+14);
+        });
+        // Point annotations
+        cfg.annotations.concat(cfg.myAnnotations).forEach(function(a){
+            if(a.x2!==undefined)return;
+            var pp=worldToPixel(a.x,a.z);
+            if(pp.px<0||pp.px>canvas.width||pp.pz<0||pp.pz>canvas.height)return;
+            ctx.fillStyle=a.color||'#ffcc00';ctx.beginPath();ctx.arc(pp.px,pp.pz,5,0,Math.PI*2);ctx.fill();
+            ctx.fillStyle='#fff';ctx.font='9px sans-serif';ctx.fillText((a.text||'').substring(0,8),pp.px+7,pp.pz-3);
+        });
+    }
+    // Players layer — 仅显示当前选中世界的玩家
+    if(cfg.layers.players){
+        cfg.players.forEach(function(p){
+            if(p.world!==cfg.currentWorld)return;
+            if(p.hidden){
+                // 隐藏玩家不显示具体位置，仅显示概略提示
+                var pp=worldToPixel(0,0);
+                // 不在画布上渲染隐藏玩家
+                return;
+            }
+            var pp=worldToPixel(p.x,p.z);
+            if(pp.px<0||pp.px>canvas.width||pp.pz<0||pp.pz>canvas.height)return;
+            ctx.fillStyle='#0f0';ctx.beginPath();ctx.arc(pp.px,pp.pz,4,0,Math.PI*2);ctx.fill();
+            ctx.fillStyle='#fff';ctx.font='9px sans-serif';ctx.fillText(p.name,pp.px+6,pp.pz-4);
+        });
+    }
+    // Selection rectangle
+    if(cfg.selPX1!=null&&cfg.selPX2!=null){
+        var sx=Math.min(cfg.selPX1,cfg.selPX2),sy=Math.min(cfg.selPZ1,cfg.selPZ2);
+        var sw=Math.abs(cfg.selPX2-cfg.selPX1),sh=Math.abs(cfg.selPZ2-cfg.selPZ1);
+        selDiv.style.display='block';selDiv.style.left=sx+'px';selDiv.style.top=sy+'px';
+        selDiv.style.width=sw+'px';selDiv.style.height=sh+'px';
+    }else{selDiv.style.display='none';}
+}
+
+// --- Interaction ---
+// 服务端 MapRenderer 用二分递归合成图块（每级从 zoom/2 的 4 个子图块拼出来），
+// 只有 zoom 是 2 的幂（1/2/4/8）时这个整数除法才严格对应真实世界范围；
+// 中间值（3/5/6/7）会让服务端渲染的地形范围和这里算出的世界坐标对不上，
+// 表现为"缩放后玩家的点相对地形滑开了"。所以缩放只允许在 1/2/4/8 间跳，不能逐级+1/-1。
+function nextZoom(dir){
+    return dir>0 ? Math.min(8,cfg.zoom*2) : Math.max(1,cfg.zoom/2);
+}
+function changeZoom(delta){
+    var o=cfg.zoom;
+    var cx=canvas.width/2,cz=canvas.height/2;
+    var w=pixelToWorld(cx,cz); // 必须用旧 zoom/pan 算出锚点世界坐标，再改 zoom
+    cfg.zoom=nextZoom(delta);
+    if(cfg.zoom!==o){
+        cfg.panX=cx-w.wx*cfg.tileSize/(16*cfg.zoom);
+        cfg.panZ=cz-w.wz*cfg.tileSize/(16*cfg.zoom);
+        redraw();
+    }
+}
+
+canvas.addEventListener('wheel',function(e){e.preventDefault();
+    var o=cfg.zoom;
+    var rect=canvas.getBoundingClientRect();
+    var mx=e.clientX-rect.left,my=e.clientY-rect.top;
+    var w=pixelToWorld(mx,my); // 必须用旧 zoom/pan 算出鼠标锚点世界坐标，再改 zoom
+    cfg.zoom=nextZoom(e.deltaY>0?1:-1);
+    if(cfg.zoom!==o){
+        cfg.panX=mx-w.wx*cfg.tileSize/(16*cfg.zoom);
+        cfg.panZ=my-w.wz*cfg.tileSize/(16*cfg.zoom);
+        redraw();
+    }
+});
+
+canvas.addEventListener('contextmenu',function(e){e.preventDefault();
+    clearSelection();
+    var rect=canvas.getBoundingClientRect();
+    var wx=pixelToWorld(e.clientX-rect.left,e.clientY-rect.top);
+    var bx=Math.round(wx.wx),bz=Math.round(wx.wz);
+    document.getElementById('anno-coord').textContent='选中位置: ('+bx+', ~, '+bz+')';
+    document.getElementById('anno-coord').setAttribute('data-x',bx);
+    document.getElementById('anno-coord').setAttribute('data-z',bz);
+    document.getElementById('anno-coord').setAttribute('data-x2','');
+    document.getElementById('anno-coord').setAttribute('data-z2','');
+    showContextMenu(e.clientX,e.clientY,bx,bz);
+});
+
+function showContextMenu(mx,my,x,z){
+    var menu='';
+    menu+='<div style="color:#888;font-size:10px;padding:3px 14px;cursor:default;">── 地图标注 ──</div>';
+    menu+='<div onclick="addPoint('+x+','+z+')">★ 点标注</div><div onclick="startAreaSelect('+x+','+z+')">▢ 框选区域</div>';
+    // 所有认证用户可刷新区域（更新建筑变更）
+    if(cfg.token){
+        menu+='<div style="border-top:1px solid #333;margin-top:2px;padding-top:2px;"></div>';
+        menu+='<div onclick="playerRefreshArea('+x+','+z+','+x+','+z+')" style="color:#0f8;">🔄 更新此区块</div>';
+    }
+    if(cfg.isAdmin){
+        menu+='<div style="color:#888;font-size:10px;padding:3px 14px;cursor:default;border-top:1px solid #333;">── 📢 公开标注 ──</div>';
+        menu+='<div onclick="addPublicPoint('+x+','+z+')" style="color:#ff6666;">★ 公开点标注</div>';
+        menu+='<div onclick="startPublicAreaSelect('+x+','+z+')" style="color:#ff6666;">▢ 公开区域标注</div>';
+        menu+='<div style="border-top:1px solid #333;margin-top:2px;padding-top:2px;"></div>';
+        menu+='<div onclick="forceRenderArea('+x+','+z+','+x+','+z+')" style="color:#ffaa00;">⚡ 强制渲染此处区块（管理员）</div>';
+    }
+    ctxMenu.innerHTML=menu;
+    ctxMenu.style.display='block';ctxMenu.style.left=mx+'px';ctxMenu.style.top=my+'px';
+    setTimeout(function(){document.addEventListener('click',hideContextMenu,{once:true});},100);
+}
+function hideContextMenu(){ctxMenu.style.display='none';}
+
+function addPoint(x,z){
+    hideContextMenu();
+    cfg.publicMode=false;
+    document.getElementById('anno-coord').style.color='#0f0';
+    document.getElementById('anno-coord').setAttribute('data-x',x);
+    document.getElementById('anno-coord').setAttribute('data-z',z);
+    document.getElementById('anno-coord').setAttribute('data-x2','');
+    document.getElementById('anno-coord').setAttribute('data-z2','');
+    document.getElementById('anno-coord').textContent='单点: ('+x+', ~, '+z+')';
+}
+
+function startAreaSelect(x,z){
+    hideContextMenu();
+    cfg.publicMode=false;
+    cfg.selecting=true;cfg.selX1=x;cfg.selZ1=z;
+    var pp=worldToPixel(x,z);
+    cfg.selPX1=pp.px;cfg.selPZ1=pp.pz;cfg.selPX2=pp.px;cfg.selPZ2=pp.pz;
+    document.getElementById('anno-coord').textContent='拖拽选择结束点... 起始: ('+x+', ~, '+z+')';
+}
+
+function addPublicPoint(x,z){
+    hideContextMenu();
+    cfg.publicMode=true;
+    document.getElementById('anno-coord').setAttribute('data-x',x);
+    document.getElementById('anno-coord').setAttribute('data-z',z);
+    document.getElementById('anno-coord').setAttribute('data-x2','');
+    document.getElementById('anno-coord').setAttribute('data-z2','');
+    document.getElementById('anno-coord').textContent='📢 公开标注 单点: ('+x+', ~, '+z+')';
+    document.getElementById('anno-coord').style.color='#ff4444';
+}
+
+function startPublicAreaSelect(x,z){
+    hideContextMenu();
+    cfg.publicMode=true;
+    cfg.selecting=true;cfg.selX1=x;cfg.selZ1=z;
+    var pp=worldToPixel(x,z);
+    cfg.selPX1=pp.px;cfg.selPZ1=pp.pz;cfg.selPX2=pp.px;cfg.selPZ2=pp.pz;
+    document.getElementById('anno-coord').textContent='📢 公开区域 拖拽选择... 起始: ('+x+', ~, '+z+')';
+    document.getElementById('anno-coord').style.color='#ff4444';
+}
+
+function forceRenderArea(x1,z1,x2,z2){
+    hideContextMenu();
+    doForceRenderArea(x1,z1,x2,z2);
+}
+
+// 玩家触发的区域刷新（更新建筑变更）
+function playerRefreshArea(x1,z1,x2,z2){
+    hideContextMenu();
+    if(!cfg.token){alert('需要从游戏内 /map 获取链接才能使用此功能');return;}
+    var prog=document.getElementById('batch-progress');
+    prog.style.display='block';prog.textContent='🔄 正在更新区域...';
+    fetch('/kSHWP/api/player-refresh-area?world='+cfg.currentWorld+'&x1='+x1+'&z1='+z1+'&x2='+x2+'&z2='+z2+'&token='+cfg.token)
+    .then(function(r){return r.json();}).then(function(d){
+        if(d.error){prog.textContent='✗ '+d.error;}
+        else{
+            var msg='🔄 更新完成: '+d.rendered+' 图块已刷新, '+d.elapsedMs+'ms';
+            prog.textContent=msg;document.getElementById('batch-result').textContent=msg;
+            tileCaches[cfg.currentWorld]={};redraw();
+        }
+        setTimeout(function(){prog.style.display='none';},4000);
+    }).catch(function(e){
+        prog.textContent='更新失败: '+e;
+        setTimeout(function(){prog.style.display='none';},3000);
+    });
+}
+
+// 管理员清除磁盘缓存
+function doClearCache(){
+    if(!confirm('确定要清除世界 '+cfg.currentWorld+' 的全部磁盘缓存吗？所有玩家探索过的地形都将被重置。'))return;
+    var prog=document.getElementById('batch-progress');
+    prog.style.display='block';prog.textContent='🗑 清除缓存中...';
+    fetch('/kSHWP/api/clear-cache?world='+cfg.currentWorld+'&token='+cfg.token)
+    .then(function(r){return r.json();}).then(function(d){
+        if(d.error){prog.textContent='✗ '+d.error;}
+        else{
+            prog.textContent='🗑 '+d.message;document.getElementById('batch-result').textContent=d.message;
+            tileCaches[cfg.currentWorld]={};redraw();
+        }
+        setTimeout(function(){prog.style.display='none';},4000);
+    }).catch(function(e){
+        prog.textContent='清除失败: '+e;
+        setTimeout(function(){prog.style.display='none';},3000);
+    });
+}
+
+function clearSelection(){
+    cfg.selX1=null;cfg.selZ1=null;cfg.selX2=null;cfg.selZ2=null;
+    cfg.selPX1=null;cfg.selPZ1=null;cfg.selPX2=null;cfg.selPZ2=null;
+    cfg.areaRenderActive=false;
+    document.getElementById('area-render-bar').style.display='none';
+    redraw();
+}
+
+canvas.addEventListener('mousedown',function(e){
+    if(e.button!==0){return;}
+    var rect=canvas.getBoundingClientRect();
+    var mx=e.clientX-rect.left,my=e.clientY-rect.top;
+    if(e.shiftKey){
+        var wx=pixelToWorld(mx,my);
+        cfg.selecting=true;
+        cfg.selX1=Math.round(wx.wx);cfg.selZ1=Math.round(wx.wz);
+        cfg.selPX1=mx;cfg.selPZ1=my;cfg.selPX2=mx;cfg.selPZ2=my;
+        cfg.selX2=cfg.selX1;cfg.selZ2=cfg.selZ1;
+        redraw();return;
+    }
+    cfg.dragging=true;cfg.lastMX=e.clientX;cfg.lastMY=e.clientY;
+    canvas.style.cursor='grabbing';
+});
+
+canvas.addEventListener('mousemove',function(e){
+    var rect=canvas.getBoundingClientRect();
+    var mx=e.clientX-rect.left,my=e.clientY-rect.top;
+    if(cfg.selecting){
+        var wx=pixelToWorld(mx,my);
+        cfg.selX2=Math.round(wx.wx);cfg.selZ2=Math.round(wx.wz);
+        cfg.selPX2=mx;cfg.selPZ2=my;
+        redraw();
+        var cx1=blockToChunk(Math.min(cfg.selX1,cfg.selX2));
+        var cz1=blockToChunk(Math.min(cfg.selZ1,cfg.selZ2));
+        var cx2=blockToChunk(Math.max(cfg.selX1,cfg.selX2));
+        var cz2=blockToChunk(Math.max(cfg.selZ1,cfg.selZ2));
+        document.getElementById('anno-coord').textContent='区块: ('+cx1+','+cz1+')→('+cx2+','+cz2+') | '+Math.abs(cfg.selX2-cfg.selX1)+'×'+Math.abs(cfg.selZ2-cfg.selZ1)+' 格';
+        return;
+    }
+    if(cfg.dragging){cfg.panX+=e.clientX-cfg.lastMX;cfg.panZ+=e.clientY-cfg.lastMY;cfg.lastMX=e.clientX;cfg.lastMY=e.clientY;redraw();return;}
+    var wx=pixelToWorld(mx,my);
+    var wbx=Math.round(wx.wx),wbz=Math.round(wx.wz);
+    var cx=blockToChunk(wx.wx),cz=blockToChunk(wx.wz);
+    document.getElementById('map-status').textContent='区块: ('+cx+', '+cz+') | 世界: ('+wbx+', '+wbz+') | '+cfg.zoom+'x';
+});
+
+canvas.addEventListener('mouseup',function(e){
+    if(cfg.selecting){cfg.selecting=false;
+        var x1=Math.min(cfg.selX1,cfg.selX2),z1=Math.min(cfg.selZ1,cfg.selZ2);
+        var x2=Math.max(cfg.selX1,cfg.selX2),z2=Math.max(cfg.selZ1,cfg.selZ2);
+        if(Math.abs(x2-x1)>2||Math.abs(z2-z1)>2){
+            var prefix=cfg.publicMode?'📢 公开区域: ':'区域: ';
+            document.getElementById('anno-coord').textContent=prefix+'('+x1+','+z1+') → ('+x2+','+z2+')';
+            document.getElementById('anno-coord').setAttribute('data-x',x1);
+            document.getElementById('anno-coord').setAttribute('data-z',z1);
+            document.getElementById('anno-coord').setAttribute('data-x2',x2);
+            document.getElementById('anno-coord').setAttribute('data-z2',z2);
+            // 显示区域渲染工具栏
+            if(cfg.isAdmin){
+                cfg.areaRenderActive=true;
+                cfg.areaRenderW={world:cfg.currentWorld,x1:x1,z1:z1,x2:x2,z2:z2};
+                var bar=document.getElementById('area-render-bar');
+                document.getElementById('area-render-label').textContent='已框选: ('+x1+','+z1+')→('+x2+','+z2+')';
+                bar.style.display='flex';
+            }
+        }
+        clearPixelSelection();
+    }
+    cfg.dragging=false;canvas.style.cursor='crosshair';
+});
+
+function clearPixelSelection(){
+    cfg.selPX1=null;cfg.selPZ1=null;cfg.selPX2=null;cfg.selPZ2=null;
+    redraw();
+}
+
+// --- Area force render ---
+function forceRenderSelectedArea(){
+    if(!cfg.areaRenderW)return;
+    var w=cfg.areaRenderW;
+    doForceRenderArea(w.x1,w.z1,w.x2,w.z2);
+    cancelAreaRender();
+}
+
+function cancelAreaRender(){
+    cfg.areaRenderActive=false;
+    cfg.areaRenderW=null;
+    document.getElementById('area-render-bar').style.display='none';
+}
+
+function doForceRenderArea(x1,z1,x2,z2){
+    var prog=document.getElementById('batch-progress');
+    prog.style.display='block';prog.textContent='⚡ 强制渲染区域中...';
+    fetch('/kSHWP/api/force-render-area?world='+cfg.currentWorld+'&x1='+x1+'&z1='+z1+'&x2='+x2+'&z2='+z2)
+    .then(function(r){return r.json();}).then(function(d){
+        var msg='⚡ 完成: '+d.rendered+' 图块, '+d.loadedChunks+'/'+d.totalChunks+' 区块已加载, '+d.elapsedMs+'ms';
+        prog.textContent=msg;
+        document.getElementById('batch-result').textContent=msg;
+        tileCaches[cfg.currentWorld]={};redraw();
+        setTimeout(function(){prog.style.display='none';},4000);
+    }).catch(function(e){
+        prog.textContent='渲染失败: '+e;
+        setTimeout(function(){prog.style.display='none';},3000);
+    });
+}
+
+function doForceRenderAll(){
+    if(!confirm('确定要强制渲染世界 '+cfg.currentWorld+' 的所有已加载区域吗？这可能需要一些时间。'))return;
+    var prog=document.getElementById('batch-progress');
+    prog.style.display='block';prog.textContent='⚡ 强制渲染所有已加载区域...';
+    fetch('/kSHWP/api/force-render-all?world='+cfg.currentWorld)
+    .then(function(r){return r.json();}).then(function(d){
+        if(d.message){prog.textContent=d.message;}
+        else{
+            var msg='⚡ 完成: '+d.rendered+' 图块, '+d.loadedChunks+'/'+d.totalChunks+' 区块, '+d.elapsedMs+'ms';
+            prog.textContent=msg;document.getElementById('batch-result').textContent=msg;
+        }
+        tileCaches[cfg.currentWorld]={};redraw();
+        setTimeout(function(){prog.style.display='none';},4000);
+    }).catch(function(e){
+        prog.textContent='渲染失败: '+e;
+        setTimeout(function(){prog.style.display='none';},3000);
+    });
+}
+
+function doPreRender(){
+    var cw=pixelToWorld(canvas.width/2,canvas.height/2);
+    var ccx=Math.round(cw.wx/16);
+    var ccz=Math.round(cw.wz/16);
+    doPreRenderSilent(ccx,ccz);
+    document.getElementById('batch-result').textContent='🔄 预渲染已提交 (中心: '+ccx+','+ccz+')';
+}
+
+function doPreRenderSilent(ccx,ccz){
+    fetch('/kSHWP/api/pre-render?world='+cfg.currentWorld+'&cx='+ccx+'&cz='+ccz)
+    .catch(function(){});
+}
+
+function addAnnotation(){
+    var text=document.getElementById('anno-text').value.trim();
+    if(!text){alert('请输入标注文本');return;}
+    var x=parseInt(document.getElementById('anno-coord').getAttribute('data-x'))||0;
+    var z=parseInt(document.getElementById('anno-coord').getAttribute('data-z'))||0;
+    var x2=parseInt(document.getElementById('anno-coord').getAttribute('data-x2'))||0;
+    var z2=parseInt(document.getElementById('anno-coord').getAttribute('data-z2'))||0;
+    var detail=document.getElementById('anno-detail').value.trim();
+    var type=document.getElementById('anno-type').value;
+    var color=document.getElementById('anno-color').value;
+    var isPublic=cfg.publicMode===true;
+    cfg.publicMode=false;
+
+    var body={token:cfg.token,world:cfg.currentWorld,x:x,y:64,z:z,text:text,type:type,color:color};
+    if(detail)body.detail=detail;
+    if(x2&&z2){body.x2=x2;body.z2=z2;}
+
+    var url=isPublic?'/kSHWP/api/annotations/public':'/kSHWP/api/annotations';
+    fetch(url,{method:'POST',body:JSON.stringify(body),headers:{'Content-Type':'application/json'}}).then(function(r){return r.json();}).then(function(d){
+        if(d.id){document.getElementById('anno-text').value='';document.getElementById('anno-detail').value='';document.getElementById('anno-coord').style.color='#0f0';loadAnnotations();}
+        else alert(d.error||'添加失败');
+    });
+}
+
+function toggleGrid(){cfg.showGrid=!cfg.showGrid;document.getElementById('grid-toggle').textContent='网格: '+(cfg.showGrid?'开':'关');redraw();}
+
+// --- Xaero 导出 ---
+function sendXaeroChatWaypoints(){
+    if(!cfg.token){alert('请先从游戏内 /map 获取链接登录后再使用。');return;}
+    api('/api/xaero/send-chat-waypoints?token='+cfg.token+'&world='+cfg.currentWorld).then(function(d){
+        if(d.error)alert(d.error);
+        else alert(d.message||('已发送 '+d.count+' 条'));
+    }).catch(function(e){alert('发送失败: '+e);});
+}
+function exportXaeroWaypoints(){
+    if(!cfg.token){alert('请先从游戏内 /map 获取链接登录后再导出。');return;}
+    window.location.href='/kSHWP/api/xaero/waypoints?token='+cfg.token+'&world='+cfg.currentWorld;
+}
+// --- Hidden mode ---
+function toggleHidden(){
+    if(!cfg.token){alert('请先从游戏内打开地图链接（需要 token）。');return;}
+    fetch('/kSHWP/api/whoami?token='+cfg.token).then(function(r){return r.json();}).then(function(d){
+        if(!d.authenticated){alert('token 已过期，请刷新页面。');return;}
+        // 通过游戏内命令切换隐藏模式（Web 端仅显示状态）
+        alert('请在游戏内使用 /map hidden 命令切换隐藏模式。\n当前状态: '+(cfg.hiddenMode?'已隐藏':'可见'));
+    });
+}
+
+function updateHiddenBtn(){
+    var btn=document.getElementById('hidden-btn');
+    if(cfg.hiddenMode){
+        btn.textContent='👁 取消隐藏';
+        btn.classList.add('active');
+    }else{
+        btn.textContent='👁 隐藏我的坐标';
+        btn.classList.remove('active');
+    }
+}
+
+function updateHiddenUI(){
+    var btn=document.getElementById('hidden-btn');
+    btn.style.display=cfg.hasHiddenPerm?'inline-block':'none';
+    updateHiddenBtn();
+}
+
+// --- Batch render ---
+function doBatchRender(){
+    if(cfg.batchRunning)return;
+    var radius=parseInt(document.getElementById('batch-radius').value)||10;
+    radius=Math.min(Math.max(radius,1),30);
+    document.getElementById('batch-radius').value=radius;
+    var btn=document.getElementById('batch-btn');
+    var prog=document.getElementById('batch-progress');
+    cfg.batchRunning=true;btn.textContent='渲染中...';btn.disabled=true;
+    prog.style.display='block';prog.textContent='批量渲染半径='+radius+', 缩放='+cfg.zoom+'x...';
+    var cw=pixelToWorld(canvas.width/2,canvas.height/2);
+    var ccx=Math.round(cw.wx/16);
+    var ccz=Math.round(cw.wz/16);
+    fetch('/kSHWP/api/batch-render?world='+cfg.currentWorld+'&cx='+ccx+'&cz='+ccz+'&radius='+radius+'&zoom='+cfg.zoom)
+    .then(function(r){return r.json();}).then(function(d){
+        var msg='完成: '+d.rendered+' 成功, '+d.failed+' 失败, '+d.elapsedMs+'ms';
+        prog.textContent=msg;
+        document.getElementById('batch-result').textContent=msg+' | 范围: '+d.tileRange;
+        cfg.batchRunning=false;btn.textContent='批量渲染';btn.disabled=false;
+        tileCaches[cfg.currentWorld]={};redraw();
+        setTimeout(function(){prog.style.display='none';},3000);
+    }).catch(function(e){
+        prog.textContent='渲染失败: '+e;
+        cfg.batchRunning=false;btn.textContent='批量渲染';btn.disabled=false;
+        setTimeout(function(){prog.style.display='none';},3000);
+    });
+}
+
+function selectWorld(w){
+    cfg.currentWorld=w;cfg.panX=0;cfg.panZ=0;cfg.zoom=2;
+    clearSelection();
+    loadAnnotations();redraw();updateWorldButtons();
+    // 切换世界后触发预渲染
+    var cw=pixelToWorld(canvas.width/2,canvas.height/2);
+    var ccx=Math.round(cw.wx/16);
+    var ccz=Math.round(cw.wz/16);
+    doPreRenderSilent(ccx,ccz);
+}
+function updateWorldButtons(){document.querySelectorAll('.world-btn').forEach(function(b){b.classList.toggle('active',b.textContent.startsWith(cfg.currentWorld));});}
+
+loadWorlds();loadPlayers();loadAnnotations();loadCacheStats();
+setInterval(loadPlayers,cfg.layers.players?5000:30000);
+setInterval(loadAnnotations,15000);
+setInterval(loadCacheStats,60000); // 每分钟更新缓存状态
+setTimeout(function(){cfg.panX=canvas.width/2;cfg.panZ=canvas.height/2;redraw();},400);
+</script></body></html>

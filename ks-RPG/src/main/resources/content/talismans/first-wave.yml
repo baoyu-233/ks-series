@@ -1,0 +1,52 @@
+anchor_talisman:
+  item:
+    type: TALISMAN
+    id: KS_ANCHOR_TALISMAN
+  trigger: SNEAK_SWAP_HANDS
+  cooldown-seconds: 45
+  mechanics:
+    ANCHOR_GUARD:
+      duration-millis: 3000
+      damage-multiplier: 0.75
+
+signal_talisman:
+  item:
+    type: TALISMAN
+    id: KS_SIGNAL_TALISMAN
+  trigger: SNEAK_SWAP_HANDS
+  cooldown-seconds: 35
+  mechanics:
+    SIGNAL_AURA:
+      range: 8.0
+      duration-ticks: 120
+      speed-amplifier: 0
+      haste-amplifier: 0
+
+pioneer_talisman:
+  item:
+    type: TALISMAN
+    id: KS_PIONEER_TALISMAN
+  trigger: SNEAK_SWAP_HANDS
+  cooldown-seconds: 60
+  mechanics:
+    PIONEER_RESCUE:
+      range: 8.0
+      health-threshold: 0.40
+      duration-ticks: 80
+      amplifier: 0
+
+hunter_talisman:
+  item:
+    type: TALISMAN
+    id: KS_HUNTER_TALISMAN
+  mechanics:
+    HUNTER_MARK_DAMAGE:
+      multiplier: 1.12
+
+signal_cooldown_bonus:
+  item:
+    type: TALISMAN
+    id: KS_SIGNAL_TALISMAN
+  mechanics:
+    COOLDOWN_MULTIPLIER:
+      multiplier: 0.94

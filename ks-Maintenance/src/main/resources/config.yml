@@ -1,0 +1,15 @@
+maintenance:
+  enabled: false
+  kick-existing-on-enable: true
+
+messages:
+  prefix: "&6[维护]&r "
+  kick: "&c服务器正在维护中，请稍后再进入。"
+  enabled: "&a维护模式已开启，普通玩家将无法进入。"
+  disabled: "&a维护模式已关闭，普通玩家可以正常进入。"
+  status-enabled: "&e当前维护模式：&a开启"
+  status-disabled: "&e当前维护模式：&c关闭"
+  reloaded: "&a维护插件配置已重载。"
+  kicked-online: "&e已踢出 &f%count% &e名无绕过权限的在线玩家。"
+  no-permission: "&c你没有权限使用这个命令。"
+  usage: "&e用法：/ksmaintenance <on|off|status|reload|kick>"

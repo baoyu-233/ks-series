@@ -1,0 +1,11 @@
+# ks-Inherit 物品继承插件配置
+# 存储：SQLite 数据库 (plugins/ks-Inherit/items.db)
+
+# 默认普通玩家可用槽位数（管理员不受此限制）
+default-slots: 9
+
+# GUI 行数（1-6 行，每行 9 格）
+gui-rows: 6
+
+# 是否允许存入潜影盒
+allow-shulker-boxes: false

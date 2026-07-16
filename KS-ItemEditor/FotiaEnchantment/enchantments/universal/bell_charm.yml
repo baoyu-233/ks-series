@@ -1,0 +1,67 @@
+# ============================================
+# 批量扩展附魔：钟鸣护符 (Bell Charm)
+# EN: Bulk extended enchantment: Bell Charm (钟鸣护符)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: bell_charm
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: utility
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: BELL_RING
+    cooldown: 100
+    conditions:
+      - type: chance
+        value: "{level} * 10"
+    actions:
+      - type: ADD_POTION_SELF
+        potion: "LUCK"
+        duration: "{level} * 60"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "NOTE"
+        count: 10
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "block.bell.use"
+        volume: "0.6"
+        pitch: "1.4"
+        at: "SELF"

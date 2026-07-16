@@ -1,0 +1,122 @@
+# ============================================
+# 附魔管理 GUI
+# EN: Enchantment admin GUI
+# ============================================
+# layout 每行 9 个字符，对应一行箱子槽位。
+# EN: Each layout row has 9 characters, matching one inventory row.
+# roles 将字符绑定到功能，items 配置对应功能物品的外观。
+# EN: roles bind layout characters to functions; items configure the appearance for those functions.
+# 文本支持 MiniMessage、旧颜色码 &/§、&#RRGGBB、lang:语言键。
+# EN: Text supports MiniMessage, legacy &/§ color codes, &#RRGGBB, and lang: language keys.
+
+rows: 6
+title: "lang:admin-gui.title"
+fill-empty: true
+
+layout:
+  - "#A#MRDTU#"
+  - "EEEEEEEEE"
+  - "EEEEEEEEE"
+  - "EEEEEEEEE"
+  - "EEEEEEEEE"
+  - "P###X#H#N"
+
+roles:
+  background: "#"
+  category-all: "A"
+  category-melee: "M"
+  category-ranged: "R"
+  category-armor: "D"
+  category-tools: "T"
+  category-universal: "U"
+  enchantments: "E"
+  previous-page: "P"
+  close: "X"
+  shortcut-help: "H"
+  next-page: "N"
+
+items:
+  background:
+    material: BLACK_STAINED_GLASS_PANE
+    name: "<!i><dark_gray> "
+    lore: []
+
+  category-all:
+    material: BOOKSHELF
+    name: "{active_prefix}{category_name}"
+    lore:
+      - "lang:admin-gui.click-to-switch-category"
+
+  category-melee:
+    material: IRON_SWORD
+    name: "{active_prefix}{category_name}"
+    lore:
+      - "lang:admin-gui.click-to-switch-category"
+
+  category-ranged:
+    material: BOW
+    name: "{active_prefix}{category_name}"
+    lore:
+      - "lang:admin-gui.click-to-switch-category"
+
+  category-armor:
+    material: IRON_CHESTPLATE
+    name: "{active_prefix}{category_name}"
+    lore:
+      - "lang:admin-gui.click-to-switch-category"
+
+  category-tools:
+    material: IRON_PICKAXE
+    name: "{active_prefix}{category_name}"
+    lore:
+      - "lang:admin-gui.click-to-switch-category"
+
+  category-universal:
+    material: NETHER_STAR
+    name: "{active_prefix}{category_name}"
+    lore:
+      - "lang:admin-gui.click-to-switch-category"
+
+  enchantment:
+    material: ENCHANTED_BOOK
+    append-shortcut-hints: true
+    name: "<!i>{rarity_color}{enchant_name}"
+    lore:
+      - "{status}"
+      - "lang:admin-gui.max-level"
+      - "{category_line}"
+      - "{trigger_lines}"
+      - ""
+      - "{toggle_hint}"
+      - "lang:admin-gui.give-max-hint"
+      - "lang:admin-gui.give-one-hint"
+    trigger-line: "<!i><dark_gray>  - <gray>{trigger}"
+    trigger-more-line: "<!i><dark_gray>  ..."
+
+  previous-page:
+    material: ARROW
+    name: "lang:admin-gui.prev-page"
+    lore:
+      - "lang:admin-gui.jump-page"
+
+  close:
+    material: BARRIER
+    name: "lang:admin-gui.close"
+    lore:
+      - "lang:admin-gui.close-hint"
+      - "lang:admin-gui.page-info"
+
+  shortcut-help:
+    material: KNOWLEDGE_BOOK
+    glow: true
+    name: "lang:admin-gui.shortcut-help"
+    lore:
+      - "lang:admin-gui.shortcut-help-toggle"
+      - "lang:admin-gui.shortcut-help-give-max"
+      - "lang:admin-gui.shortcut-help-give-one"
+
+  next-page:
+    material: ARROW
+    name: "lang:admin-gui.next-page"
+    lore:
+      - "lang:admin-gui.jump-page"

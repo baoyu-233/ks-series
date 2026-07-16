@@ -1,0 +1,67 @@
+# ============================================
+# 批量扩展附魔：安眠 (Bed Comfort)
+# EN: Bulk extended enchantment: Bed Comfort (安眠)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: bed_comfort
+enabled: true
+curse: false
+max-level: 3
+rarity: dustlight
+group: utility
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 22
+villager-trade-price-range:
+  - 8
+  - 22
+
+codex-pools:
+  dustlight: 18
+  moonlit: 6
+
+effects:
+  - trigger: WAKE_UP
+    cooldown: 120
+    conditions:
+      - type: chance
+        value: "{level} * 15"
+    actions:
+      - type: ADD_POTION_SELF
+        potion: "REGENERATION"
+        duration: "{level} * 80"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "HAPPY_VILLAGER"
+        count: 8
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.player.levelup"
+        volume: "0.5"
+        pitch: "1.7"
+        at: "SELF"

@@ -1,0 +1,19 @@
+name: ks-RPG-Gui
+version: ${project.version}
+main: org.kseries.rpggui.KsRpgGui
+api-version: '1.21'
+description: ks-Series RPG 进度与管理员物品面板。
+authors: [baoyu, codex]
+depend: [ks-RPG]
+commands:
+  rpgmenu:
+    description: 打开 RPG 进度面板。
+    usage: /rpgmenu [reload]
+    aliases: [rpgui, rpgpanel]
+permissions:
+  ksrpggui.use:
+    description: 打开 RPG 进度面板。
+    default: true
+  ksrpggui.admin:
+    description: 重载 RPG 面板配置并使用管理员物品库。
+    default: op

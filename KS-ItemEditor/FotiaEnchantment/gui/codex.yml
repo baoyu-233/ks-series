@@ -1,0 +1,33 @@
+# ============================================
+# 开启书 GUI
+# EN: Codex reveal GUI
+# ============================================
+# B = 待开启魔典展示，C = 确认开启按钮。
+# EN: B = codex preview slot; C = confirm reveal button.
+
+rows: 3
+title: "lang:codex-gui.title"
+fill-empty: true
+
+layout:
+  - "#########"
+  - "####B####"
+  - "####C####"
+
+roles:
+  background: "#"
+  codex: "B"
+  confirm: "C"
+
+items:
+  background:
+    material: BLACK_STAINED_GLASS_PANE
+    name: "<!i><dark_gray> "
+    lore: []
+
+  confirm:
+    material: LIME_STAINED_GLASS_PANE
+    name: "lang:codex-gui.reveal-button"
+    lore:
+      - "lang:codex-gui.reveal-hint"
+      - "{quality_line}"

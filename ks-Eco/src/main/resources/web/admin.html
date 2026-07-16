@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KSECO · 中央管制终端</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+<link rel="stylesheet" href="assets/admin.css">
+</head>
+<body>
+
+<div id="toast-box"></div>
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()"><div class="modal" id="modalContent"></div></div>
+<button class="mobile-nav-toggle" id="mobileNavToggle" type="button" aria-label="打开导航" title="打开导航"><i data-lucide="menu"></i></button>
+<div class="mobile-nav-backdrop" id="mobileNavBackdrop"></div>
+
+<!-- Sidebar: flat nav -->
+<aside id="sidebar">
+<div class="sb-header"><span class="logo">◢◤</span><div><h2>KSECO<span class="logo-accent">_CTRL</span></h2><div class="sb-tagline">CENTRAL COMMAND</div></div></div>
+<nav class="sb-nav">
+<div class="nav-hub active" data-label="中央枢纽 · MACRO HUB">
+  <button class="hub-label" type="button" data-hub-nav="macro" onclick="switchHub('macro')">中央枢纽 MACRO</button>
+  <a class="active" data-nav="macro" onclick="switchTab('macro')"><span>经济大盘</span></a>
+  <a data-nav="bank-cb" onclick="switchTab('bank-cb')"><span>中央银行</span></a>
+  <a data-nav="tax-rates" onclick="switchTab('tax-rates')"><span>税收协议</span></a>
+  <a data-nav="prices" onclick="switchTab('prices')"><span>官方定价</span></a>
+  <a data-nav="price-volatility" onclick="switchTab('price-volatility')"><span>波动引擎</span></a>
+</div>
+<div class="nav-hub" data-label="企业与领地 · CORPS &amp; ZONES">
+  <button class="hub-label" type="button" data-hub-nav="corps-hub" onclick="switchHub('corps-hub')">企业与领地 CORPS</button>
+  <a data-nav="ents" onclick="switchTab('ents')"><span>企业注册表</span></a>
+  <a data-nav="banks" onclick="switchTab('banks')"><span>商业银行</span></a>
+  <a data-nav="bidding" onclick="switchTab('bidding')"><span>招投标</span></a>
+  <a data-nav="re-zones" onclick="switchTab('re-zones')"><span>领地地块</span></a>
+</div>
+<div class="nav-hub" data-label="核心协议 · PROTOCOLS">
+  <button class="hub-label" type="button" data-hub-nav="protocols-hub" onclick="switchHub('protocols-hub')">核心协议 PROTOCOLS</button>
+  <a data-nav="dg-templates" onclick="switchTab('dg-templates')"><span>副本协议</span></a>
+  <a data-nav="politic-offices" onclick="switchTab('politic-offices')"><span>元老院</span></a>
+</div>
+<div class="nav-hub" data-label="黑市与商业化 · BLACK MARKET">
+  <button class="hub-label" type="button" data-hub-nav="market-hub" onclick="switchHub('market-hub')">黑市与商业化 MARKET</button>
+  <a data-nav="market-overview" onclick="switchTab('market-overview')"><span>市场监控</span></a>
+  <a data-nav="bb-pools" onclick="switchTab('bb-pools')"><span>盲盒卡池</span></a>
+</div>
+<div class="nav-hub" data-label="安全与审计 · SECURITY">
+  <button class="hub-label" type="button" data-hub-nav="security-hub" onclick="switchHub('security-hub')">安全与审计 SECURITY</button>
+  <a data-nav="ops" onclick="switchTab('ops')"><span>运营配置</span></a>
+  <a data-nav="audit-log" onclick="switchTab('audit-log')"><span>审计日志</span></a>
+</div>
+</nav>
+<div class="sb-footer">KSECO CORE v1.2.0<br>NEON-LINK ▮▮▮▮▯ SECURE</div>
+</aside>
+
+<!-- Main Content -->
+<div id="main">
+<div class="page-header"><div><div class="page-eyebrow" id="pageEyebrow">中央枢纽 · MACRO HUB</div><h1 id="pageTitle">经济大盘 // MACRO OVERVIEW</h1></div><span class="refresh-badge" id="refreshBadge">◉ SYS.SYNC</span></div>
+
+<!-- ================= 总览 ================= -->
+<div class="tab-section active" id="tab-macro">
+<div class="stats-row" id="macroStats"></div>
+<div class="chart-wrap"><canvas id="moneyChart"></canvas></div>
+<div class="card"><h3>当前央行利率 <a style="float:right;font-size:11px;font-weight:400;" onclick="switchTab('bank-cb')">调控 →</a></h3>
+<div class="stats-row" id="cbRateStats"></div>
+</div>
+<div class="card"><h3>税率总览 <a style="float:right;font-size:11px;font-weight:400;" onclick="switchTab('tax-rates')">设置 →</a></h3><div id="taxOverview"></div></div>
+<div class="card">
+<h3>🏆 财富排行</h3>
+<div class="inline-tabs" style="margin-bottom:12px;">
+  <button class="inline-tab active" onclick="switchRankSub('players',event)">个人 Top50</button>
+  <button class="inline-tab" onclick="switchRankSub('enterprises',event)">企业 Top50</button>
+  <button class="inline-tab" onclick="switchRankSub('banks',event)">银行 Top50</button>
+</div>
+<div class="rank-sub active" id="rank-sub-players">
+<div class="table-wrap"><table><thead><tr><th>#</th><th>玩家</th><th>UUID</th><th>余额</th><th>状态</th></tr></thead><tbody id="rankPlayerBody"></tbody></table></div>
+</div>
+<div class="rank-sub" id="rank-sub-enterprises">
+<div class="table-wrap"><table><thead><tr><th>#</th><th>企业</th><th>ID</th><th>类型</th><th>注册资本</th><th>当前资产</th><th>员工</th></tr></thead><tbody id="rankEntBody"></tbody></table></div>
+</div>
+<div class="rank-sub" id="rank-sub-banks">
+<div class="table-wrap"><table><thead><tr><th>#</th><th>银行</th><th>ID</th><th>类型</th><th>总资产</th><th>净资产</th><th>存款规模</th><th>服务企业</th><th>坏账率</th></tr></thead><tbody id="rankBankBody"></tbody></table></div>
+</div>
+</div>
+</div>
+
+<!-- ================= 企业与领地总览 ================= -->
+<div class="tab-section" id="tab-corps-hub">
+<div class="stats-row" id="corpsHubStats"></div>
+<div class="hub-launch-grid">
+  <button class="hub-module" type="button" onclick="switchTab('ents')"><i data-lucide="building-2"></i><span><b>企业注册表</b><small>资产、成员、分红、权限</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('banks')"><i data-lucide="landmark"></i><span><b>商业银行</b><small>存贷、成员、融资审批</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('re-zones')"><i data-lucide="map"></i><span><b>领地地块</b><small>区域规划、地块、产业福利</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('bidding')"><i data-lucide="briefcase-business"></i><span><b>招投标</b><small>工程、采购、评标</small></span><i data-lucide="chevron-right"></i></button>
+</div>
+<div class="card"><h3>重点企业</h3><div class="table-wrap"><table><thead><tr><th>企业</th><th>行业</th><th>公户余额</th><th>成员</th><th>状态</th><th></th></tr></thead><tbody id="corpsHubEntBody"></tbody></table></div></div>
+<div class="card"><h3>银行网络</h3><div class="table-wrap"><table><thead><tr><th>银行</th><th>类型</th><th>总资产</th><th>贷款利率</th><th>状态</th><th></th></tr></thead><tbody id="corpsHubBankBody"></tbody></table></div></div>
+<div class="card"><h3>区域规划</h3><div class="table-wrap"><table><thead><tr><th>区域</th><th>类型</th><th>世界</th><th>基础价</th><th>状态</th><th></th></tr></thead><tbody id="corpsHubZoneBody"></tbody></table></div></div>
+</div>
+
+<!-- ================= 核心协议总览 ================= -->
+<div class="tab-section" id="tab-protocols-hub">
+<div class="stats-row" id="protocolsHubStats"></div>
+<div class="hub-launch-grid">
+  <button class="hub-module" type="button" onclick="switchTab('dg-templates')"><i data-lucide="swords"></i><span><b>副本协议</b><small>模板、实例、网格、热配置</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('politic-offices')"><i data-lucide="scale"></i><span><b>元老院</b><small>职务、提案、选举、立法</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('ops')"><i data-lucide="radio-tower"></i><span><b>主任务与运行协议</b><small>MO、功能开放、物流参数</small></span><i data-lucide="chevron-right"></i></button>
+</div>
+<div class="card"><h3>主任务态势</h3><div id="protocolsHubMo" class="hub-feed"></div></div>
+<div class="card"><h3>副本实例</h3><div class="table-wrap"><table><thead><tr><th>实例</th><th>模板</th><th>状态</th><th>到期</th><th></th></tr></thead><tbody id="protocolsHubInstanceBody"></tbody></table></div></div>
+</div>
+
+<!-- ================= 黑市与商业化总览 ================= -->
+<div class="tab-section" id="tab-market-hub">
+<div class="stats-row" id="marketHubStats"></div>
+<div class="hub-launch-grid">
+  <button class="hub-module" type="button" onclick="switchTab('market-overview')"><i data-lucide="chart-no-axes-combined"></i><span><b>市场监控</b><small>挂单、仓库、禁令与异常</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('prices')"><i data-lucide="tags"></i><span><b>官方定价</b><small>材料参考价与官方收购</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('bb-pools')"><i data-lucide="package-open"></i><span><b>盲盒卡池</b><small>池、保底、战利品、热度</small></span><i data-lucide="chevron-right"></i></button>
+</div>
+<div class="card"><h3>挂单深度</h3><div class="table-wrap"><table><thead><tr><th>物品</th><th>卖家</th><th>数量</th><th>单价</th><th>总价</th></tr></thead><tbody id="marketHubListingBody"></tbody></table></div></div>
+<div class="card"><h3>官方材料价格</h3><div class="table-wrap"><table><thead><tr><th>材料</th><th>收购价</th><th>七日均价</th><th>趋势</th></tr></thead><tbody id="marketHubPriceBody"></tbody></table></div></div>
+</div>
+
+<!-- ================= 安全与审计总览 ================= -->
+<div class="tab-section" id="tab-security-hub">
+<div class="stats-row" id="securityHubStats"></div>
+<div class="hub-launch-grid">
+  <button class="hub-module" type="button" onclick="switchTab('audit-log')"><i data-lucide="scroll-text"></i><span><b>审计日志</b><small>经济与权限操作追踪</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('market-overview')"><i data-lucide="shield-alert"></i><span><b>市场风控</b><small>挂单禁令、闲置物品、强制处置</small></span><i data-lucide="chevron-right"></i></button>
+  <button class="hub-module" type="button" onclick="switchTab('ops')"><i data-lucide="sliders-horizontal"></i><span><b>功能开关</b><small>逐项控制玩家经济功能</small></span><i data-lucide="chevron-right"></i></button>
+</div>
+<div class="card"><h3>最近操作</h3><div class="table-wrap"><table><thead><tr><th>时间</th><th>操作</th><th>操作者</th><th>目标</th><th>详情</th></tr></thead><tbody id="securityHubAuditBody"></tbody></table></div></div>
+</div>
+
+<!-- ================= 商业银行 ================= -->
+<div class="tab-section" id="tab-banks">
+<div class="stats-row" id="bankKpis"></div>
+<div class="card"><h3>🏦 所有银行 <span style="margin-left:auto;font-size:10.5px;font-weight:400;color:var(--faint);">点击卡片进入该银行的经营面板</span></h3>
+<input id="bankListSearch" placeholder="⌕ 搜索银行 ID / 名称 / 类型…" style="width:100%;margin-bottom:10px;"/>
+<div class="ks-entity-grid" id="bankListGrid"></div>
+</div>
+
+<!-- 银行下钻面板 -->
+<div class="detail-panel" id="bankDetail" style="display:none;">
+<div class="detail-head">
+  <div>
+    <div class="detail-eyebrow">BANK CONSOLE · 银行经营面板</div>
+    <div class="detail-title" id="bankDetailTitle">—</div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <button class="btn btn-sm" onclick="setBankRate(curBankId)">📈 设置利率</button>
+    <button class="btn btn-sm" onclick="quickBankInvite(curBankId)">📨 快速邀请</button>
+    <button class="btn btn-sm" onclick="closeBankMgr()">✕ 关闭</button>
+  </div>
+</div>
+<div class="detail-grid">
+<div class="card"><h3>📊 资产结构</h3>
+<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+  <div style="width:190px;height:190px;flex:0 0 190px;"><canvas id="bankDetailChart"></canvas></div>
+  <div id="bankDetailInfo" style="flex:1;min-width:220px;font-size:12.5px;line-height:2;color:var(--dim);">—</div>
+</div>
+</div>
+<div class="card"><h3>💰 发放贷款</h3>
+<div class="form-row">
+<label>银行ID<br><input id="loanBankId" placeholder="银行ID"/></label>
+<label>借款人UUID<br><input id="loanBorrower" class="player-picker" placeholder="借款人名/UUID"/></label>
+<label>本金<br><input id="loanPrincipal" type="number" step="1" value="10000"/></label>
+<label>期限(天)<br><input id="loanTerm" type="number" value="30"/></label>
+<button class="btn btn-sm" onclick="issueLoan()">发放贷款</button>
+</div>
+</div>
+<div class="card"><h3>📋 本行贷款</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>银行</th><th>借款人</th><th>本金</th><th>剩余</th><th>利率</th><th>状态</th><th>操作</th></tr></thead><tbody id="loanListBody"></tbody></table></div>
+</div>
+<div class="card"><h3>🏭 企业融资审批</h3>
+<div class="form-row"><label>银行ID<br><input id="entLoanRequestBankId" placeholder="银行ID"/></label><button class="btn btn-sm" onclick="loadEnterpriseLoanRequests()">刷新待审申请</button></div>
+<div class="table-wrap" style="margin-top:10px;"><table><thead><tr><th>申请ID</th><th>企业</th><th>用途</th><th>金额</th><th>抵押物</th><th>抵押率</th><th>操作</th></tr></thead><tbody id="entLoanRequestBody"></tbody></table></div>
+<div style="margin-top:12px;"><h4>📦 登记企业抵押库存估值</h4>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">此处登记的是可被融资抵押的企业库存批次及管理员估值，不会直接读取或移动玩家背包物品。</p>
+<div class="form-row"><label>企业ID<br><input id="inventoryEntId" placeholder="企业ID"/></label><label>库存说明<br><input id="inventoryDesc" placeholder="例如：工业材料库存"/></label><label>数量<br><input id="inventoryQty" type="number" min="1" step="1" value="1"/></label><label>估值<br><input id="inventoryValue" type="number" min="1" step="1" value="10000"/></label><button class="btn btn-sm btn-success" onclick="registerEnterpriseInventory()">登记估值库存</button></div>
+</div>
+</div>
+<div class="card"><h3>🔑 银行权限</h3>
+<div class="form-row">
+<label>银行ID<br><input id="bankPermBankId" placeholder="银行ID"/></label>
+<label>玩家UUID<br><input id="bankPermPlayerUuid" class="player-picker" placeholder="玩家名/UUID"/></label>
+<label>权限<br><select id="bankPermPermission"><option value="APPROVE_LOAN">批准贷款</option><option value="ISSUE_LOAN">直接放贷</option><option value="MANAGE_MEMBERS">管理成员</option><option value="MANAGE_PERMISSIONS">管理权限</option><option value="VIEW_FINANCE">查看财务</option><option value="SET_RATES">设置利率</option></select></label>
+<label>操作<br><select id="bankPermEnabled"><option value="true">授予</option><option value="false">撤销</option></select></label>
+<button class="btn btn-sm" onclick="setBankPermission()">提交</button>
+</div>
+<div style="margin-top:12px;"><h4>现有权限</h4>
+<div class="table-wrap"><table><thead><tr><th>银行</th><th>玩家</th><th>权限</th><th>授予者</th></tr></thead><tbody id="bankPermListBody"></tbody></table></div>
+</div>
+</div>
+<div class="card"><h3>📨 邀请玩家加入本行</h3>
+<div class="form-row">
+<label>银行ID<br><input id="inviteBankId2" placeholder="银行ID"/></label>
+<label>受邀人UUID<br><input id="inviteBankPlayerUuid" class="player-picker" placeholder="玩家名/UUID"/></label>
+<button class="btn btn-sm" onclick="sendBankInvite()">发送邀请</button>
+</div>
+</div>
+</div>
+</div>
+
+<div class="card"><h3>➕ 创建银行</h3>
+<div class="form-row">
+<label>名称<br><input id="bkName" placeholder="银行名称"/></label>
+<label>所有者 ID<br><input id="bkOwners" class="player-picker" data-player-list="csv" placeholder="玩家名1,玩家名2"/></label>
+<label>初始资本<br><input id="bkCapital" type="number" step="1" value="100000"/></label>
+<label>类型<br><select id="bkType"><option value="COMMERCIAL">商业银行</option><option value="CENTRAL">中央银行</option></select></label>
+<button class="btn" onclick="createBank()">创建</button>
+</div>
+</div>
+</div>
+
+<!-- ================= 中央银行 ================= -->
+<div class="tab-section" id="tab-bank-cb">
+<div class="stats-row" id="cbKpis"></div>
+<div class="ks-action-tiles">
+  <button class="ks-action-tile" onclick="ksDrill('央行利率调控 // CB RATES',['ks-cb-rates'])"><span class="kat-ico">🏛</span>利率调控</button>
+  <button class="ks-action-tile" onclick="ksDrill('商业银行利率区间 // RATE CORRIDOR',['ks-cb-range'])"><span class="kat-ico">📐</span>利率区间</button>
+  <button class="ks-action-tile magenta" onclick="ksDrill('央行注资 // LIQUIDITY INJECT',['ks-cb-inject'])"><span class="kat-ico">💉</span>流动性注资</button>
+  <button class="ks-action-tile" onclick="ksDrill('王国开发银行 // GUIDANCE POLICY',['ks-cb-guidance'])"><span class="kat-ico">🏦</span>引导政策</button>
+  <button class="ks-action-tile" onclick="ksDrill('央行借贷 // CB LOANS',['ks-cb-loans']);loadCbLoans()"><span class="kat-ico">📋</span>央行借贷</button>
+</div>
+<div class="ks-drill-stash">
+<div class="card" id="ks-cb-rates"><h3>🏛 央行利率调控</h3>
+<div class="form-row">
+<label>基准利率 (-100% ~ +100%)<br><input id="cbBaseRate" type="number" step="0.001" min="-1" max="1" placeholder="0.035 = 3.5%"/></label>
+<label>准备金率 (0% ~ 100%)<br><input id="cbReserveReq" type="number" step="0.001" min="0" max="1" placeholder="0.10 = 10%"/></label>
+<button class="btn" onclick="setCbRates()">💾 更新利率</button>
+</div>
+<div class="form-row" style="margin-top:8px;">
+<label>利息结算周期 (天)<br><input id="cbInterestPeriod" type="number" step="0.01" min="0.01" max="365" placeholder="7 = 周结, 30 = 月结"/></label>
+<label>开行最低资本<br><input id="cbBankMinCapital" type="number" step="1000" min="0" placeholder="50000"/></label>
+</div>
+<p style="color:#888;font-size:10px;margin-top:4px;">存款利率语义为「每结算周期利率」（非年化）。周期支持小数（0.01≈15分钟，测试用）。开行最低资本是玩家创建商业银行时真实扣除的初始资本门槛。</p>
+<div id="cbRateCurrent" style="margin-top:10px;font-size:13px;color:#aaa;"></div>
+</div>
+<div class="card" id="ks-cb-range"><h3>📐 商业银行利率区间</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">设置商业银行存贷利率允许的上下限（0-1）。商业银行设置利率时会校验落在此区间内。</p>
+<div class="form-row">
+<label>利率下限<br><input id="cbRateMin" type="number" step="0.001" min="0" max="1" placeholder="0.01 = 1%"/></label>
+<label>利率上限<br><input id="cbRateMax" type="number" step="0.001" min="0" max="1" placeholder="0.15 = 15%"/></label>
+<button class="btn" onclick="setCbRateRange()">💾 设置区间</button>
+</div>
+<div id="cbRateRangeCurrent" style="margin-top:8px;font-size:12px;color:#aaa;"></div>
+</div>
+<div class="card" id="ks-cb-inject"><h3>💉 央行注资（仅限商业银行）</h3>
+<div class="form-row">
+<label>商业银行ID<br><input id="injectBankId" placeholder="目标银行ID"/></label>
+<label>金额<br><input id="injectAmount" type="number" step="1" value="100000"/></label>
+<label>模式<br><select id="injectMode"><option value="GRANT">GRANT 无偿拨款</option><option value="LOAN">LOAN 计息贷款</option></select></label>
+<button class="btn" onclick="cbInject()">💉 注入流动性</button>
+</div>
+<p style="color:#888;font-size:10px;margin-top:6px;">GRANT = 直接增加银行资产（不需偿还）；LOAN = 形成央行贷款，按央行基准利率计息，在下方「央行借贷」还款。</p>
+<div id="injectMsg" style="margin-top:8px;"></div>
+</div>
+<div class="card" id="ks-cb-guidance"><h3>🏦 王国开发银行（引导政策）</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">这是独立核算的官方引导机构。它只在首次创建时取得一次性种子本金；不会从央行自动补充，也不应当作为玩家银行的兜底方。</p>
+<div id="guidanceBankSummary" style="color:#aaa;font-size:12px;margin-bottom:10px;">正在读取...</div>
+<div class="form-row">
+<label><input id="guidanceEnabled" type="checkbox"/> 开放一次性启动贷款</label>
+<label>单笔金额<br><input id="guidanceAmount" type="number" min="0" step="1"/></label>
+<label>固定利率<br><input id="guidanceRate" type="number" min="0" step="0.001"/></label>
+<label>期限（天）<br><input id="guidanceTerm" type="number" min="1" max="3650" step="1"/></label>
+<label>政策总额度<br><input id="guidanceTotalCap" type="number" min="0" step="1"/></label>
+<label>每日额度<br><input id="guidanceDailyCap" type="number" min="0" step="1"/></label>
+<label>最低准备金比例<br><input id="guidanceReserveRatio" type="number" min="0" max="1" step="0.01"/></label>
+<button class="btn btn-success" onclick="saveGuidanceConfig()">保存政策</button>
+</div>
+<p style="color:#888;font-size:10px;margin-top:8px;">种子本金只展示、不在此页编辑。准备金按首次种子本金的比例冻结，贷款归还后会回流到该银行资产。</p>
+</div>
+<div class="card" id="ks-cb-loans"><h3>🏛 央行借贷（流动性 LOAN 注资形成的贷款）</h3>
+<div class="form-row">
+<label>按银行筛选<br><input id="cbLoanFilterBank" placeholder="留空=全部"/></label>
+<label>含已还清<br><select id="cbLoanIncludeRepaid"><option value="0">否</option><option value="1">是</option></select></label>
+<button class="btn btn-sm" onclick="loadCbLoans()">🔍 查询</button>
+</div>
+<div class="table-wrap" style="margin-top:10px;"><table><thead><tr><th>ID</th><th>银行</th><th>本金</th><th>未偿</th><th>利率</th><th>期限(天)</th><th>到期</th><th>操作</th></tr></thead><tbody id="cbLoanListBody"></tbody></table></div>
+</div>
+</div>
+</div>
+
+<!-- ================= 企业 ================= -->
+<div class="tab-section" id="tab-ents">
+<div class="stats-row" id="entKpis"></div>
+<div class="card"><h3>🏢 企业列表 <span style="margin-left:auto;font-size:10.5px;font-weight:400;color:var(--faint);">点击「管理」进入该企业的管理面板 · 公户统一托管于 CORP-BANK</span></h3>
+<input id="entListSearch" placeholder="⌕ 搜索企业 ID / 名称 / 行业 / 区域…" style="width:100%;margin-bottom:10px;"/>
+<div class="ks-entity-grid" id="entListGrid"></div>
+</div>
+
+<!-- 企业下钻面板 -->
+<div class="detail-panel" id="entDetail" style="display:none;">
+<div class="detail-head">
+  <div>
+    <div class="detail-eyebrow">ENTERPRISE CONSOLE · 企业管理面板</div>
+    <div class="detail-title" id="entDetailTitle">—</div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <button class="btn btn-sm" onclick="checkCorpBalance(curEntId)">💳 公户详情</button>
+    <button class="btn btn-sm" onclick="quickEntInvite(curEntId)">📨 快速邀请</button>
+    <button class="btn btn-sm" onclick="closeEntMgr()">✕ 关闭</button>
+  </div>
+</div>
+<div class="detail-grid">
+<div class="card"><h3>📊 企业概况</h3><div id="entDetailInfo" style="font-size:12.5px;line-height:2.1;color:var(--dim);">—</div></div>
+<div class="card"><h3>👥 成员</h3>
+<div class="table-wrap"><table><thead><tr><th>玩家</th><th>UUID</th><th>角色</th><th>薪资</th><th>加入时间</th></tr></thead><tbody id="entDetailMembers"></tbody></table></div>
+</div>
+<div class="card"><h3>🏷 企业资料</h3>
+<div class="form-row">
+<label>企业ID<br><input id="editEnterpriseId" placeholder="企业ID"/></label>
+<label>企业名称<br><input id="editEnterpriseName" placeholder="允许管理员重命名"/></label>
+<label>描述<br><input id="editEnterpriseDescription" placeholder="企业简介" style="width:300px;"/></label>
+<label>企业等级<br><input id="editEnterpriseLevel" type="number" min="1" max="10" value="1"/></label>
+<label>状态<br><select id="editEnterpriseStatus"><option value="ACTIVE">正常</option><option value="SUSPENDED">暂停</option><option value="FROZEN">冻结</option><option value="DISSOLVED">已注销</option></select></label>
+<button class="btn btn-sm btn-success" onclick="saveEnterpriseProfile()">保存企业资料</button>
+</div>
+</div>
+<div class="card"><h3>🔑 企业权限</h3>
+<div class="form-row">
+<label>企业ID<br><input id="permEntId" placeholder="企业ID"/></label>
+<label>玩家UUID<br><input id="permPlayerUuid" class="player-picker" placeholder="玩家名/UUID"/></label>
+<label>权限<br><select id="permPermission"><option value="MANAGE_MEMBERS">管理成员</option><option value="MANAGE_BIDDING">管理招标</option><option value="DECLARE_DIVIDEND">宣布分红</option><option value="VIEW_FINANCE">查看财务</option></select></label>
+<button class="btn btn-sm" onclick="setPermission()">设置权限</button>
+</div>
+<div style="margin-top:12px;"><h4>现有权限</h4>
+<div class="table-wrap"><table><thead><tr><th>企业</th><th>玩家</th><th>权限</th><th>授予者</th></tr></thead><tbody id="permListBody"></tbody></table></div>
+</div>
+</div>
+<div class="card"><h3>💸 宣布分红</h3>
+<div class="form-row">
+<label>企业ID<br><input id="divEntId" placeholder="企业ID"/></label>
+<label>分红总额<br><input id="divAmount" type="number" step="1" value="10000"/></label>
+<button class="btn btn-success" onclick="declareDividend()">宣布分红</button>
+</div>
+<span style="font-size:10px;color:#888;">分红从企业公户扣除，均分给所有者并自动纳税</span>
+</div>
+<div class="card"><h3>📨 发送合资邀请</h3>
+<div class="form-row">
+<label>企业ID<br><input id="inviteEntId" placeholder="企业ID（留空表示银行）"/></label>
+<label>银行ID<br><input id="inviteBankId" placeholder="银行ID（可选）"/></label>
+<label>受邀人UUID<br><input id="inviteeUuid" class="player-picker" placeholder="玩家名/UUID"/></label>
+<button class="btn" onclick="sendInvite()">发送邀请</button>
+</div>
+</div>
+</div>
+</div>
+
+<div class="card"><h3>➕ 注册 / 注销企业</h3>
+<div class="form-row">
+<label>名称<br><input id="entName" placeholder="企业名称"/></label>
+<label>所有者 ID<br><input id="entOwners" class="player-picker" data-player-list="csv" placeholder="玩家名1,玩家名2"/></label>
+<label>注册资本<br><input id="entCapital" type="number" step="1" value="100000"/></label>
+<label>类型<br><select id="entType"><option value="PRIVATE">私有企业</option><option value="STATE_OWNED">国有企业</option></select></label>
+<label>区域<br><input id="entRegion" placeholder="注册区域"/></label>
+<button class="btn" onclick="registerEnterprise()">注册</button>
+</div>
+<div class="form-row" style="margin-top:10px;">
+<label>注销企业ID<br><input id="dissolveEntId" placeholder="企业ID"/></label>
+<label>请求者UUID<br><input id="dissolveOwner" class="player-picker" placeholder="请求者名/UUID"/></label>
+<button class="btn btn-danger btn-sm" onclick="dissolveEnterprise()">注销</button>
+</div>
+</div>
+<div class="card"><h3>⚙ 企业门槛</h3>
+<div class="form-row">
+<label>企业最低注册资本<br><input id="enterpriseMinCapital" type="number" min="0" step="1"/></label>
+<label>银行最低初始资本<br><input id="bankMinCapital" type="number" min="0" step="1"/></label>
+<label>企业最大所有者数<br><input id="enterpriseMaxOwners" type="number" min="1" step="1"/></label>
+<label>企业最大成员数<br><input id="enterpriseMaxMembers" type="number" min="1" step="1"/></label>
+<button class="btn btn-sm" onclick="saveEconomicThresholds()">保存成立门槛</button>
+</div>
+</div>
+<div class="card"><h3>📨 待处理合资邀请</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>目标</th><th>邀请人</th><th>受邀人</th><th>状态</th><th>时间</th></tr></thead><tbody id="inviteListBody"></tbody></table></div>
+</div>
+<div class="card"><h3>💸 分红记录</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>企业</th><th>金额</th><th>税率</th><th>税额</th><th>时间</th></tr></thead><tbody id="divListBody"></tbody></table></div>
+</div>
+</div>
+
+<!-- ================= 招投标 ================= -->
+<div class="tab-section" id="tab-bidding">
+<div class="sec-title">工程招标</div>
+<div class="card"><h3>📢 发布招标</h3>
+<div class="form-row">
+<label>标题<br><input id="projTitle" placeholder="项目标题"/></label>
+<label id="projPublisherLabel">发布主体<br><input id="projPublisher" placeholder="官方留空；企业填写企业ID"/></label>
+<label>预算<br><input id="projBudget" type="number" step="1" value="100000"/></label>
+<label>类型<br><select id="projPubType" onchange="updateProjectPublisherMode()"><option value="OFFICIAL">官方</option><option value="ENTERPRISE">企业</option></select></label>
+</div>
+<div class="form-row">
+<label>项目位置<br><input id="projLocation" placeholder="可选"/></label>
+<label>预付比例<br><input id="projPrepay" type="number" step="0.01" value="0"/></label>
+<label>违约金比例<br><input id="projPenalty" type="number" step="0.01" value="0.15"/></label>
+<label>截止(现实天)<br><input id="projDeadline" type="number" value="7"/></label>
+<button class="btn btn-sm" onclick="publishProject()">发布</button>
+</div>
+</div>
+<div class="card"><h3>🎯 投标 & 评标（支持企业和个人投标）</h3>
+<div class="form-row">
+<label>项目ID<br><input id="bidProjectId" placeholder="项目ID"/></label>
+<label>投标方类型<br><select id="bidBidderType" onchange="toggleBidderInput()"><option value="ENTERPRISE">企业</option><option value="PLAYER">个人</option></select></label>
+<label id="bidEntLabel">企业ID<br><input id="bidEntId" placeholder="企业ID"/></label>
+<label id="bidPlayerLabel" style="display:none;">玩家UUID<br><input id="bidPlayerUuid" class="player-picker" placeholder="玩家名/UUID"/></label>
+<label>金额<br><input id="bidAmount" type="number" step="1"/></label>
+<button class="btn btn-sm" onclick="submitBid()">投标</button>
+</div>
+<div class="form-row" style="margin-top:8px;">
+<label>评标（综合评分）<br><input id="awardProjectId" placeholder="项目ID"/></label>
+<button class="btn btn-sm btn-success" onclick="awardProject()">📊 综合评分评标</button>
+<span style="font-size:10px;color:#888;">国企/官方项目强制使用此模式</span>
+</div>
+<div class="form-row">
+<label>私企自主挑选<br><input id="manualAwardBidId" placeholder="投标ID"/></label>
+<label>项目ID<br><input id="manualAwardProjId" placeholder="项目ID"/></label>
+<button class="btn btn-sm btn-warn" onclick="manualAward()">✋ 自主指定中标</button>
+<span style="font-size:10px;color:#888;">仅私企项目可用</span>
+</div>
+</div>
+<div class="card"><h3>📋 项目列表</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>标题</th><th>预算</th><th>投标数</th><th>截止</th><th>状态</th><th>操作</th></tr></thead><tbody id="projListBody"></tbody></table></div>
+</div>
+<div class="sec-title">企业采购</div>
+<div class="card"><h3>🛒 发布采购需求</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">企业发布采购→供应商投标→从企业公户付款。预算不可超过公户余额。</p>
+<div class="form-row">
+<label>企业ID<br><input id="procEntId" placeholder="企业ID"/></label>
+<label>采购标题<br><input id="procTitle" placeholder="例如: 建材采购"/></label>
+<label>描述<br><input id="procDesc" placeholder="物品描述"/></label>
+</div>
+<div class="form-row">
+<label>数量<br><input id="procQty" type="number" value="1"/></label>
+<label>预算<br><input id="procBudget" type="number" step="1" value="50000"/></label>
+<button class="btn btn-sm" onclick="publishProcurement()">发布采购</button>
+</div>
+</div>
+<div class="card"><h3>🔗 供应投标 / 定标</h3>
+<div class="form-row">
+<label>采购ID<br><input id="supplyProcId" placeholder="采购ID"/></label>
+<label>投标方类型<br><select id="supplyBidderType" onchange="toggleSupplyBidderInput()"><option value="ENTERPRISE">企业</option><option value="PLAYER">个人</option></select></label>
+<label id="supplyEntLabel">企业ID<br><input id="supplyEntId" placeholder="企业ID"/></label>
+<label id="supplyPlayerLabel" style="display:none">玩家UUID<br><input id="supplyPlayerUuid" class="player-picker" placeholder="玩家名/UUID"/></label>
+<label>单价<br><input id="supplyUnitPrice" type="number" step="1"/></label>
+<span style="font-size:11px;color:#888;">总价由采购数量自动计算</span>
+<button class="btn btn-sm btn-success" onclick="submitSupplyBid()">投标供应</button>
+</div>
+<div class="form-row" style="margin-top:8px;">
+<label>采购ID<br><input id="awardProcId" placeholder="采购ID"/></label>
+<label>指定投标(可选)<br><input id="awardProcBidId" placeholder="留空=最低价自动"/></label>
+<button class="btn btn-sm btn-success" onclick="awardProcurement()">定标</button>
+</div>
+</div>
+<div class="card"><h3>📋 采购列表</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>企业</th><th>标题</th><th>预算</th><th>投标数</th><th>状态</th></tr></thead><tbody id="procListBody"></tbody></table></div>
+</div>
+</div>
+
+<!-- ================= 税收 ================= -->
+<div class="tab-section" id="tab-tax-rates">
+<div class="inline-tabs">
+  <button class="inline-tab active" onclick="switchTaxSub('rates')">通用+行业税率</button>
+  <button class="inline-tab" onclick="switchTaxSub('brackets')">阶梯税率</button>
+  <button class="inline-tab" onclick="switchTaxSub('calc')">试算器</button>
+  <button class="inline-tab" onclick="switchTaxSub('records')">税收记录</button>
+  <button class="inline-tab" onclick="switchTaxSub('penalties')">罚单管理</button>
+</div>
+<div class="stats-row" id="taxKpis"></div>
+<div class="tax-sub active" id="tax-sub-rates">
+<div class="card"><h3>📊 税率设置（0 = 0%, 1 = 100%）</h3>
+<div id="taxRateForm"></div>
+<div class="form-row" style="margin-top:10px;">
+<label>单笔转账免税额<br><input id="transferTaxFreeAmount" type="number" min="0" step="0.01"/></label>
+<span id="transferTaxSummary" style="font-size:11px;color:#888;"></span>
+<button class="btn btn-sm" onclick="saveTransferTaxConfig()">保存转账免税额</button>
+</div>
+</div>
+<div class="card"><h3>🏭 行业税率（差异化）</h3>
+<div class="form-row">
+<label>行业<br><select id="taxIndSelect"><option value="INDUSTRY">工业</option><option value="AGRICULTURE">农业</option><option value="REAL_ESTATE">房地产</option><option value="OTHER">其他</option></select></label>
+<label>税种<br><select id="taxIndCat"><option value="ENTERPRISE_TAX">企业所得税</option><option value="DIVIDEND_TAX">分红税</option><option value="MARKET_TRADE">市场交易税</option><option value="OFFICIAL_TRADE">官方交易税</option><option value="BANK_INTEREST">银行利息税</option><option value="PENALTY_TAX">罚金税</option></select></label>
+<label>税率 (0-1)<br><input id="taxIndRate" type="number" step="0.01" value="0.08"/></label>
+<button class="btn btn-sm" onclick="saveTaxIndRate()">💾 设置行业税率</button>
+</div>
+<h4 style="margin-top:10px;font-size:12px;color:#00E5FF;">当前各行业税率</h4>
+<div id="taxIndList" style="font-size:11px;"></div>
+</div>
+</div>
+<div class="tax-sub" id="tax-sub-brackets">
+<div class="card"><h3>📈 阶梯税率（按行业 + 利润区间）</h3>
+<div class="form-row">
+<label>行业<br><select id="bracketInd"><option value="INDUSTRY">工业</option><option value="AGRICULTURE">农业</option><option value="REAL_ESTATE">房地产</option><option value="OTHER">其他</option></select></label>
+<label>利润下限<br><input id="bracketPmin" type="number" step="1" value="0"/></label>
+<label>利润上限<br><input id="bracketPmax" type="number" step="1" value="1000000"/></label>
+<label>税率 (0-1)<br><input id="bracketRate" type="number" step="0.01" value="0.05"/></label>
+<button class="btn btn-sm" onclick="saveTaxBracket()">➕ 新增阶梯</button>
+<button class="btn btn-sm" onclick="loadTaxBrackets()">🔍 刷新</button>
+</div>
+<div class="table-wrap" style="margin-top:10px;"><table><thead><tr><th>利润下限</th><th>利润上限</th><th>税率</th><th>操作</th></tr></thead><tbody id="taxBracketBody"></tbody></table></div>
+</div>
+</div>
+<div class="tax-sub" id="tax-sub-calc">
+<div class="card"><h3>🧮 阶梯试算</h3>
+<div class="form-row">
+<label>行业<br><select id="calcInd"><option value="INDUSTRY">工业</option><option value="AGRICULTURE">农业</option><option value="REAL_ESTATE">房地产</option><option value="OTHER">其他</option></select></label>
+<label>利润<br><input id="calcProfit" type="number" step="1" value="500000"/></label>
+<button class="btn btn-sm" onclick="runTaxCalc()">🧮 计算税额</button>
+</div>
+<div id="taxCalcResult" style="margin-top:12px;font-size:13px;"></div>
+</div>
+</div>
+<div class="tax-sub" id="tax-sub-records">
+<div class="card"><h3>📋 税收记录</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>纳税人</th><th>类别</th><th>基数</th><th>税率</th><th>税额</th><th>时间</th></tr></thead><tbody id="taxRecordBody"></tbody></table></div>
+</div>
+</div>
+<div class="tax-sub" id="tax-sub-penalties">
+<div class="card"><h3>⚠ 发出罚单</h3>
+<div class="form-row">
+<label>目标UUID<br><input id="penTarget" class="player-picker" placeholder="目标玩家名/UUID"/></label>
+<label>名称<br><input id="penName" placeholder="名称"/></label>
+<label>类型<br><select id="penType"><option value="TAX_EVASION">逃税</option><option value="CONTRACT_BREACH">违约</option><option value="FRAUD">欺诈</option></select></label>
+<label>基数<br><input id="penBase" type="number" step="1" value="10000"/></label>
+<label>原因<br><input id="penReason" placeholder="原因"/></label>
+<button class="btn btn-danger btn-sm" onclick="issuePenalty()">发出</button>
+</div>
+<div style="margin-top:12px;"><h4>罚单列表</h4>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>目标</th><th>类型</th><th>金额</th><th>原因</th><th>状态</th></tr></thead><tbody id="penaltyBody"></tbody></table></div>
+</div>
+</div>
+</div>
+</div>
+
+<!-- ================= 市场监控 ================= -->
+<div class="tab-section" id="tab-market-overview">
+<div class="stats-row" id="marketStats"></div>
+<div class="card"><h3>📋 活跃挂单（管理员视图）</h3>
+<div class="form-row">
+<button class="btn btn-sm" onclick="loadAdminAllListings()">🔍 刷新全部挂单</button>
+<span style="color:#888;font-size:11px;margin-left:8px;" id="listingCountBadge"></span>
+</div>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>挂单方</th><th>物品/类型</th><th>数量</th><th>单价</th><th>总价</th><th>挂单时间</th><th>操作</th></tr></thead><tbody id="listingBody"></tbody></table></div>
+</div>
+<div class="card"><h3>💹 官方收购价 vs 市场均价</h3>
+<div class="table-wrap"><table><thead><tr><th>物品</th><th>官方收购价</th><th>市场均价</th></tr></thead><tbody id="marketPriceBody"></tbody></table></div>
+</div>
+<div class="card"><h3>📦 滞销品 / 暂存物品</h3>
+<div class="stats-row" id="idleStats"></div>
+<div id="idleMsg" style="font-size:11px;color:#888;margin-top:8px;"></div>
+</div>
+<div class="card"><h3>🚫 上架禁令</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">禁令类型：LISTING=禁止市场上架，SELL_TO_OFFICIAL=禁止官方兑换，ALL_MARKET=两者皆禁。时长0=永久。</p>
+<div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
+  <label>玩家 ID<br><input id="banPlayerUuid" class="player-picker" placeholder="玩家名或 UUID" style="width:280px;"/></label>
+  <label>玩家名<br><input id="banPlayerName" placeholder="玩家名（辅助记录）" style="width:150px;"/></label>
+  <button class="btn btn-sm" style="margin-top:16px;" onclick="ksPickPlayer('选择被禁令玩家').then(function(u){if(u)document.getElementById('banPlayerUuid').value=u;})">🔍 选玩家</button>
+</div>
+<div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
+  <label>禁令类型<br>
+    <select id="banType">
+      <option value="LISTING">LISTING（禁止上架）</option>
+      <option value="SELL_TO_OFFICIAL">SELL_TO_OFFICIAL（禁止官方兑换）</option>
+      <option value="ALL_MARKET">ALL_MARKET（全部禁止）</option>
+    </select>
+  </label>
+  <label>时长（小时，0=永久）<br><input id="banDuration" type="number" min="0" value="0" style="width:120px;"/></label>
+  <label>原因<br><input id="banReason" placeholder="禁令原因（可留空）" style="width:200px;"/></label>
+  <button class="btn" style="margin-top:16px;" onclick="addBan()">➕ 添加禁令</button>
+</div>
+<div style="display:flex;align-items:center;gap:8px;margin:12px 0 8px;">
+  <h4 style="margin:0;">📋 当前禁令列表</h4>
+  <button class="btn btn-sm" onclick="loadBans()">🔍 刷新</button>
+</div>
+<div class="table-wrap"><table><thead><tr><th>玩家</th><th>类型</th><th>原因</th><th>到期时间</th><th>创建人</th><th>操作</th></tr></thead><tbody id="bansBody"></tbody></table></div>
+</div>
+</div>
+
+<!-- ================= 官方定价 ================= -->
+<div class="tab-section" id="tab-prices">
+<div class="card"><h3>🏷 官方定价配置</h3>
+<div style="display:flex;gap:8px;margin-bottom:12px;">
+<input id="priceSearch" placeholder="搜索物品..." style="flex:1;" oninput="filterPrices()"/>
+<button class="btn btn-sm" onclick="loadPrices()">刷新</button>
+<button class="btn btn-sm btn-success" onclick="saveAllPrices()">💾 批量保存</button>
+</div>
+<div id="pricesGrid" style="max-height:60vh;overflow-y:auto;"></div>
+</div>
+<div class="card"><h3>🎯 强制定价 / 动态价格工具</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">强制定价直接覆盖某物品的官方价格（绕过动态定价引擎）；刷新立即重算全部动态价格。</p>
+<div class="form-row">
+<label>物品材质<br><input id="fpMaterial" placeholder="如 DIAMOND"/></label>
+<label>价格<br><input id="fpPrice" type="number" step="0.01" value="100"/></label>
+<button class="btn" onclick="forcePrice()">💾 强制设价</button>
+<button class="btn" onclick="refreshPrices()">🔄 立即刷新全部价格</button>
+</div>
+<div class="form-row" style="margin-top:10px;">
+<label>模拟交易 · 物品材质<br><input id="stMaterial" placeholder="如 DIAMOND"/></label>
+<label>数量<br><input id="stQty" type="number" value="10"/></label>
+<label>单价(留空=官方收购价)<br><input id="stPrice" type="number" step="0.01" placeholder="可选"/></label>
+<label>类型<br><select id="stType"><option value="PLAYER_TRADE">玩家交易</option><option value="OFFICIAL_BUY">官方收购</option></select></label>
+<button class="btn" onclick="simulateTrade()">🧪 模拟成交</button>
+</div>
+<p style="color:#888;font-size:10px;margin-top:6px;">模拟交易会注入一笔模拟成交，用于测试动态定价对交易量的反应。</p>
+</div>
+<div class="sec-title">公示预览（与玩家端一致）</div>
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+    <h3 style="margin-bottom:0;padding-bottom:0;border-bottom:none;">📦 官方收购价格（玩家可见）</h3>
+    <button class="btn btn-sm" onclick="loadAdminPublicInfo()">🔄 刷新</button>
+  </div>
+  <p style="color:#aaa;font-size:11px;margin-bottom:8px;">此视图与玩家 <b>/kseco prices</b> 命令及玩家网页端「价格/税率」标签页显示内容一致。</p>
+  <div class="table-wrap">
+    <table><thead><tr><th>物品中文名</th><th>英文材质</th><th>基础价</th><th>当前收购价</th><th>市场均价(7日)</th></tr></thead>
+    <tbody id="adminPubPriceBody"><tr><td colspan="5" style="color:#666;">点击刷新加载</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<div class="card">
+  <h3>📋 交易税率公示（玩家可见）</h3>
+  <div class="table-wrap">
+    <table><thead><tr><th>税种</th><th>税率</th><th>说明</th></tr></thead>
+    <tbody id="adminPubTaxBody"><tr><td colspan="3" style="color:#666;">点击刷新加载</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<div class="card">
+  <h3>🏭 企业综合税率（按行业）</h3>
+  <p style="color:#aaa;font-size:11px;margin-bottom:8px;">企业所得税、分红税因行业不同而有所差异。地块持有税（年化）由区域单独设定，不在此列。</p>
+  <div class="table-wrap">
+    <table><thead><tr><th>行业</th><th>企业所得税</th><th>分红税</th><th>市场交易税</th></tr></thead>
+    <tbody id="adminIndustryBody"><tr><td colspan="4" style="color:#666;">点击刷新加载</td></tr></tbody>
+    </table>
+  </div>
+</div>
+</div>
+
+<!-- ================= 市场波动 ================= -->
+<div class="tab-section" id="tab-price-volatility">
+<div class="card"><h3>⚙️ 全局波动设置</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">关闭波动后，所有物品价格立即冻结为"仅受真实供需压力影响"，不再自动游走。波动率上限决定价格能偏离基准价多少。刷新间隔改了立即热重载，不用重启服务器。</p>
+<div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
+  <label>启用自动波动<br>
+    <select id="volEnabled">
+      <option value="true">开启</option>
+      <option value="false">关闭</option>
+    </select>
+  </label>
+  <label>波动率上限（%）<br><input id="volMaxFluctuation" type="number" min="0" max="100" step="1" value="30" style="width:120px;"/></label>
+  <label>价格刷新间隔（分钟）<br><input id="volRefreshMinutes" type="number" min="1" value="60" style="width:120px;"/></label>
+  <label>测试模式（void-trade/模拟交易只预览不生效）<br>
+    <select id="volTestMode">
+      <option value="false">关闭（真实生效）</option>
+      <option value="true">开启（仅预览）</option>
+    </select>
+  </label>
+  <button class="btn" style="margin-top:16px;" onclick="saveVolatilitySettings()">💾 保存设置</button>
+</div>
+</div>
+<div class="card"><h3>👋 大手导向</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">给某个物品设置导向目标（-100%~+100%），价格会在接下来几轮刷新里逐渐、带随机波动地被拉向这个方向，不会瞬间跳价。设为 0 即清除导向。</p>
+<div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
+  <label>物品材质<br><input id="volMaterial" list="volMatOptions" placeholder="如 DIAMOND" style="width:200px;" onfocus="ensureVolMatOptions()"/></label>
+  <datalist id="volMatOptions"></datalist>
+  <label>导向强度（%，负=压价）<br><input id="volBias" type="number" min="-100" max="100" step="5" value="0" style="width:140px;"/></label>
+  <button class="btn" style="margin-top:16px;" onclick="applyVolatilityBias()">➕ 应用导向</button>
+  <button class="btn btn-sm" style="margin-top:16px;" onclick="clearVolatilityBias()">✖ 清除导向</button>
+</div>
+</div>
+<div class="card">
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+  <h3 style="margin:0;padding-bottom:0;border-bottom:none;">📋 物品波动状态</h3>
+  <button class="btn btn-sm" onclick="loadPriceVolatility()">🔍 刷新</button>
+</div>
+<input id="volSearch" placeholder="⌕ 搜索材质…" style="width:100%;margin-bottom:10px;"/>
+<div class="ks-entity-grid" id="volGrid"></div>
+</div>
+</div>
+
+<!-- ================= 盲盒系统 ================= -->
+<div class="tab-section" id="tab-bb-pools">
+<div class="card"><h3>🎁 卡池配置</h3>
+<div class="form-row">
+<label>池ID<br><input id="bbPoolId" placeholder="如 iron_pool"/></label>
+<label>名称<br><input id="bbPoolName" placeholder="钢铁盲盒"/></label>
+<label>类型<br><select id="bbPoolType"><option value="ITEM">物品</option><option value="MATERIAL">材料</option><option value="EQUIPMENT">装备</option></select></label>
+<label>单价<br><input id="bbPoolPrice" type="number" step="1" value="100"/></label>
+<label>保底数<br><input id="bbPoolPity" type="number" step="1" value="50"/></label>
+<label>分级保底规则<br><input id="bbPoolPityRules" placeholder="RARE:50,EPIC:120,LEGENDARY:300" style="width:260px;"/></label>
+<label>启用<br><select id="bbPoolEnabled"><option value="true">是</option><option value="false">否</option></select></label>
+<label><input type="checkbox" id="bbPoolLimitedOnly"/> 仅限时入口抽取</label>
+<label>所有者<br><select id="bbPoolOwnerType"><option value="PUBLIC">玩家+企业</option><option value="PLAYER">仅玩家</option><option value="ENTERPRISE">仅企业</option></select></label>
+<label>最低企业等级<br><input id="bbPoolMinEnterpriseLevel" type="number" min="1" max="10" value="1"/></label>
+<button class="btn" onclick="saveBbPool()">💾 保存（创建/更新）</button>
+</div>
+<div class="form-row">
+<label>白名单分类（逗号分隔，留空=不限）<br><input id="bbPoolAllowedCat" placeholder="weapon,armor,tool,material,food,block,other" style="width:400px;"/></label>
+<label>白名单行业（逗号分隔，留空=任何企业）<br><input id="bbPoolAllowedInd" placeholder="INDUSTRY,AGRICULTURE,REAL_ESTATE,OTHER" style="width:400px;"/></label>
+<label>限地块类型（逗号分隔，留空=不限；需拥有对应地块才能抽）<br><input id="bbPoolRequiredLand" placeholder="AGRICULTURAL,INDUSTRIAL" style="width:400px;"/></label>
+<label>说明<br><input id="bbPoolDesc" placeholder="可选"/></label>
+</div>
+<p style="color:#888;font-size:10px;margin:4px 0;">分类参考：weapon=剑/弓/三叉戟,armor=盔甲,tool=工具,material=材料/矿物,food=食物,block=方块,other=其他</p>
+</div>
+<div class="card"><h3>📋 卡池列表 · 点击行下钻战利品</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>类型</th><th>单价</th><th>保底</th><th>企业等级</th><th>启用</th><th>战利品数</th><th>累计抽数</th><th>操作</th></tr></thead><tbody id="bbPoolListBody"></tbody></table></div>
+</div>
+<div class="card" id="ks-card-bbloot"><h3>🎲 战利品配置</h3>
+<div class="form-row">
+<label>所属池ID<br><input id="bbLootPoolId" placeholder="先选/输入池ID"/></label>
+<button class="btn btn-sm" onclick="loadBbLoot()">🔍 加载</button>
+<button class="btn btn-sm" onclick="loadBbPoolOptions()">📋 池下拉</button>
+</div>
+<div class="form-row">
+<label>材质<br><input id="bbLootMat" placeholder="如 DIAMOND_SWORD"/></label>
+<label>显示名<br><input id="bbLootName" placeholder="可选，自定义名称"/></label>
+<label>权重<br><input id="bbLootWeight" type="number" step="1" value="10"/></label>
+<label>稀有度<br><select id="bbLootRarity"><option value="COMMON">普通</option><option value="UNCOMMON">优秀</option><option value="RARE">稀有</option><option value="EPIC">史诗</option><option value="LEGENDARY">传说</option></select></label>
+<label>数量<br><input id="bbLootQty" type="number" step="1" value="1"/></label>
+<button class="btn" onclick="addBbLoot()">➕ 添加</button>
+</div>
+<div class="table-wrap" style="margin-top:10px;"><table><thead><tr><th>ID</th><th>材质</th><th>显示名</th><th>权重</th><th>稀有度</th><th>数量</th><th>操作</th></tr></thead><tbody id="bbLootListBody"></tbody></table></div>
+</div>
+<div class="card"><h3>📊 抽取统计（按池）</h3>
+<div class="table-wrap"><table><thead><tr><th>池</th><th>类型</th><th>单价</th><th>累计抽数</th><th>战利品数</th><th>保底</th></tr></thead><tbody id="bbStatsBody"></tbody></table></div>
+</div>
+</div>
+
+<!-- ================= 房地产 ================= -->
+<div class="tab-section" id="tab-re-zones">
+<div class="card"><h3>🗺 区域管理（admin 划定国有土地 / 调整价格）</h3>
+<div id="reModuleHint" style="font-size:11px;color:#ff9800;margin-bottom:8px;"></div>
+<div style="margin-bottom:10px;">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+<span style="font-size:12px;color:#00E5FF;">🗺 拖拽平移 · <b>Shift+拖拽</b> 框选区域自动回填坐标 · 滚轮缩放 · 已建区域直接画在图上</span>
+<span id="reZoneMapStatus" style="font-size:10px;color:#888;"></span>
+</div>
+<div style="position:relative;">
+<canvas id="reZoneCanvas" style="width:100%;height:440px;background:#07080C;border:1px solid rgba(255,255,255,.10);border-radius:10px;cursor:crosshair;display:block;"></canvas>
+<div style="position:absolute;top:6px;right:6px;display:flex;flex-direction:column;gap:3px;">
+<button class="btn btn-sm" style="width:30px;padding:4px 0;" onclick="reZoneMap&&reZoneMap.zoomIn()">＋</button>
+<button class="btn btn-sm" style="width:30px;padding:4px 0;" onclick="reZoneMap&&reZoneMap.zoomOut()">－</button>
+</div>
+<div id="reZoneCoord" style="position:absolute;bottom:6px;left:6px;font-size:10px;color:#0f0;background:#000a;padding:2px 6px;border-radius:3px;font-family:monospace;pointer-events:none;"></div>
+</div>
+</div>
+<div class="form-row">
+<label>名称<br><input id="reZoneName" placeholder="如：新城工业区"/></label>
+<label>世界<br><input id="reZoneWorld" value="world"/></label>
+<label>类型<br><select id="reZoneType"><option value="RESIDENTIAL">住宅</option><option value="COMMERCIAL">商业</option><option value="INDUSTRIAL">工业</option><option value="AGRICULTURAL">农业</option></select></label>
+<label>状态<br><select id="reZoneStatus"><option value="STATE_OWNED">国有</option><option value="FOR_SALE">可售</option><option value="SOLD">已售罄</option></select></label>
+</div>
+<div class="form-row">
+<label>X1<br><input id="reZoneX1" type="number" value="0"/></label>
+<label>Z1<br><input id="reZoneZ1" type="number" value="0"/></label>
+<label>X2<br><input id="reZoneX2" type="number" value="500"/></label>
+<label>Z2<br><input id="reZoneZ2" type="number" value="500"/></label>
+<label>基础价<br><input id="reZonePrice" type="number" value="10000"/></label>
+<label>契税率<br><input id="reZoneTax" type="number" step="0.01" value="0.05"/></label>
+<label>容积率(最大登记数,0=不限)<br><input id="reZoneMaxPlots" type="number" step="1" value="0"/></label>
+<label>副本权限(模板ID,住宅/农业/工业生效,留空=无)<br><input id="reZoneDungeonTpl" placeholder="留空=该区域不带副本权限"/></label>
+<button class="btn" onclick="createReZone()">➕ 划定区域</button>
+</div>
+<p style="color:#888;font-size:10px;margin:2px 0;">容积率(房屋密度) = 该区域最大合法产权登记数量；超出后即使建了房也无法登记产权（去物理限制，靠登记+契税调控）。<b>只对住宅(RESIDENTIAL)用地生效</b>，商业/工业/农业用地不限地块数量。副本权限 = 划区时配好绑定的副本模板 ID，玩家购买该区域内地块时自动继承到地块上，对住宅/农业/工业用地生效（商业不可配）；玩家侧只能查看，不能自选。</p>
+</div>
+<div class="card"><h3>区域列表 · 点击行下钻该区地块</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>世界</th><th>范围</th><th>类型</th><th>基础价</th><th>契税</th><th>容积率</th><th>副本权限</th><th>状态</th><th>操作</th></tr></thead><tbody id="reZoneListBody"></tbody></table></div>
+</div>
+<div class="card" id="ks-card-replots"><h3>🏞 地块列表</h3>
+<div class="form-row">
+<label>区域ID<br><input id="rePlotFilterZone" placeholder="留空=全部"/></label>
+<label>所有者类型<br><select id="rePlotFilterOwnerType"><option value="">全部</option><option value="PLAYER">玩家</option><option value="ENTERPRISE">企业</option></select></label>
+<button class="btn btn-sm" onclick="loadRePlots()">🔍 查询</button>
+</div>
+<div class="table-wrap"><table><thead><tr><th>地块ID</th><th>区域</th><th>世界</th><th>范围</th><th>所有者</th><th>价格</th><th>税率</th><th>购入时间</th><th>功能</th><th>操作</th></tr></thead><tbody id="rePlotListBody"></tbody></table></div>
+</div>
+<div class="card"><h3>🌾 地块福利配置</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">买地不强制——农业/工业用地只是多一份额外福利。每类地块的生效范围可切换：<b>区域内生效</b>=作物/熔炉/交易必须落在自己名下对应地类的地块内才有加成；<b>拥有即永久生效</b>=只要名下有一块该类型地，加成对其在全服任意位置永久生效。</p>
+<div class="form-row">
+<label>农业地块生效模式<br><select id="lpAgriMode"><option value="0">区域内生效</option><option value="1">拥有即永久生效</option></select></label>
+<label>工业地块生效模式<br><select id="lpIndMode"><option value="0">区域内生效</option><option value="1">拥有即永久生效</option></select></label>
+</div>
+<div class="form-row">
+<label>作物成长加速强度<br><input id="lpAgriGrowth" type="number" step="0.1" min="0" max="8"/></label>
+<label>收获额外产出几率<br><input id="lpAgriHarvest" type="number" step="0.01" min="0" max="1"/></label>
+<label>官方收购溢价比例<br><input id="lpAgriPremium" type="number" step="0.01" min="0"/></label>
+</div>
+<div class="form-row">
+<label>熔炼加速比例<br><input id="lpIndFurnaceSpeed" type="number" step="0.01" min="0" max="0.95"/></label>
+<label>熔炼额外产出几率<br><input id="lpIndFurnaceBonus" type="number" step="0.01" min="0" max="1"/></label>
+<label>招投标信誉加成比例<br><input id="lpIndBidBonus" type="number" step="0.01" min="0" max="1"/></label>
+</div>
+<div class="form-row">
+<label>农业每秒最大扫描采样<br><input id="lpAgriMaxSamples" type="number" step="1" min="0" placeholder="4096"/></label>
+<label>农业低于 TPS 暂停<br><input id="lpAgriMinTps" type="number" step="0.1" min="0" max="20" placeholder="18.5"/></label>
+<label>工业每秒最大福利事件<br><input id="lpIndustryMaxEvents" type="number" step="1" min="0" placeholder="512"/></label>
+<label>工业低于 TPS 暂停<br><input id="lpIndustryMinTps" type="number" step="0.1" min="0" max="20" placeholder="18.0"/></label>
+</div>
+<button class="btn" onclick="saveLandPerks()">💾 保存配置</button>
+<p id="lpPerfStatus" style="color:#9fb;font-size:11px;margin-top:6px;"></p>
+<p id="lpModuleHint" style="color:#888;font-size:11px;margin-top:6px;"></p>
+</div>
+</div>
+
+<!-- ================= 副本系统 ================= -->
+<div class="tab-section" id="tab-dg-templates">
+<div class="card"><h3>🏰 创建 / 编辑副本模板</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">模板是副本的蓝本。玩家通过游戏指令购票从模板开启副本实例（Web 端不开副本）。留空 ID 自动生成。</p>
+<div class="form-row">
+<label>模板ID<br><input id="dgTplId" placeholder="留空=自动生成, 或填已有ID以编辑"/></label>
+<label>名称<br><input id="dgTplName" placeholder="如 普通副本"/></label>
+<label>难度<br><input id="dgTplDiff" placeholder="NORMAL" value="NORMAL"/></label>
+</div>
+<div class="form-row">
+<label>门票价<br><input id="dgTplPrice" type="number" step="1" value="500"/></label>
+<label>最少人数<br><input id="dgTplMinP" type="number" step="1" value="1"/></label>
+<label>最多人数<br><input id="dgTplMaxP" type="number" step="1" value="4"/></label>
+<label>时限(分钟)<br><input id="dgTplTime" type="number" step="1" value="60"/></label>
+<label>怪物等级<br><input id="dgTplLevel" type="number" step="1" value="10"/></label>
+</div>
+<div class="form-row">
+<label style="flex:1;">地图 (schematic 图名)<br><input id="dgTplSchem" placeholder="留空=纯虚空；填 //schem save 的图名（不含 .schem）"/></label>
+</div>
+<p style="color:#888;font-size:11px;margin:-4px 0 8px;">需服务器装 <b>FastAsyncWorldEdit</b>。授图：建好房间 → 刷怪点放告示牌(第1行 <code>[mm]</code> 第2行 <code>怪物名:等级</code>，若该怪是本副本的boss可在第3行填 <code>boss</code>——boss死亡会自动判定通关) → 出生点放 <code>[spawn]</code> 牌 → 站在出生点 <code>//copy</code> → <code>//schem save 图名</code> → 把 .schem 放到 <code>plugins/ks-Eco/dungeon_schematics/</code>（或 FAWE schematics 目录）→ 此处填图名。未标 boss 或超过时限(分钟)未通关的副本仍需管理员在"副本实例"里强制结束。</p>
+<div class="form-row">
+<label><input type="checkbox" id="dgTplRequireKey"/> 需要资产钥匙（仅住宅地产已绑定本模板的所有者可开本）</label>
+</div>
+<div class="form-row">
+<label style="flex:1;">通关奖励 JSON<br><textarea id="dgTplRewardConfig" rows="5" style="width:100%;font-family:monospace;font-size:12px;" placeholder='{"money":1000,"mythicItems":[{"id":"RefineToken","amount":1,"chance":1}],"commands":["say {player} cleared {template}"]}'></textarea></label>
+</div>
+<div class="form-row">
+<label style="flex:1;">描述<br><input id="dgTplDesc" placeholder="副本描述" style="width:100%;"/></label>
+<button class="btn btn-success" onclick="saveDgTemplate()">💾 保存模板</button>
+</div>
+</div>
+<div class="card"><h3>📋 模板列表</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>难度</th><th>门票</th><th>人数</th><th>时限</th><th>怪物等级</th><th>地图</th><th>钥匙</th><th>奖励</th><th>描述</th><th>操作</th></tr></thead><tbody id="dgTplBody"></tbody></table></div>
+</div>
+<div class="card"><h3>🗺 副本实例监控</h3>
+<div class="form-row">
+<label>状态筛选<br><select id="dgInstStatus"><option value="">全部</option><option value="WAITING">等待中</option><option value="ACTIVE">进行中</option><option value="COMPLETED">已完成</option><option value="ABANDONED">已废弃</option></select></label>
+<button class="btn btn-sm" onclick="loadDgInstances()">🔍 刷新</button>
+</div>
+<div class="table-wrap"><table><thead><tr><th>实例ID</th><th>模板</th><th>网格</th><th>状态</th><th>开始</th><th>到期</th><th>所有者</th><th>操作</th></tr></thead><tbody id="dgInstBody"></tbody></table></div>
+</div>
+<div class="card"><h3>🔲 虚空世界网格池</h3>
+<div class="stats-row" id="dgGridStats"></div>
+<div class="table-wrap"><table><thead><tr><th>网格ID</th><th>世界</th><th>X</th><th>Z</th><th>状态</th><th>占用起始</th><th>最近使用</th></tr></thead><tbody id="dgGridBody"></tbody></table></div>
+</div>
+<div class="card"><h3>⚙ 副本系统配置（dungeon.yml 热更新）</h3>
+<p style="color:#888;font-size:11px;margin-bottom:10px;">标「即时」立即生效；标「下次副本」仅对之后新开的副本生效，已开副本不变。</p>
+<div class="table-wrap"><table><thead><tr><th>配置项</th><th>当前值</th><th>生效时机</th><th>修改</th></tr></thead><tbody id="dgConfigBody"></tbody></table></div>
+</div>
+</div>
+
+<!-- ================= 元老院 ================= -->
+<div class="tab-section" id="tab-politic-offices">
+<div class="stats-row" id="polOfficeKpis"></div>
+<div class="card"><h3>🏛 任命元老 / 选举 <a href="/announce" target="_blank" style="float:right;font-size:12px;color:#00E5FF;text-decoration:none;">📢 公告栏 →</a></h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">元老院由 admin 任命元老；执政官由 admin 直接任命（不再自动）；保民官由全民投票按选举周期自动计票就任；骑士由选举引擎按企业资本排行自动维护（也可手动重算）。</p>
+<div style="background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.18);border-radius:10px;padding:10px;font-size:11px;color:#CBB98A;line-height:1.7;margin-bottom:8px;">
+⚠ <b>元老院能投票的前提</b>：① 先任命足够元老（席位上限见「议会配置 → 元老席位」，太小会提示"元老院已满"）→ ② <b>直接任命执政官</b>（提案必须由执政官/骑士发起，元老只能投票）→ ③ 执政官在玩家端 /player 提交提案并「发起表决」→ ④ 元老在玩家端投票。<br>若一直无法投票，多半是<b>没有执政官</b>（无人能发起提案）或<b>元老席位太少</b>。
+</div>
+<div id="adminPoliticAnnouncements" style="margin-bottom:8px;font-size:11px;max-height:150px;overflow-y:auto;background:rgba(6,7,10,.5);border:1px solid var(--line);border-radius:10px;padding:8px;">📢 公告加载中...</div>
+<div class="form-row">
+<label>玩家UUID<br><input id="senatorUuid" class="player-picker" placeholder="玩家名/UUID"/></label>
+<label>玩家名<br><input id="senatorName" placeholder="可选"/></label>
+<button class="btn btn-sm btn-success" onclick="addSenator()">➕ 任命元老</button>
+<button class="btn btn-sm btn-danger" onclick="removeSenator()">➖ 移除元老</button>
+</div>
+<div class="form-row" style="margin-top:8px;">
+<label>选举类型<br><select id="electionType"><option value="EQUESTRIAN">骑士</option></select></label>
+<button class="btn btn-sm" onclick="triggerElection()">🗳 重算骑士排行</button>
+</div>
+</div>
+<div class="card"><h3>👑 直接任命执政官</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">执政官必须是现任元老。任命后自动撤销前任执政官，任期按「议会配置 → 任期(小时)」计算。</p>
+<div class="form-row">
+<label>选择元老<br><select id="consulAssignUuid" style="min-width:220px;"></select></label>
+<button class="btn btn-sm btn-success" onclick="assignConsul()">👑 任命为执政官</button>
+</div>
+</div>
+<div class="card"><h3>🛡 保民官选举</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">全民投票，按选举周期（见「议会配置 → 保民官选举周期」）自动计票，得票最多的前 N 名（N=保民官席位）就任。可手动提前结束本轮并立即计票。</p>
+<div id="tribuneElectionAdminInfo" style="font-size:12px;color:#aaa;margin-bottom:8px;">加载中...</div>
+<button class="btn btn-sm" onclick="forceTallyTribune()">⏱ 立即计票并开启下一轮</button>
+</div>
+<div class="card"><h3>现任职务</h3>
+<div class="table-wrap"><table><thead><tr><th>职务</th><th>玩家</th><th>UUID</th><th>就任</th><th>任期至</th></tr></thead><tbody id="politicOfficeBody"></tbody></table></div>
+</div>
+<div class="card"><h3>📜 提案监管</h3>
+<div class="form-row">
+<label>状态过滤<br><select id="apropFilter" onchange="loadAdminProposals()">
+  <option value="">全部</option>
+  <option value="PROPOSED">待表决</option>
+  <option value="SENATE_VOTING">元老院表决中</option>
+  <option value="TRIBUNE_REVIEW">保民官审查中</option>
+  <option value="VETOED">已否决</option>
+  <option value="SENATE_OVERRIDE">覆议中</option>
+  <option value="ENACTED">已颁布</option>
+</select></label>
+<button class="btn btn-sm" onclick="loadAdminProposals()">🔍 刷新</button>
+</div>
+<div class="table-wrap" style="max-height:480px;"><table><thead><tr><th>ID</th><th>标题</th><th>类型</th><th>提案人</th><th>状态</th><th>结果摘要</th></tr></thead><tbody id="apropBody"></tbody></table></div>
+</div>
+<div class="card"><h3>⚙ 议会配置</h3>
+<div id="politicConfigForm"></div>
+</div>
+<div class="card"><h3>🔒 立法模式</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">开启后，admin 对税率/央行/官价/房地产等经济参数的直接修改将被拦截（403），必须走提案流程颁布。</p>
+<div class="form-row">
+<label>legislative_mode<br><select id="legislativeMode"><option value="false">关闭（admin 可直接改）</option><option value="true">开启（强制走立法）</option></select></label>
+<button class="btn btn-sm" onclick="setLegislativeMode()">💾 应用</button>
+</div>
+</div>
+</div>
+
+<!-- ================= 运营配置 ================= -->
+<div class="tab-section" id="tab-ops">
+<div class="card"><h3>MO 主任务编辑</h3>
+<div class="form-row">
+<label>ID（留空=新建）<br><input id="moId" placeholder="MO-xxxx"/></label>
+<label>标题<br><input id="moTitle" placeholder="解放经济战线"/></label>
+<label>进度类型<br><select id="moMetric"><option value="MANUAL">手动进度</option><option value="MONEY_SUPPLY">货币总量</option></select></label>
+</div>
+<div class="form-row">
+<label>目标值<br><input id="moTarget" type="number" step="1" min="1" value="1000000"/></label>
+<label>手动当前值<br><input id="moManual" type="number" step="1" min="0" value="0"/></label>
+<label>状态<br><select id="moStatus"><option value="ACTIVE">ACTIVE</option><option value="COMPLETED">COMPLETED</option><option value="ARCHIVED">ARCHIVED</option></select></label>
+</div>
+<div class="form-row">
+<label>政策行业<br><select id="moPolicyIndustry"><option value="ALL">全部行业</option><option value="AGRICULTURAL">农业</option><option value="INDUSTRIAL">工业</option><option value="COMMERCIAL">商业</option><option value="LOGISTICS">物流</option><option value="OTHER">其他</option></select></label>
+<label>政策用途<br><select id="moPolicyPurpose"><option value="ALL">全部用途</option><option value="EXPANSION">扩产</option><option value="REAL_ESTATE_DEVELOPMENT">地产开发</option><option value="PROJECT_DEPOSIT">项目保证金</option><option value="LOGISTICS_NETWORK">物流网络</option></select></label>
+<label>贷款利率倍率<br><input id="moPolicyRateMultiplier" type="number" min="0.1" max="3" step="0.01" value="1"/></label>
+<label>准备金增量<br><input id="moPolicyReserveDelta" type="number" min="-0.5" max="0.5" step="0.01" value="0"/></label>
+</div>
+<label>描述<br><textarea id="moDesc" rows="3" placeholder="全服共同推进的目标。"></textarea></label>
+<button class="btn" onclick="saveMo()">保存 MO</button>
+<button class="btn btn-sm" onclick="loadMoAdmin()">刷新</button>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>标题</th><th>类型</th><th>进度</th><th>状态</th><th>操作</th></tr></thead><tbody id="moAdminBody"></tbody></table></div>
+</div>
+<div class="card"><h3>🔓 玩家功能开放控制</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">用于逐步开放经济插件功能：未勾选的功能会从游戏内 GUI 图标和网页 player.html 的入口隐藏，对应的指令与网页 API 也会拒绝非管理员玩家访问。勾选后立即生效，无需重启。暂存箱与纳税记录始终对玩家开放，不受此面板控制；拥有 kseco.admin 权限的玩家不受此面板限制。</p>
+<div id="ecoFeaturesForm"></div>
+</div>
+<div class="card"><h3>🚚 交易与物流</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">使用 <code>/trade &lt;玩家&gt;</code> 打开批量物品物流。相同世界且在免费范围内不收费；超过范围或跨世界按下列规则计费。</p>
+<div class="form-row">
+<label><input id="transportEnabled" type="checkbox"/> 启用物品物流</label>
+<label>免费范围 (格)<br><input id="transportFreeDistance" type="number" min="0" step="0.1"/></label>
+<label>基础费用<br><input id="transportBaseFee" type="number" min="0" step="0.01"/></label>
+<label>每格费用<br><input id="transportPerBlockFee" type="number" min="0" step="0.001"/></label>
+<label>跨世界附加费<br><input id="transportCrossWorldSurcharge" type="number" min="0" step="0.01"/></label>
+<label>最低费用<br><input id="transportMinimumFee" type="number" min="0" step="0.01"/></label>
+<label>最高费用 (0=不封顶)<br><input id="transportMaximumFee" type="number" min="0" step="0.01"/></label>
+<button class="btn btn-success" onclick="saveTransportConfig()">保存物流配置</button>
+</div>
+</div>
+</div>
+
+<!-- ================= 审计日志 ================= -->
+<div class="tab-section" id="tab-audit-log">
+<div class="card"><h3>📋 操作审计日志</h3>
+<div class="form-row">
+<label>操作类型<br><select id="auditAction" onchange="loadAuditLog()"><option value="">全部</option><option value="BANK_CREATE">创建银行</option><option value="LOAN_ISSUE">发放贷款</option><option value="CB_RATES_SET">央行调息</option><option value="CB_INJECT">央行注资</option><option value="ENTERPRISE_REGISTER">注册企业</option><option value="BID_SUBMIT">投标</option><option value="PROJECT_AWARD">评标</option><option value="DIVIDEND_DECLARE">分红</option><option value="INVITE_SEND">邀请</option><option value="PENALTY_ISSUE">罚单</option><option value="TAX_RATE_SET">税率调整</option><option value="PERMISSION_SET">权限设置</option></select></label>
+<label>条数<br><select id="auditLimit" onchange="loadAuditLog()"><option value="50">50</option><option value="100">100</option><option value="200">200</option></select></label>
+<button class="btn btn-sm" onclick="loadAuditLog()">🔍 查询</button>
+</div>
+<div class="table-wrap"><table><thead><tr><th>时间</th><th>操作</th><th>玩家</th><th>目标</th><th>详情</th></tr></thead><tbody id="auditLogBody"></tbody></table></div>
+</div>
+</div>
+
+</div><!-- end #main -->
+
+
+<script src="assets/admin-core.js"></script>
+<script src="assets/admin-player-picker.js"></script>
+<script src="assets/admin-labels.js"></script>
+<script src="assets/admin-smart-inputs.js"></script>
+<script src="assets/admin-consoles.js"></script>
+<script src="assets/admin-motion.js"></script>
+<script src="assets/admin-drill.js"></script>
+<script src="assets/admin-shell.js"></script>
+<script src="assets/admin-side-sheet.js"></script>
+<script src="assets/admin-entity-drawers.js"></script>
+<script src="assets/admin-dungeon-drawers.js"></script>
+<script src="assets/admin-cards.js"></script>
+
+<!-- ===== 玩家UUID选择器 (player picker) ===== -->
+<datalist id="ksPlayerOptions"></datalist>
+
+
+<datalist id="ksSmartPlayerOptions"></datalist>
+<datalist id="ksSmartBankOptions"></datalist>
+<datalist id="ksSmartEnterpriseOptions"></datalist>
+
+
+
+
+
+
+
+
+
+
+
+
+</body>
+</html>

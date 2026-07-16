@@ -1,0 +1,1762 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>物品编辑器 - ItemEditor</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#1a1a2e;--bg2:#16213e;--bg3:#0f3460;--fg:#e0e0e0;--fg2:#aaa;
+  --accent:#e94560;--accent2:#533483;--green:#4caf50;--gold:#ffc107;
+  --red:#f44336;--blue:#2196f3;--border:#2a2a4a;--hover:#2a2a5a;
+}
+body{font-family:'Segoe UI','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--fg);min-height:100vh}
+a{color:var(--blue)}
+
+/* Header */
+.header{background:var(--bg2);border-bottom:2px solid var(--accent);padding:12px 24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.header h1{font-size:1.4em;color:var(--accent)}
+.header .user{font-size:.9em;color:var(--fg2)}
+.header .user span{color:var(--gold);font-weight:bold}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.75em;font-weight:bold}
+.badge-admin{background:var(--accent);color:#fff}
+.badge-player{background:var(--bg3);color:var(--fg2)}
+
+/* Layout */
+.main{max-width:1200px;margin:0 auto;padding:16px;display:grid;grid-template-columns:280px 1fr;gap:16px}
+@media(max-width:768px){.main{grid-template-columns:1fr}}
+
+/* Panels */
+.panel{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px}
+.panel h2{font-size:1.1em;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border);color:var(--accent)}
+.panel h3{font-size:.95em;margin:12px 0 8px;color:var(--fg2)}
+
+/* Search */
+.search-box{width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:.9em;outline:none}
+.search-box:focus{border-color:var(--accent)}
+
+/* Category tabs */
+.tabs{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0}
+.tab{padding:4px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:.8em;color:var(--fg2);transition:.15s}
+.tab:hover,.tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* Material grid */
+.mat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(56px,1fr));gap:4px;max-height:400px;overflow-y:auto;padding-right:4px}
+.mat-item{padding:6px 4px;background:var(--bg);border:1px solid var(--border);border-radius:4px;cursor:pointer;text-align:center;font-size:.65em;color:var(--fg2);transition:.12s;word-break:break-all}
+.mat-item:hover{border-color:var(--accent);color:var(--fg);background:var(--hover)}
+.mat-item.selected{border-color:var(--accent);background:var(--accent2);color:#fff;font-weight:bold}
+
+/* Form */
+.form-group{margin-bottom:10px}
+.form-group label{display:block;font-size:.82em;color:var(--fg2);margin-bottom:4px}
+.form-group input[type=text],.form-group select{width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:.9em;outline:none}
+.form-group input:focus,.form-group select:focus{border-color:var(--accent)}
+.form-hint{font-size:.75em;color:var(--fg2);margin-top:3px}
+.color-row{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+.color-btn{width:24px;height:24px;border-radius:4px;cursor:pointer;border:2px solid transparent;transition:.12s}
+.color-btn:hover{border-color:#fff}
+.color-code{font-size:.7em;color:var(--fg2);width:28px;text-align:center;cursor:pointer}
+
+/* Lore list */
+.lore-list{max-height:200px;overflow-y:auto}
+.lore-row{display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)}
+.lore-row span{flex:1;font-size:.85em;word-break:break-all}
+.lore-row .idx{color:var(--fg2);font-size:.75em;min-width:20px}
+.lore-row button{padding:3px 8px;border:none;border-radius:4px;cursor:pointer;font-size:.75em;transition:.12s}
+
+/* Enchant list */
+.ench-row{display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.ench-row .name{flex:1;font-size:.85em;min-width:100px}
+.ench-row .lvl{display:flex;align-items:center;gap:4px}
+.ench-row .lvl input{width:60px;padding:4px 6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg);text-align:center;font-size:.85em}
+.ench-row .lvl button{padding:3px 8px;border:none;border-radius:4px;cursor:pointer;font-size:.8em;font-weight:bold;background:var(--bg3);color:var(--fg);min-width:26px}
+
+/* Toggle */
+.toggle-row{display:flex;gap:16px;align-items:center;margin:10px 0;flex-wrap:wrap}
+.toggle-label{cursor:pointer;display:flex;align-items:center;gap:8px;font-size:.9em}
+.toggle-label input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}
+
+/* Buttons */
+.btn{padding:8px 18px;border:none;border-radius:6px;cursor:pointer;font-size:.9em;font-weight:bold;transition:.15s;color:#fff}
+.btn-primary{background:var(--accent)}
+.btn-primary:hover{filter:brightness(1.2)}
+.btn-green{background:var(--green)}
+.btn-green:hover{filter:brightness(1.2)}
+.btn-blue{background:var(--blue)}
+.btn-blue:hover{filter:brightness(1.2)}
+.btn-red{background:var(--red)}
+.btn-red:hover{filter:brightness(1.2)}
+.btn-sm{padding:4px 10px;font-size:.78em}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* Template section */
+.template-section{margin-top:16px;padding:16px;background:var(--bg);border-radius:8px;border:1px dashed var(--border)}
+.template-code{font-size:1.8em;font-family:'Courier New',monospace;color:var(--gold);letter-spacing:4px;text-align:center;padding:10px;background:var(--bg2);border-radius:6px;user-select:all;word-break:break-all}
+.template-cmd{font-size:.85em;color:var(--fg2);text-align:center;margin:6px 0;user-select:all}
+.toast{position:fixed;top:16px;right:16px;padding:10px 20px;border-radius:6px;color:#fff;font-size:.9em;z-index:999;animation:fadeIn .3s;pointer-events:none}
+.toast-success{background:var(--green)}
+.toast-error{background:var(--red)}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+
+/* My templates */
+.tmpl-list{max-height:250px;overflow-y:auto}
+.tmpl-row{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)}
+.tmpl-row .tcode{font-family:'Courier New',monospace;color:var(--gold);min-width:80px;font-size:.85em}
+.tmpl-row .ttitle{flex:1;font-size:.85em}
+.tmpl-row button{padding:3px 8px;border:none;border-radius:4px;cursor:pointer;font-size:.75em}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--accent)}
+
+/* Loading */
+.loading{text-align:center;padding:40px;color:var(--fg2);font-size:1.1em}
+.error{color:var(--red);text-align:center;padding:20px}
+
+/* IA model selector */
+.ia-select{max-height:180px;overflow-y:auto;margin:6px 0}
+.ia-item{padding:6px 10px;cursor:pointer;font-size:.82em;border-bottom:1px solid var(--border);transition:.12s}
+.ia-item:hover{background:var(--hover)}
+.ia-item.selected{background:var(--accent2);color:#fff}
+
+/* Attribute modifier rows */
+.attr-list{max-height:260px;overflow-y:auto}
+.attr-row{display:flex;gap:6px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.attr-row select{flex:1;min-width:130px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:.82em}
+.attr-row input[type=number]{width:80px;min-width:60px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);text-align:center;font-size:.82em}
+.attr-row .attr-slot{flex:0.8;min-width:90px}
+.attr-row .attr-op{flex:0.9;min-width:100px}
+.attr-row button{padding:4px 10px;border:none;border-radius:4px;cursor:pointer;font-size:.78em;white-space:nowrap}
+
+/* Responsive */
+@media(max-width:600px){
+  .header h1{font-size:1.1em}
+  .mat-grid{grid-template-columns:repeat(auto-fill,minmax(42px,1fr));max-height:200px}
+  .mat-item{font-size:.55em;padding:4px 2px}
+  .template-code{font-size:1.3em;letter-spacing:2px}
+  .attr-row{flex-direction:column;align-items:stretch}
+  .attr-row select,.attr-row input[type=number]{width:100%}
+}
+
+/* ===== 1.3.0 预览面板 ===== */
+.preview-panel{border:2px solid var(--accent);background:var(--bg)}
+.preview-item{font-family:'Minecraft','Unifont','Courier New',monospace;font-size:14px;line-height:1.6;padding:16px 20px;background:rgba(0,0,0,.45);border-radius:8px;min-height:40px;overflow-wrap:break-word;word-break:break-all;text-align:left}
+.preview-name{font-size:1.1em;padding-bottom:10px;margin-bottom:12px;border-bottom:1px dashed rgba(255,255,255,.15)}
+.preview-lore-line{white-space:pre-wrap;font-size:.92em;opacity:.9}
+
+/* ===== 格式化工具栏 ===== */
+.fmt-toolbar{display:flex;flex-wrap:wrap;gap:3px;align-items:center;margin-top:6px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px}
+.fmt-toolbar .fmt-label{font-size:.7em;color:var(--fg2);margin-right:4px}
+.fmt-color{width:20px;height:20px;border-radius:3px;cursor:pointer;border:1px solid transparent;transition:.12s;flex-shrink:0}
+.fmt-color:hover{border-color:#fff;transform:scale(1.1)}
+.fmt-btn{padding:3px 7px;border:none;border-radius:3px;cursor:pointer;font-size:.72em;font-weight:bold;background:var(--bg3);color:var(--fg);transition:.12s;white-space:nowrap}
+.fmt-btn:hover{background:var(--accent);color:#fff}
+.fmt-btn.active{background:var(--accent);color:#fff}
+.fmt-divider{width:1px;height:16px;background:var(--border);margin:0 2px;flex-shrink:0}
+
+/* ===== 特殊符号面板 ===== */
+.sym-panel{margin-top:12px}
+.sym-panel h3{margin:0 0 6px;font-size:.9em}
+.sym-tabs{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:8px}
+.sym-tab{padding:3px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:.72em;color:var(--fg2);transition:.12s}
+.sym-tab:hover,.sym-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.sym-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(28px,1fr));gap:3px;max-height:180px;overflow-y:auto;padding:4px}
+.sym-char{padding:4px 2px;background:var(--bg);border:1px solid var(--border);border-radius:3px;cursor:pointer;text-align:center;font-size:.85em;transition:.08s;user-select:none}
+.sym-char:hover{background:var(--accent);color:#fff;border-color:var(--accent);transform:scale(1.15)}
+.sym-char:active{transform:scale(.95)}
+
+/* 乱码效果 */
+@keyframes obfu{0%{opacity:1}50%{opacity:.3}100%{opacity:1}}
+.fmt-obfu{animation:obfu .1s infinite}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🛠️ 物品编辑器</h1>
+  <div class="user">玩家: <span id="playerName">---</span> <span id="adminBadge"></span></div>
+</div>
+
+<div class="main" id="app" style="display:none">
+
+  <!-- 左侧：材质选择 -->
+  <aside class="panel" id="matPanel">
+    <h2>📦 材质选择</h2>
+    <input type="text" class="search-box" id="matSearch" placeholder="搜索材质...">
+    <div class="tabs" id="matTabs"></div>
+    <div class="mat-grid" id="matGrid"></div>
+    <div style="margin-top:8px;font-size:.75em;color:var(--fg2)" id="matCount"></div>
+
+    <!-- ItemsAdder 模型（仅管理员可见） -->
+    <h3 id="iaHeader" style="display:none">🎨 ItemsAdder 模型 <span class="badge badge-admin">管理</span></h3>
+    <input type="text" class="search-box" id="iaSearch" placeholder="搜索 IA 物品..." style="display:none">
+    <div class="ia-select" id="iaList" style="display:none"></div>
+    <div style="font-size:.75em;color:var(--fg2);margin-top:4px" id="iaSelected"></div>
+
+    <!-- ★ 特殊符号面板 -->
+    <div class="sym-panel" id="symPanel">
+      <h3 style="cursor:pointer;user-select:none" onclick="toggleSymPanel()">
+        <span id="symToggleIcon">▶</span> 🎭 特殊符号
+      </h3>
+      <div id="symBody" style="display:none">
+        <div class="sym-tabs" id="symTabs"></div>
+        <div class="sym-grid" id="symGrid"></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 右侧：物品预览 -->
+  <section>
+    <!-- 物品名称/Lore 组合预览 -->
+    <div class="panel preview-panel" id="previewPanel">
+      <h2>👁️ 物品预览 <span style="font-size:.7em;color:var(--fg2);font-weight:normal">（名称 + Lore 实际效果）</span></h2>
+      <div class="preview-item" id="previewContainer">
+        <div class="preview-name" id="previewName"></div>
+        <div class="preview-lore" id="previewLore"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>⚙️ 物品配置</h2>
+
+      <!-- 当前选中材质 -->
+      <div class="form-group">
+        <label>当前材质</label>
+        <input type="text" id="currentMat" readonly style="font-weight:bold">
+      </div>
+
+      <!-- 名称 -->
+      <div class="form-group">
+        <label>物品名称</label>
+        <input type="text" id="itemName" placeholder="输入物品名称...">
+        <div class="form-hint">支持 & 颜色码。例如: <code>&amp;6神剑</code> 或 <code>&lt;gold&gt;神剑</code></div>
+        <div class="color-row" id="colorRow"></div>
+        <!-- ★ 文字格式化工具栏 -->
+        <div class="fmt-toolbar" id="fmtToolbarName" style="display:none">
+          <span class="fmt-label">选区格式化:</span>
+          <span id="fmtColorsName"></span>
+          <span class="fmt-divider"></span>
+          <button class="fmt-btn" onclick="fmtApply('&l','itemName')" title="粗体">&l; <b>B</b></button>
+          <button class="fmt-btn" onclick="fmtApply('&o','itemName')" title="斜体">&o; <i>I</i></button>
+          <button class="fmt-btn" onclick="fmtApply('&n','itemName')" title="下划线">&n; <u>U</u></button>
+          <button class="fmt-btn" onclick="fmtApply('&m','itemName')" title="删除线">&m; <s>S</s></button>
+          <button class="fmt-btn" onclick="fmtApply('&k','itemName')" title="乱码">&k; O</button>
+          <span class="fmt-divider"></span>
+          <button class="fmt-btn" style="background:var(--accent2)" onclick="centerTextInput('itemName')" title="用空格填充使文字在游戏内居中">⊞ 居中</button>
+          <span class="fmt-divider"></span>
+          <button class="fmt-btn" style="background:var(--red)" onclick="fmtApply('&r','itemName')" title="重置格式">&r; 重置</button>
+        </div>
+      </div>
+
+      <!-- Lore -->
+      <div class="form-group">
+        <label>描述 (Lore)</label>
+        <div class="lore-list" id="loreList"></div>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <input type="text" id="newLoreLine" placeholder="新 Lore 行..." onfocus="showFmtToolbar('newLoreLine')" style="flex:1;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:.85em">
+          <button class="btn btn-blue btn-sm" onclick="addLore()">+ 添加</button>
+        </div>
+        <!-- ★ Lore 行格式化工具栏 -->
+        <div class="fmt-toolbar" id="fmtToolbarLore" style="display:none;margin-top:4px">
+          <span class="fmt-label">选区格式化:</span>
+          <span id="fmtColorsLore"></span>
+          <span class="fmt-divider"></span>
+          <button class="fmt-btn" onclick="fmtApply('&l','newLoreLine')" title="粗体">&l; <b>B</b></button>
+          <button class="fmt-btn" onclick="fmtApply('&o','newLoreLine')" title="斜体">&o; <i>I</i></button>
+          <button class="fmt-btn" onclick="fmtApply('&n','newLoreLine')" title="下划线">&n; <u>U</u></button>
+          <button class="fmt-btn" onclick="fmtApply('&m','newLoreLine')" title="删除线">&m; <s>S</s></button>
+          <button class="fmt-btn" onclick="fmtApply('&k','newLoreLine')" title="乱码">&k; O</button>
+          <span class="fmt-divider"></span>
+          <button class="fmt-btn" style="background:var(--accent2)" onclick="centerTextInput('newLoreLine')" title="用空格填充使文字在游戏内居中">⊞ 居中</button>
+          <span class="fmt-divider"></span>
+          <button class="fmt-btn" style="background:var(--red)" onclick="fmtApply('&r','newLoreLine')" title="重置格式">&r; 重置</button>
+        </div>
+      </div>
+
+      <!-- 原版附魔 -->
+      <div class="form-group">
+        <label>原版附魔</label>
+        <div id="enchList"></div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <select id="enchSelect" style="flex:1;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:.85em"></select>
+          <button class="btn btn-blue btn-sm" onclick="addEnchant()">+ 添加附魔</button>
+        </div>
+      </div>
+
+      <!-- FE 附魔（仅管理员可见） -->
+      <div class="form-group" id="feSection" style="display:none">
+        <label>FotiaEnchantment 附魔 <span class="badge badge-admin" id="feBadge" style="display:none">管理</span> <span id="feCompatBadge" style="font-size:.75em;color:var(--fg2);margin-left:4px"></span></label>
+        <div class="tabs" id="feCatTabs" style="margin:4px 0;display:none"></div>
+        <div id="feEnchList"></div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <select id="feEnchSelect" style="flex:1;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:.85em"></select>
+          <button class="btn btn-blue btn-sm" onclick="addFeEnchant()">+ 添加 FE 附魔</button>
+        </div>
+      </div>
+
+      <!-- 物品属性修饰符 (Item Attributes) ★ 仅管理员 -->
+      <div class="form-group" id="attrSection" style="display:none">
+        <label style="cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px" onclick="toggleAttrSection()">
+          <span id="attrToggleIcon" style="font-size:.8em;transition:transform 0.2s">▶</span>
+          💪 物品属性修饰符 (Item Attributes) <span class="badge badge-admin">管理</span>
+          <span id="attrBadge" style="font-size:.75em;color:var(--fg2)"></span>
+        </label>
+        <div id="attrBody" style="display:none">
+          <div class="attr-list" id="attrList"></div>
+          <button class="btn btn-blue btn-sm" onclick="addAttribute()" style="margin-top:8px">+ 新增属性</button>
+        </div>
+      </div>
+
+      <!-- 开关 -->
+      <div class="toggle-row">
+        <label class="toggle-label"><input type="checkbox" id="unbreakable"> 不可破坏</label>
+        <label class="toggle-label"><input type="checkbox" id="glowing"> 发光效果</label>
+      </div>
+    </div>
+
+    <!-- 模板操作 -->
+    <div class="template-section" id="templateSection">
+      <h2 style="color:var(--accent);margin-bottom:12px">📋 模板管理</h2>
+
+      <!-- 模板名称（可选） -->
+      <div class="form-group">
+        <label>模板名称 <span style="font-size:.75em;color:var(--fg2)">（可选，便于识别模板）</span></label>
+        <input type="text" id="templateName" placeholder="如：神剑模板、钻石甲" maxlength="64" style="width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:.9em;outline:none">
+      </div>
+
+      <!-- 导入模板 -->
+      <div class="form-group">
+        <label>📥 导入模板 <span style="font-size:.75em;color:var(--fg2)">（输入模板码加载到编辑器中预览/修改）</span></label>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="importCode" placeholder="输入模板码，如 pl-xxxxxxxx" style="flex:1;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:.9em;outline:none;font-family:'Courier New',monospace">
+          <button class="btn btn-blue" onclick="importTemplate()">📥 导入预览</button>
+        </div>
+        <div id="importResult" style="margin-top:4px;font-size:.78em;color:var(--fg2)"></div>
+      </div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        <button class="btn btn-primary" onclick="saveTemplate('player')" id="saveBtn">💾 保存玩家模板</button>
+        <button class="btn btn-green" onclick="saveTemplate('admin')" id="saveAdminBtn" style="display:none">💾 保存管理模板</button>
+        <button class="btn btn-blue" onclick="loadMyTemplates()">📂 我的模板</button>
+      </div>
+      <p style="font-size:.75em;color:var(--fg2);margin:0">
+        玩家模板前缀 <code style="color:var(--gold)">pl-</code>，管理员模板前缀 <code style="color:var(--accent)">op-</code>。<br>
+        加载指令: <code style="color:var(--gold)">/design load &lt;模板码&gt;</code>
+      </p>
+
+      <div id="templateResult" style="display:none;margin-top:12px">
+        <div style="font-size:.8em;color:var(--fg2);margin-bottom:4px">✅ 模板已保存（点击复制）：</div>
+        <div class="template-code" id="templateCode" onclick="copyCode()" title="点击复制"></div>
+        <div class="template-cmd" id="templateCmd"></div>
+        <div style="font-size:.78em;color:var(--fg2);margin-top:4px" id="templateItemInfo"></div>
+        <div style="text-align:center;margin-top:4px;font-size:.75em;color:var(--green)" id="copyHint"></div>
+      </div>
+    </div>
+
+    <!-- 我的模板列表 -->
+    <div class="panel" id="myTemplatesPanel" style="display:none;margin-top:12px">
+      <h2>📂 我的模板 <button class="btn btn-sm btn-red" style="float:right" onclick="document.getElementById('myTemplatesPanel').style.display='none'">✕ 关闭</button></h2>
+      <div class="tmpl-list" id="myTemplatesList"></div>
+    </div>
+  </section>
+</div>
+
+<!-- 未连接/加载中 -->
+<div id="loading" class="loading">⏳ 正在连接到编辑器...</div>
+<div id="errorMsg" class="error" style="display:none"></div>
+
+<script>
+// ==================== 全局状态 ====================
+const STATE = {
+  token: '',
+  newToken: '',
+  playerName: '',
+  isAdmin: false,
+  materials: [],
+  materialMap: {},
+  enchantments: [],
+  feEnchantments: [],
+  feFiltered: [],
+  feCategories: [],
+  feAvailable: false,
+  iaAvailable: false,
+  iaItems: [],
+  selectedMat: 'STONE',
+  activeEnchants: {},      // {id: level}
+  activeFeEnchants: {},    // {id: level}
+  loreLines: [],
+  attributeModifiers: [],  // [{attribute, amount, operation, slot}]
+  selectedIaModel: null,
+  allMaterials: [],
+  categories: [],
+  // FE 兼容性设置（从服务器 config.yml 下发）
+  feSettings: {
+    adminMaxEnchantLevel: 32767,
+    ignoreVanillaConflicts: false,
+    ignoreFeConflicts: false,
+    showCompatibilityWarnings: true
+  }
+};
+
+// ==================== 原版属性列表中英对照（1.21+ 已去除 generic. 前缀）====================
+const ATTRIBUTE_OPTIONS = [
+  // 战斗
+  {id:'minecraft:attack_damage',           cn:'攻击伤害 (Attack Damage)',             group:'战斗'},
+  {id:'minecraft:attack_speed',            cn:'攻击速度 (Attack Speed)',             group:'战斗'},
+  {id:'minecraft:attack_knockback',        cn:'攻击击退 (Attack Knockback)',         group:'战斗'},
+  // 防御
+  {id:'minecraft:armor',                   cn:'护甲 (Armor)',                        group:'防御'},
+  {id:'minecraft:armor_toughness',         cn:'盔甲韧性 (Armor Toughness)',          group:'防御'},
+  {id:'minecraft:knockback_resistance',    cn:'击退抗性 (Knockback Resistance)',     group:'防御'},
+  {id:'minecraft:explosion_knockback_resistance', cn:'爆炸击退抗性 (Explosion Knockback Resistance)', group:'防御'},
+  // 生命
+  {id:'minecraft:max_health',              cn:'最大生命值 (Max Health)',             group:'生命'},
+  {id:'minecraft:max_absorption',          cn:'最大吸收 (Max Absorption)',           group:'生命'},
+  {id:'minecraft:fall_damage_multiplier',  cn:'摔落伤害倍率 (Fall Damage Multiplier)', group:'生命'},
+  {id:'minecraft:safe_fall_distance',      cn:'安全摔落距离 (Safe Fall Distance)',   group:'生命'},
+  {id:'minecraft:burning_time',            cn:'燃烧时间 (Burning Time)',             group:'生命'},
+  // 移动
+  {id:'minecraft:movement_speed',          cn:'移动速度 (Movement Speed)',           group:'移动'},
+  {id:'minecraft:flying_speed',            cn:'飞行速度 (Flying Speed)',             group:'移动'},
+  {id:'minecraft:jump_strength',           cn:'跳跃强度 (Jump Strength)',            group:'移动'},
+  {id:'minecraft:step_height',             cn:'台阶高度 (Step Height)',              group:'移动'},
+  {id:'minecraft:gravity',                 cn:'重力 (Gravity)',                      group:'移动'},
+  {id:'minecraft:water_movement_efficiency', cn:'水中移动效率 (Water Movement Efficiency)', group:'移动'},
+  // 交互
+  {id:'minecraft:block_interaction_range',   cn:'方块交互范围 (Block Interaction Range)', group:'交互'},
+  {id:'minecraft:entity_interaction_range',  cn:'实体交互范围 (Entity Interaction Range)', group:'交互'},
+  {id:'minecraft:block_break_speed',         cn:'方块破坏速度 (Block Break Speed)',  group:'交互'},
+  // 其他
+  {id:'minecraft:scale',                   cn:'体型缩放 (Scale)',                    group:'其他'},
+  {id:'minecraft:luck',                    cn:'幸运 (Luck)',                         group:'其他'},
+  {id:'minecraft:follow_range',            cn:'跟随范围 (Follow Range)',             group:'其他'},
+  // 玩家特有
+  {id:'minecraft:player.mining_efficiency',      cn:'挖掘效率 (Mining Efficiency) [玩家]', group:'玩家'},
+  {id:'minecraft:player.sneaking_speed',         cn:'潜行速度 (Sneaking Speed) [玩家]',    group:'玩家'},
+  {id:'minecraft:player.submerged_mining_speed', cn:'水下挖掘速度 (Submerged Mining Speed) [玩家]', group:'玩家'},
+  {id:'minecraft:player.sweeping_damage_ratio',  cn:'横扫伤害比率 (Sweeping Damage Ratio) [玩家]', group:'玩家'},
+];
+
+// ==================== 生效插槽选项 ====================
+const SLOT_OPTIONS = [
+  {id:'any',      cn:'任意 (Any Slot)'},
+  {id:'mainhand', cn:'主手 (Mainhand)'},
+  {id:'offhand',  cn:'副手 (Offhand)'},
+  {id:'head',     cn:'头部 (Head)'},
+  {id:'chest',    cn:'胸部 (Chest)'},
+  {id:'legs',     cn:'腿部 (Legs)'},
+  {id:'feet',     cn:'脚部 (Feet)'},
+];
+
+// ==================== 运算方式选项 ====================
+const OPERATION_OPTIONS = [
+  {id:'add_number',           cn:'加法 (直接加算)'},
+  {id:'add_multiplied_base',  cn:'基础倍率 (基础值乘算)'},
+  {id:'add_multiplied_total', cn:'总倍率 (总值乘算)'},
+];
+
+// ==================== 初始化 ====================
+(async function init(){
+  const params = new URLSearchParams(window.location.search);
+  STATE.token = params.get('token');
+  if(!STATE.token){
+    showError('缺少 token 参数。请在游戏内输入 /design 获取链接。');
+    return;
+  }
+
+  // 并行加载所有数据
+  try {
+    const [session, mats, enchs] = await Promise.all([
+      fetch('/api/session?token='+STATE.token).then(r=>r.json()),
+      fetch('/api/materials').then(r=>r.json()),
+      fetch('/api/enchantments').then(r=>r.json())
+    ]);
+
+    if(session.error){ showError(session.error); return; }
+
+    STATE.playerName = session.playerName;
+    STATE.isAdmin = session.isAdmin;
+    STATE.newToken = session.newToken || STATE.token;
+
+    document.getElementById('playerName').textContent = STATE.playerName;
+    document.getElementById('adminBadge').innerHTML = STATE.isAdmin
+      ? '<span class="badge badge-admin">管理员</span>'
+      : '<span class="badge badge-player">玩家</span>';
+
+    // 管理员独有功能
+    if (STATE.isAdmin) {
+      document.getElementById('saveAdminBtn').style.display = '';
+      document.getElementById('feBadge').style.display = '';
+      document.getElementById('feCatTabs').style.display = '';
+      document.getElementById('attrSection').style.display = ''; // ★ 属性修饰符仅管理员
+    }
+
+    // ★ FE 兼容性设置（从服务器 config.yml 下发）
+    if (session.feSettings) {
+      STATE.feSettings = session.feSettings;
+    }
+
+    // 如果持有物品，预填数据
+    if(session.heldItem){
+      loadHeldItem(session.heldItem);
+    }
+
+    // 材料
+    STATE.allMaterials = mats.materials || [];
+    buildMaterialIndex();
+
+    // 附魔
+    STATE.enchantments = (enchs.enchantments || [])
+      .filter(e=>!e.isCursed)
+      .sort((a,b)=>a.id.localeCompare(b.id));
+
+  } catch(err){
+    showError('无法连接到服务器: ' + err.message);
+    return;
+  }
+
+  // 异步加载可选数据
+  loadFeEnchantments();
+  loadIaItems();
+
+  // 渲染初始 UI
+  renderAll();
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('app').style.display = '';
+
+  // 定时保活（每 2 分钟 ping 一次）
+  setInterval(refreshToken, 120000);
+  // 首次立即 ping
+  refreshToken();
+})();
+
+// ==================== 预填手持物品 ====================
+function loadHeldItem(data){
+  STATE.selectedMat = data.material || 'STONE';
+  document.getElementById('itemName').value = data.name || '';
+  STATE.loreLines = data.lore || [];
+  STATE.activeEnchants = sanitizeEnchantMap(data.enchantments || {});
+  // ★ FE 附魔、IA 模型、属性修饰符仅管理员可加载
+  if(STATE.isAdmin){
+    STATE.activeFeEnchants = sanitizeEnchantMap(data.feEnchantments || {});
+    if(data.iaModel && isValidKey(data.iaModel)) STATE.selectedIaModel = data.iaModel;
+    STATE.attributeModifiers = sanitizeAttributeModifiers(data.attributeModifiers);
+  } else {
+    STATE.attributeModifiers = [];
+  }
+  document.getElementById('unbreakable').checked = !!data.unbreakable;
+  document.getElementById('glowing').checked = !!data.glowing;
+}
+
+// ★ 过滤掉明显被 Gson 污染的 key（如 Maven GAV）
+function isValidKey(k){
+  return k && /^[a-z0-9_\-.:]+$/.test(k) && !k.includes('org.itemedit');
+}
+
+function sanitizeEnchantMap(map){
+  const clean = {};
+  for(const [k,v] of Object.entries(map)){
+    if(isValidKey(k) && typeof v === 'number' && v > 0) clean[k] = v;
+  }
+  return clean;
+}
+
+// ★ 过滤非法属性修饰符条目
+function sanitizeAttributeModifiers(mods){
+  console.log('[ItemEditor] sanitizeAttributeModifiers 收到:', JSON.stringify(mods));
+  if(!Array.isArray(mods)) {
+    console.warn('[ItemEditor] attributeModifiers 不是数组:', typeof mods);
+    return [];
+  }
+  const result = mods.filter(m=>{
+    if(typeof m !== 'object' || !m) { console.warn('[ItemEditor] 属性条目非对象:', m); return false; }
+    if(!m.attribute || typeof m.attribute !== 'string') { console.warn('[ItemEditor] 属性条目缺少 attribute:', m); return false; }
+    if(typeof m.amount !== 'number' || isNaN(m.amount)) { console.warn('[ItemEditor] 属性条目 amount 无效:', m.amount, typeof m.amount); return false; }
+    if(!m.slot || typeof m.slot !== 'string') { console.warn('[ItemEditor] 属性条目缺少 slot:', m); return false; }
+    if(!m.operation || typeof m.operation !== 'string') { console.warn('[ItemEditor] 属性条目缺少 operation:', m); return false; }
+    return true;
+  });
+  console.log('[ItemEditor] sanitizeAttributeModifiers 过滤后:', result.length, '条');
+  return result;
+}
+
+// ==================== 材料索引 ====================
+function buildMaterialIndex(){
+  const map = {};
+  const cats = new Set();
+  STATE.allMaterials.forEach(m=>{
+    map[m.id] = m;
+    cats.add(m.category);
+  });
+  STATE.materialMap = map;
+  STATE.categories = ['全部',...[...cats].sort()];
+  STATE.materials = [...STATE.allMaterials];
+}
+
+function filterMaterials(search, category){
+  let list = STATE.allMaterials;
+  if(category && category !== '全部'){
+    list = list.filter(m=>m.category === category);
+  }
+  if(search){
+    const q = search.toLowerCase();
+    list = list.filter(m=>m.id.toLowerCase().includes(q));
+  }
+  STATE.materials = list;
+  renderMatGrid();
+}
+
+// ==================== FE 附魔 ====================
+async function loadFeEnchantments(){
+  try {
+    const data = await fetch('/api/fe-enchantments').then(r=>r.json());
+    STATE.feAvailable = data.available;
+    STATE.feCategories = data.categories || [];
+    STATE.feEnchantments = (data.enchantments || []).sort((a,b)=>a.id.localeCompare(b.id));
+    STATE.feFiltered = [...STATE.feEnchantments];
+    if(STATE.feAvailable && STATE.isAdmin){
+      document.getElementById('feSection').style.display = '';
+      renderFeCatTabs();
+      renderFeEnchSelect();
+    }
+  } catch(e){}
+}
+
+// ==================== IA 物品 ====================
+async function loadIaItems(){
+  try {
+    const data = await fetch('/api/ia-items').then(r=>r.json());
+    STATE.iaAvailable = data.available;
+    STATE.iaItems = data.items || [];
+    // ★ IA 模型仅管理员可见
+    if(STATE.iaAvailable && STATE.iaItems.length > 0 && STATE.isAdmin){
+      document.getElementById('iaHeader').style.display = '';
+      document.getElementById('iaSearch').style.display = '';
+      document.getElementById('iaList').style.display = '';
+      renderIaList();
+    }
+  } catch(e){}
+}
+
+// ==================== 渲染 ====================
+function renderAll(){
+  document.getElementById('currentMat').value = STATE.selectedMat;
+  renderMatTabs();
+  renderMatGrid();
+  renderLoreList();
+  renderEnchList();
+  renderFeEnchList();
+  renderAttrList();
+  renderEnchSelect();
+  renderFeCompatBadge();
+  updateMatCount();
+  renderPreview(); // ★ 1.3.0 初始预览
+}
+
+function renderMatTabs(){
+  const container = document.getElementById('matTabs');
+  container.innerHTML = STATE.categories.map((c,i)=>
+    `<span class="tab${i===0?' active':''}" data-cat="${c}" onclick="selectCategory('${c}',this)">${c}</span>`
+  ).join('');
+}
+
+function renderMatGrid(){
+  const grid = document.getElementById('matGrid');
+  grid.innerHTML = STATE.materials.map(m=>
+    `<div class="mat-item${m.id===STATE.selectedMat?' selected':''}" data-id="${m.id}" onclick="selectMaterial('${m.id}',this)" title="${m.id}">${formatMatName(m.id)}</div>`
+  ).join('');
+}
+
+// ==================== 附魔冲突检测 ====================
+
+// 原版附魔互斥组（同组内只允许一个附魔存在）
+const ENCHANT_CONFLICT_GROUPS = [
+  // 保护类
+  ['minecraft:protection','minecraft:fire_protection','minecraft:blast_protection','minecraft:projectile_protection'],
+  // 伤害类
+  ['minecraft:sharpness','minecraft:smite','minecraft:bane_of_arthropods'],
+  // 精准/时运
+  ['minecraft:silk_touch','minecraft:fortune'],
+  // 深海/冰霜
+  ['minecraft:depth_strider','minecraft:frost_walker'],
+  // 无限/经验修补（弓）
+  ['minecraft:infinity','minecraft:mending'],
+  // 多重/穿透
+  ['minecraft:multishot','minecraft:piercing'],
+  // 激流/引雷/忠诚
+  ['minecraft:riptide','minecraft:channeling','minecraft:loyalty'],
+];
+
+/** 检查 activeEnchants 中是否存在冲突，返回冲突组。若 ignoreVanillaConflicts 为 true 则跳过检测。 */
+function findEnchantConflicts(){
+  if (STATE.feSettings.ignoreVanillaConflicts) return [];
+  const active = Object.keys(STATE.activeEnchants);
+  const conflicts = [];
+  for (const group of ENCHANT_CONFLICT_GROUPS) {
+    const inGroup = group.filter(id => active.includes(id));
+    if (inGroup.length > 1) conflicts.push(inGroup);
+  }
+  return conflicts;
+}
+
+/** 检查 activeFeEnchants 中是否存在 FE 内部冲突，返回冲突描述数组。若 ignoreFeConflicts 为 true 则跳过检测。 */
+function findFeEnchantConflicts(){
+  if (STATE.feSettings.ignoreFeConflicts) return [];
+  const conflicts = [];
+  const activeIds = Object.keys(STATE.activeFeEnchants);
+  // 构建 FE 附魔冲突索引：哪个附魔与哪些 FE 附魔冲突
+  const feConflictMap = {};
+  STATE.feEnchantments.forEach(e => {
+    if (e.conflicts && Array.isArray(e.conflicts) && e.conflicts.length > 0) {
+      feConflictMap[e.id] = e.conflicts;
+    }
+  });
+  // 检查当前激活的 FE 附魔之间存在互相冲突的情况
+  const checked = new Set();
+  for (const id of activeIds) {
+    const targets = feConflictMap[id];
+    if (!targets) continue;
+    for (const otherId of activeIds) {
+      if (id === otherId) continue;
+      const pairKey = [id, otherId].sort().join('||');
+      if (checked.has(pairKey)) continue;
+      if (targets.includes(otherId)) {
+        checked.add(pairKey);
+        const infoA = STATE.feEnchantments.find(e => e.id === id);
+        const infoB = STATE.feEnchantments.find(e => e.id === otherId);
+        conflicts.push({
+          ids: [id, otherId],
+          names: [infoA ? (infoA.name || id) : id, infoB ? (infoB.name || id) : id]
+        });
+      }
+    }
+  }
+  return conflicts;
+}
+
+/** 渲染 FE 兼容性状态徽章 */
+function renderFeCompatBadge(){
+  const badge = document.getElementById('feCompatBadge');
+  if (!badge || !STATE.isAdmin) return;
+  const s = STATE.feSettings;
+  const parts = [];
+  if (s.ignoreVanillaConflicts) parts.push('🔓 忽略原版冲突');
+  if (s.ignoreFeConflicts) parts.push('🔓 忽略FE冲突');
+  if (!parts.length && s.showCompatibilityWarnings) parts.push('⚠️ 冲突检测已启用');
+  if (!parts.length) parts.push('✅ 默认模式');
+  if (s.adminMaxEnchantLevel > 0 && s.adminMaxEnchantLevel < 32767) {
+    parts.push('(上限:' + s.adminMaxEnchantLevel + ')');
+  }
+  badge.textContent = parts.join(' | ');
+}
+
+function renderLoreList(){
+  const container = document.getElementById('loreList');
+  if(STATE.loreLines.length === 0){
+    container.innerHTML = '<div style="color:var(--fg2);font-size:.82em;padding:8px">暂无描述行</div>';
+    return;
+  }
+  container.innerHTML = STATE.loreLines.map((line,i)=>
+    `<div class="lore-row">
+      <span class="idx">${i+1}.</span>
+      <span>${escHtml(line)}</span>
+      <button onclick="centerLoreLine(${i})" title="居中对齐此行" style="background:var(--accent2);color:#fff">⊞</button>
+      <button onclick="moveLore(${i},-1)" title="上移">▲</button>
+      <button onclick="moveLore(${i},1)" title="下移">▼</button>
+      <button class="btn-red" style="color:#fff" onclick="removeLore(${i})">✕</button>
+    </div>`
+  ).join('');
+}
+
+function renderEnchList(){
+  const container = document.getElementById('enchList');
+  const entries = Object.entries(STATE.activeEnchants);
+  if(entries.length === 0){
+    container.innerHTML = '<div style="color:var(--fg2);font-size:.82em;padding:4px">未添加附魔</div>';
+    return;
+  }
+  // 检测冲突（若 ignoreVanillaConflicts=true 则 findEnchantConflicts 返回空）
+  const conflicts = findEnchantConflicts();
+  const conflictIds = new Set(conflicts.flat());
+  const adminMax = STATE.feSettings.adminMaxEnchantLevel || 32767;
+  // ★ 仅当 showCompatibilityWarnings=true 且未忽略时才显示警告
+  const showWarnings = STATE.feSettings.showCompatibilityWarnings !== false
+                       && !STATE.feSettings.ignoreVanillaConflicts;
+
+  container.innerHTML = entries.map(([id,lvl])=>{
+    const info = STATE.enchantments.find(e=>e.id===id);
+    const name = info ? (info.name || formatEnchName(id)) : id;
+    const naturalMax = info ? info.maxLevel : 255;
+    const max = STATE.isAdmin ? adminMax : naturalMax;
+    const warnIcon = (showWarnings && conflictIds.has(id)) ? ' ⚠️' : '';
+    // ★ 管理员突破标记
+    let breakthroughBadge = '';
+    if (STATE.isAdmin && lvl > naturalMax) {
+      breakthroughBadge = ` <span style="background:var(--accent);color:#fff;padding:0 6px;border-radius:3px;font-size:.7em;font-weight:bold" title="已突破自然上限 ${naturalMax} 级">突破</span>`;
+    }
+    let atMaxHint = '';
+    if (!STATE.isAdmin && lvl >= naturalMax) {
+      atMaxHint = ' <span style="color:var(--gold);font-size:.75em">(已达上限)</span>';
+    }
+    return `<div class="ench-row">
+      <span class="name">${escHtml(name)}${warnIcon}${breakthroughBadge}${atMaxHint}
+        <span style="font-size:.7em;color:var(--fg2);margin-left:4px">上限${STATE.isAdmin?adminMax:naturalMax}</span>
+      </span>
+      <div class="lvl">
+        <button onclick="changeEnchLevel('${id}',-1)">-</button>
+        <input type="number" value="${lvl}" min="0" max="${max}" onchange="setEnchLevel('${id}',this.value)">
+        <button onclick="changeEnchLevel('${id}',1)">+</button>
+        <button class="btn-red btn-sm" style="color:#fff" onclick="removeEnch('${id}')">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // 在列表底部显示冲突警告
+  if (showWarnings && conflicts.length > 0) {
+    const warningMsgs = conflicts.map(g => '⚠️ 冲突: ' + g.map(id => {
+      const info = STATE.enchantments.find(e=>e.id===id);
+      return info ? info.name : id;
+    }).join(' + ')).join('<br>');
+    container.innerHTML += `<div style="margin-top:6px;padding:6px 8px;background:rgba(255,193,7,0.1);border:1px solid var(--gold);border-radius:4px;font-size:.75em;color:var(--gold)">${warningMsgs}</div>`;
+  }
+}
+
+function renderFeEnchList(){
+  const container = document.getElementById('feEnchList');
+  const entries = Object.entries(STATE.activeFeEnchants);
+  if(entries.length === 0){
+    container.innerHTML = '<div style="color:var(--fg2);font-size:.82em;padding:4px">未添加 FE 附魔</div>';
+    return;
+  }
+  // ★ FE 冲突检测（若 ignoreFeConflicts=true 则跳过）
+  const feConflicts = findFeEnchantConflicts();
+  const feConflictIds = new Set(feConflicts.flatMap(c => c.ids));
+  const showFeWarnings = STATE.feSettings.showCompatibilityWarnings !== false
+                         && !STATE.feSettings.ignoreFeConflicts;
+
+  container.innerHTML = entries.map(([id,lvl])=>{
+    const info = STATE.feEnchantments.find(e=>e.id===id);
+    const name = info ? (info.name || id) : id;
+    // ★ FE 附魔无法突破自然上限（PDCManager 内部强制限制），所有人共用 naturalMax
+    const naturalMax = info ? info.maxLevel : 255;
+    const warnIcon = (showFeWarnings && feConflictIds.has(id)) ? ' ⚠️' : '';
+    // ★ 达到自然上限时提示（FE 附魔不区分管理员/玩家）
+    let atMaxHint = '';
+    if (lvl >= naturalMax) {
+      atMaxHint = ' <span style="background:var(--gold);color:#000;padding:0 6px;border-radius:3px;font-size:.7em;font-weight:bold">已达上限</span>';
+    }
+    return `<div class="ench-row">
+      <span class="name">${escHtml(name)}${warnIcon}${atMaxHint}
+        <span style="font-size:.7em;color:var(--fg2);margin-left:4px">上限 ${naturalMax}</span>
+      </span>
+      <div class="lvl">
+        <button onclick="changeFeEnchLevel('${id}',-1)">-</button>
+        <input type="number" value="${lvl}" min="0" max="${naturalMax}" onchange="setFeEnchLevel('${id}',this.value)">
+        <button onclick="changeFeEnchLevel('${id}',1)">+</button>
+        <button class="btn-red btn-sm" style="color:#fff" onclick="removeFeEnch('${id}')">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // 在列表底部显示 FE 冲突警告
+  if (showFeWarnings && feConflicts.length > 0) {
+    const warningMsgs = feConflicts.map(c => '⚠️ FE冲突: ' + c.names.join(' + ')).join('<br>');
+    container.innerHTML += `<div style="margin-top:6px;padding:6px 8px;background:rgba(255,193,7,0.1);border:1px solid var(--gold);border-radius:4px;font-size:.75em;color:var(--gold)">${warningMsgs}</div>`;
+  }
+}
+
+function renderEnchSelect(){
+  const sel = document.getElementById('enchSelect');
+  const used = new Set(Object.keys(STATE.activeEnchants));
+  const avail = STATE.enchantments.filter(e=>!used.has(e.id));
+  const adminMax = STATE.feSettings.adminMaxEnchantLevel || 32767;
+  sel.innerHTML = avail.map(e=>
+    `<option value="${e.id}">${escHtml(e.name||formatEnchName(e.id))} (最大 ${STATE.isAdmin?adminMax:e.maxLevel})</option>`
+  ).join('');
+  if(avail.length===0) sel.innerHTML = '<option>所有附魔已添加</option>';
+}
+
+function renderFeEnchSelect(){
+  const sel = document.getElementById('feEnchSelect');
+  const used = new Set(Object.keys(STATE.activeFeEnchants));
+  const avail = STATE.feFiltered.filter(e=>!used.has(e.id));
+  sel.innerHTML = avail.map(e=>{
+    const catName = e.categoryName || e.category || '';
+    return `<option value="${e.id}">${escHtml(e.name||e.id)} (最大 ${e.maxLevel}) [${catName}]</option>`;
+  }).join('');
+  if(avail.length===0) sel.innerHTML = '<option>所有 FE 附魔已添加</option>';
+}
+
+function renderFeCatTabs(){
+  const container = document.getElementById('feCatTabs');
+  const cats = ['全部', ...(STATE.feCategories || [])];
+  container.innerHTML = cats.map((c,i)=>
+    `<span class="tab${i===0?' active':''}" data-cat="${c}" onclick="filterFeByCat('${c}',this)">${c}</span>`
+  ).join('');
+}
+
+function filterFeByCat(cat, el){
+  document.querySelectorAll('#feCatTabs .tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  if(cat === '全部'){
+    STATE.feFiltered = [...STATE.feEnchantments];
+  } else {
+    // 按中文分类名反查英文 key
+    let catKey = cat;
+    for(const [k,v] of Object.entries({melee:'近战',armor:'护甲',ranged:'远程',tools:'工具',universal:'通用'})){
+      if(v === cat) { catKey = k; break; }
+    }
+    STATE.feFiltered = STATE.feEnchantments.filter(e=>e.category === catKey);
+  }
+  renderFeEnchSelect();
+  document.getElementById('feEnchSelect').innerHTML = document.getElementById('feEnchSelect').innerHTML; // trigger refresh
+}
+
+function renderIaList(){
+  const list = document.getElementById('iaList');
+  const search = document.getElementById('iaSearch').value.toLowerCase();
+  let items = STATE.iaItems;
+  if(search) items = items.filter(id=>id.toLowerCase().includes(search));
+  list.innerHTML = items.slice(0,200).map(id=>
+    `<div class="ia-item${id===STATE.selectedIaModel?' selected':''}" onclick="selectIaModel('${id}',this)">${escHtml(id)}</div>`
+  ).join('');
+}
+
+// ==================== 属性修饰符渲染和交互 ====================
+
+/** 切换属性修饰符区域的展开/折叠 */
+function toggleAttrSection(){
+  const body = document.getElementById('attrBody');
+  const icon = document.getElementById('attrToggleIcon');
+  const isHidden = body.style.display === 'none';
+  if (isHidden) {
+    body.style.display = '';
+    icon.textContent = '▼';
+    icon.style.transform = 'rotate(0deg)';
+  } else {
+    body.style.display = 'none';
+    icon.textContent = '▶';
+    icon.style.transform = 'rotate(0deg)';
+  }
+}
+
+/** 更新属性修饰符徽章（数量及状态） */
+function updateAttrBadge(){
+  const badge = document.getElementById('attrBadge');
+  const count = STATE.attributeModifiers.length;
+  if (count === 0) {
+    badge.textContent = '(无)';
+    badge.style.color = 'var(--fg2)';
+  } else {
+    badge.textContent = '(' + count + ' 条)';
+    badge.style.color = 'var(--gold)';
+  }
+}
+
+/** 渲染属性修饰符列表 */
+function renderAttrList(){
+  const container = document.getElementById('attrList');
+  updateAttrBadge();
+  if(STATE.attributeModifiers.length === 0){
+    container.innerHTML = '<div style="color:var(--fg2);font-size:.82em;padding:4px">未添加属性修饰符</div>';
+    return;
+  }
+  container.innerHTML = STATE.attributeModifiers.map((mod,i)=>{
+    const attrOpts = ATTRIBUTE_OPTIONS.map(a=>
+      `<option value="${a.id}"${mod.attribute===a.id?' selected':''}>${escHtml(a.cn)}</option>`
+    ).join('');
+    const slotOpts = SLOT_OPTIONS.map(s=>
+      `<option value="${s.id}"${mod.slot===s.id?' selected':''}>${escHtml(s.cn)}</option>`
+    ).join('');
+    const opOpts = OPERATION_OPTIONS.map(o=>
+      `<option value="${o.id}"${mod.operation===o.id?' selected':''}>${escHtml(o.cn)}</option>`
+    ).join('');
+    // ★ 检查属性 ID 是否在已知列表中，标记未知属性
+    const knownAttr = ATTRIBUTE_OPTIONS.find(a => a.id === mod.attribute);
+    const attrWarning = !knownAttr ? ' style="color:var(--gold)" title="未知属性ID，可能不生效"' : '';
+    return `<div class="attr-row">
+      <select onchange="updateAttribute(${i},'attribute',this.value)" title="属性类型"${attrWarning}>${attrOpts}</select>
+      <select class="attr-op" onchange="updateAttribute(${i},'operation',this.value)" title="运算方式">${opOpts}</select>
+      <input type="number" value="${mod.amount}" step="any" onchange="updateAttribute(${i},'amount',parseFloat(this.value)||0)" title="数值（支持正负数及小数）">
+      <select class="attr-slot" onchange="updateAttribute(${i},'slot',this.value)" title="生效插槽">${slotOpts}</select>
+      <button class="btn-red btn-sm" style="color:#fff" onclick="removeAttribute(${i})" title="删除此行">🗑️ 删除</button>
+    </div>`;
+  }).join('');
+}
+
+/** 新增一行属性修饰符（自动展开折叠区域） */
+function addAttribute(){
+  STATE.attributeModifiers.push({
+    attribute: 'minecraft:attack_damage',
+    amount: 1.0,
+    operation: 'add_number',
+    slot: 'mainhand'
+  });
+  // 自动展开属性区域
+  const body = document.getElementById('attrBody');
+  if (body.style.display === 'none') {
+    toggleAttrSection();
+  }
+  renderAttrList();
+}
+
+/** 删除指定行的属性修饰符 */
+function removeAttribute(index){
+  STATE.attributeModifiers.splice(index, 1);
+  renderAttrList();
+}
+
+/** 更新指定行某个字段的值 */
+function updateAttribute(index, field, value){
+  if(index < 0 || index >= STATE.attributeModifiers.length) return;
+  STATE.attributeModifiers[index][field] = value;
+}
+
+function updateMatCount(){
+  document.getElementById('matCount').textContent = `共 ${STATE.materials.length} 种材质`;
+}
+
+// ==================== 交互处理 ====================
+function selectCategory(cat, el){
+  document.querySelectorAll('#matTabs .tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  filterMaterials(document.getElementById('matSearch').value, cat);
+}
+
+function selectMaterial(id, el){
+  STATE.selectedMat = id;
+  document.getElementById('currentMat').value = id;
+  document.querySelectorAll('#matGrid .mat-item').forEach(t=>t.classList.remove('selected'));
+  el.classList.add('selected');
+}
+
+function addLore(){
+  const input = document.getElementById('newLoreLine');
+  const val = input.value.trim();
+  if(!val) return;
+  STATE.loreLines.push(val);
+  input.value = '';
+  renderLoreList();
+}
+
+function removeLore(i){
+  STATE.loreLines.splice(i,1);
+  renderLoreList();
+}
+
+function moveLore(i, dir){
+  const j = i + dir;
+  if(j < 0 || j >= STATE.loreLines.length) return;
+  [STATE.loreLines[i], STATE.loreLines[j]] = [STATE.loreLines[j], STATE.loreLines[i]];
+  renderLoreList();
+}
+
+function addEnchant(){
+  const sel = document.getElementById('enchSelect');
+  const id = sel.value;
+  if(!id || STATE.activeEnchants[id] !== undefined) return;
+  const info = STATE.enchantments.find(e=>e.id===id);
+  STATE.activeEnchants[id] = info ? Math.min(1, info.maxLevel) : 1;
+  renderEnchList();
+  renderEnchSelect();
+}
+
+function removeEnch(id){
+  delete STATE.activeEnchants[id];
+  renderEnchList();
+  renderEnchSelect();
+}
+
+function changeEnchLevel(id, delta){
+  const cur = STATE.activeEnchants[id] || 0;
+  const info = STATE.enchantments.find(e=>e.id===id);
+  const max = STATE.isAdmin ? (STATE.feSettings.adminMaxEnchantLevel || 32767) : (info ? info.maxLevel : 255);
+  const next = Math.max(0, Math.min(max, cur + delta));
+  if(next <= 0) { removeEnch(id); return; }
+  STATE.activeEnchants[id] = next;
+  renderEnchList();
+}
+
+function setEnchLevel(id, val){
+  const v = parseInt(val) || 0;
+  const info = STATE.enchantments.find(e=>e.id===id);
+  const max = STATE.isAdmin ? (STATE.feSettings.adminMaxEnchantLevel || 32767) : (info ? info.maxLevel : 255);
+  if(v <= 0) { removeEnch(id); return; }
+  STATE.activeEnchants[id] = Math.min(v, max);
+  renderEnchList();
+}
+
+function addFeEnchant(){
+  const sel = document.getElementById('feEnchSelect');
+  const id = sel.value;
+  if(!id || STATE.activeFeEnchants[id] !== undefined) return;
+  const info = STATE.feEnchantments.find(e=>e.id===id);
+  STATE.activeFeEnchants[id] = info ? Math.min(1, info.maxLevel) : 1;
+  renderFeEnchList();
+  renderFeEnchSelect();
+}
+
+function removeFeEnch(id){
+  delete STATE.activeFeEnchants[id];
+  renderFeEnchList();
+  renderFeEnchSelect();
+}
+
+function changeFeEnchLevel(id, delta){
+  const cur = STATE.activeFeEnchants[id] || 0;
+  const info = STATE.feEnchantments.find(e=>e.id===id);
+  // ★ FE 附魔无法突破自然上限，不区分管理员/玩家
+  const max = info ? info.maxLevel : 255;
+  const next = Math.max(0, Math.min(max, cur + delta));
+  if(next <= 0) { removeFeEnch(id); return; }
+  STATE.activeFeEnchants[id] = next;
+  renderFeEnchList();
+}
+
+function setFeEnchLevel(id, val){
+  const v = parseInt(val) || 0;
+  const info = STATE.feEnchantments.find(e=>e.id===id);
+  const max = info ? info.maxLevel : 255;
+  if(v <= 0) { removeFeEnch(id); return; }
+  STATE.activeFeEnchants[id] = Math.min(v, max);
+  renderFeEnchList();
+}
+
+function selectIaModel(id, el){
+  STATE.selectedIaModel = id;
+  document.querySelectorAll('#iaList .ia-item').forEach(t=>t.classList.remove('selected'));
+  el.classList.add('selected');
+  document.getElementById('iaSelected').textContent = '已选: ' + id;
+}
+
+// ==================== 模板操作 ====================
+async function saveTemplate(type){
+  const isAdminSave = (type === 'admin');
+  const btn = isAdminSave ? document.getElementById('saveAdminBtn') : document.getElementById('saveBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 正在保存...';
+
+  const itemData = {
+    material: STATE.selectedMat,
+    name: document.getElementById('itemName').value.trim(),
+    lore: STATE.loreLines,
+    enchantments: STATE.activeEnchants,
+    unbreakable: document.getElementById('unbreakable').checked,
+    glowing: document.getElementById('glowing').checked
+  };
+  // ★ IA 模型、FE 附魔、属性修饰符仅管理员可导出
+  if(STATE.isAdmin){
+    itemData.feEnchantments = STATE.activeFeEnchants;
+    itemData.iaModel = STATE.selectedIaModel || null;
+    itemData.attributeModifiers = STATE.attributeModifiers;
+  }
+
+  try {
+    const body = { token: STATE.token, item: itemData, templateName: document.getElementById('templateName').value.trim() };
+    if (STATE.isAdmin) body.adminTemplate = isAdminSave;
+    const resp = await fetch('/api/template/save', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+
+    if(data.error){
+      showToast('保存失败: ' + data.error, 'error');
+    } else {
+      STATE.token = data.newToken || STATE.token;
+      document.getElementById('templateResult').style.display = '';
+      document.getElementById('templateCode').textContent = data.code;
+      const typeLabel = data.adminTemplate ? ' [管理员专属]' : ' [玩家模板]';
+      const nameInfo = data.name ? ' "' + data.name + '"' : '';
+      document.getElementById('templateCmd').textContent = '/design load ' + data.code + typeLabel;
+      document.getElementById('templateItemInfo').textContent = '物品: ' + escHtml(data.itemMaterial||'?') + nameInfo;
+      document.getElementById('copyHint').textContent = '';
+      showToast('模板已保存！' + (data.name ? ' (' + data.name + ')' : ''), 'success');
+    }
+  } catch(err){
+    showToast('网络错误: ' + err.message, 'error');
+  }
+  btn.disabled = false;
+  btn.textContent = isAdminSave ? '💾 保存管理模板' : '💾 保存玩家模板';
+}
+
+function copyCode(){
+  const code = document.getElementById('templateCode').textContent;
+  if(!code) return;
+  navigator.clipboard.writeText(code).then(()=>{
+    document.getElementById('copyHint').textContent = '✅ 已复制到剪贴板！';
+    setTimeout(()=>{ document.getElementById('copyHint').textContent = ''; }, 2000);
+  }).catch(()=>{
+    document.getElementById('copyHint').textContent = '⚠️ 请手动选中上方模板码复制';
+  });
+}
+
+async function loadMyTemplates(){
+  try {
+    const resp = await fetch('/api/my-templates?token='+STATE.token);
+    const data = await resp.json();
+    if(data.error){ showToast(data.error,'error'); return; }
+
+    const panel = document.getElementById('myTemplatesPanel');
+    const list = document.getElementById('myTemplatesList');
+
+    if(!data.templates || data.templates.length === 0){
+      list.innerHTML = '<div style="color:var(--fg2);padding:10px">你还没有保存过模板</div>';
+    } else {
+      list.innerHTML = data.templates.map(t=>{
+        const d = new Date(t.createdAt);
+        const ds = d.toLocaleDateString('zh-CN') + ' ' + d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+        const badge = t.adminTemplate ? '<span style="background:#e94560;color:#fff;padding:1px 6px;border-radius:3px;font-size:.65em">OP</span>'
+                                     : '<span style="background:#4caf50;color:#fff;padding:1px 6px;border-radius:3px;font-size:.65em">PL</span>';
+        const nameInfo = t.name ? ' <span style="color:var(--gold);font-size:.82em">' + escHtml(t.name) + '</span>' : '';
+        return `<div class="tmpl-row">
+          <span class="tcode">${escHtml(t.code)}</span>
+          <span class="ttitle">${escHtml(t.title||'')}${nameInfo}</span>
+          <span style="font-size:.65em;color:var(--fg2)">${escHtml(t.material||'')}</span>
+          ${badge}
+          <span style="font-size:.7em;color:var(--fg2)">${ds}</span>
+          <button onclick="loadTemplate('${t.code}')" style="background:var(--blue);color:#fff">加载</button>
+          <button onclick="deleteTemplate('${t.code}')" style="background:var(--red);color:#fff">删除</button>
+        </div>`;
+      }).join('');
+    }
+    panel.style.display = '';
+  } catch(err){
+    showToast('加载失败: '+err.message,'error');
+  }
+}
+
+async function loadTemplate(code){
+  try {
+    const resp = await fetch('/api/template/'+code);
+    const data = await resp.json();
+    if(data.error){ showToast(data.error,'error'); return; }
+    if(data.item){
+      // 清空模板名称（导入的模板不自带名称，由用户重新命名）
+      document.getElementById('templateName').value = data.name || '';
+      loadHeldItem(data.item);
+      buildMaterialIndex();
+      renderAll();
+      const gridItem = document.querySelector(`.mat-item[data-id="${data.item.material}"]`);
+      if(gridItem) gridItem.scrollIntoView({behavior:'smooth',block:'center'});
+      const nameInfo = data.name ? ' "' + data.name + '"' : '';
+      const typeLabel = data.adminTemplate ? '[OP管理员]' : '[PL玩家]';
+      showToast('模板已加载: ' + code + nameInfo + ' ' + typeLabel, 'success');
+    }
+  } catch(err){
+    showToast('加载失败: '+err.message,'error');
+  }
+}
+
+/** 导入任意模板码——加载物品数据到编辑器进行预览/修改 */
+async function importTemplate(){
+  const code = document.getElementById('importCode').value.trim();
+  if(!code) { showToast('请输入模板码','error'); return; }
+  const resultDiv = document.getElementById('importResult');
+
+  try {
+    const resp = await fetch('/api/template/'+code);
+    const data = await resp.json();
+    if(data.error){
+      resultDiv.innerHTML = '<span style="color:var(--red)">❌ ' + escHtml(data.error) + '</span>';
+      showToast('导入失败: ' + data.error, 'error');
+      return;
+    }
+    if(data.item){
+      document.getElementById('templateName').value = '';
+      loadHeldItem(data.item);
+      buildMaterialIndex();
+      renderAll();
+      const gridItem = document.querySelector(`.mat-item[data-id="${data.item.material}"]`);
+      if(gridItem) gridItem.scrollIntoView({behavior:'smooth',block:'center'});
+
+      const nameInfo = data.name ? ' 名称: "' + escHtml(data.name) + '"' : '';
+      const authorInfo = data.createdBy ? ' 作者: ' + escHtml(data.createdBy) : '';
+      const typeLabel = data.adminTemplate ? ' [OP管理员模板]' : ' [PL玩家模板]';
+      resultDiv.innerHTML = '<span style="color:var(--green)">✅ 已导入: ' + escHtml(data.code)
+        + typeLabel + ' | 物品: ' + escHtml(data.itemMaterial||'?') + nameInfo + authorInfo
+        + ' | 可修改后保存为新模板</span>';
+      showToast('模板已导入，可修改后导出', 'success');
+    }
+  } catch(err){
+    resultDiv.innerHTML = '<span style="color:var(--red)">❌ 网络错误</span>';
+    showToast('导入失败: '+err.message,'error');
+  }
+}
+
+async function deleteTemplate(code){
+  if(!confirm('确定要删除模板 ' + code + ' 吗？此操作不可撤销。')) return;
+  try {
+    const resp = await fetch('/api/template/'+code+'?token='+STATE.token, {method:'DELETE'});
+    const data = await resp.json();
+    if(data.error){ showToast(data.error,'error'); }
+    else { showToast('模板已删除','success'); loadMyTemplates(); }
+  } catch(err){
+    showToast('删除失败: '+err.message,'error');
+  }
+}
+
+// ==================== Token 保活 ====================
+async function refreshToken(){
+  try {
+    const resp = await fetch('/api/keep-alive?token='+STATE.token);
+    const data = await resp.json();
+    if(data.error){
+      showToast('会话已过期，请在游戏内重新输入 /design', 'error');
+    }
+  } catch(e){
+    console.warn('[keep-alive] 网络请求失败，下次周期重试', e);
+  }
+}
+
+// ==================== 颜色码按钮 ====================
+(function buildColorRow(){
+  const codes = [
+    ['&0','#000'],['&1','#00a'],['&2','#0a0'],['&3','#0aa'],
+    ['&4','#a00'],['&5','#a0a'],['&6','#fa0'],['&7','#aaa'],
+    ['&8','#555'],['&9','#55f'],['&a','#5f5'],['&b','#5ff'],
+    ['&c','#f55'],['&d','#f5f'],['&e','#ff5'],['&f','#fff'],
+    ['&k','obf'],['&l','bold'],['&m','str'],['&n','und'],['&o','ita'],['&r','rst']
+  ];
+  const row = document.getElementById('colorRow');
+  row.innerHTML = codes.map(([code,hex])=>{
+    if(['obf','bold','str','und','ita','rst'].includes(hex)){
+      return `<span class="color-code" onclick="insertCode('${code}')" title="${code} 格式码">${code}</span>`;
+    }
+    return `<span class="color-btn" style="background:${hex}" onclick="insertCode('${code}')" title="${code}">&nbsp;</span>`;
+  }).join('');
+})();
+
+function insertCode(code){
+  const inp = document.getElementById('itemName');
+  inp.value += code;
+  inp.focus();
+}
+
+// ==================== 搜索监听 ====================
+document.getElementById('matSearch').addEventListener('input', function(){
+  const cat = document.querySelector('#matTabs .tab.active');
+  filterMaterials(this.value, cat ? cat.dataset.cat : null);
+});
+
+document.getElementById('iaSearch').addEventListener('input', function(){
+  renderIaList();
+});
+
+// ==================== 工具函数 ====================
+function formatMatName(id){
+  const short = id.replace(/^MINECRAFT:/i,'').replace(/_/g,' ').toLowerCase();
+  return short.length > 12 ? short.substring(0,11)+'…' : short;
+}
+
+function formatEnchName(id){
+  const parts = id.split(':');
+  const name = parts.length > 1 ? parts[1] : parts[0];
+  return name.replace(/_/g,' ').toLowerCase();
+}
+
+function escHtml(s){
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function showToast(msg, type){
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + type;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(), 2500);
+}
+
+function showError(msg){
+  document.getElementById('loading').style.display = 'none';
+  const el = document.getElementById('errorMsg');
+  el.textContent = '❌ ' + msg;
+  el.style.display = '';
+}
+
+// ==================== 1.3.0 物品预览 & 格式化工具 ====================
+
+// & 颜色码 → CSS 映射
+const MC_COLORS = {
+  '0':'#000000','1':'#0000AA','2':'#00AA00','3':'#00AAAA',
+  '4':'#AA0000','5':'#AA00AA','6':'#FFAA00','7':'#AAAAAA',
+  '8':'#555555','9':'#5555FF','a':'#55FF55','b':'#55FFFF',
+  'c':'#FF5555','d':'#FF55FF','e':'#FFFF55','f':'#FFFFFF'
+};
+const MC_COLOR_NAMES = ['0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'];
+
+/**
+ * 解析 & 颜色码文本为 HTML 片段（<span> 堆叠）。
+ * 支持: &0-&f 颜色, &l 粗体, &o 斜体, &n 下划线, &m 删除线, &k 乱码, &r 重置
+ */
+function parseFormatToHtml(text){
+  if(!text) return '';
+  const segments = [];
+  let cur = {color:'#FFFFFF', bold:false, italic:false, underline:false, strike:false, obfu:false};
+  let buf = '';
+  let i = 0;
+  function flush(){
+    if(!buf) return;
+    const s = escHtml(buf);
+    let html = s;
+    if(cur.obfu) html = `<span class="fmt-obfu">${[...buf].map(c=>escHtml(c)).join('')}</span>`;
+    else {
+      const styles = [`color:${cur.color}`];
+      if(cur.bold) styles.push('font-weight:bold');
+      if(cur.italic) styles.push('font-style:italic');
+      if(cur.underline) styles.push('text-decoration:underline');
+      if(cur.strike) styles.push('text-decoration:line-through');
+      if(cur.underline && cur.strike) styles.push('text-decoration:underline line-through');
+      html = `<span style="${styles.join(';')}">${s}</span>`;
+    }
+    segments.push(html);
+    buf = '';
+  }
+  while(i < text.length){
+    if(text[i] === '&' && i + 1 < text.length){
+      const code = text[i+1].toLowerCase();
+      if('0123456789abcdef'.includes(code)){
+        flush();
+        cur = {color:MC_COLORS[code], bold:false, italic:false, underline:false, strike:false, obfu:false};
+        i += 2; continue;
+      }
+      if(code === 'r'){
+        flush();
+        cur = {color:'#FFFFFF', bold:false, italic:false, underline:false, strike:false, obfu:false};
+        i += 2; continue;
+      }
+      if(code === 'l'){ flush(); cur.bold = true; i += 2; continue; }
+      if(code === 'o'){ flush(); cur.italic = true; i += 2; continue; }
+      if(code === 'n'){ flush(); cur.underline = true; i += 2; continue; }
+      if(code === 'm'){ flush(); cur.strike = true; i += 2; continue; }
+      if(code === 'k'){ flush(); cur.obfu = true; i += 2; continue; }
+    }
+    buf += text[i];
+    i++;
+  }
+  flush();
+  return segments.join('');
+}
+
+/** 渲染预览面板（名称 + 所有 Lore 行） */
+function renderPreview(){
+  const nameRaw = document.getElementById('itemName').value.trim();
+  const container = document.getElementById('previewContainer');
+  const nameDiv = document.getElementById('previewName');
+  const loreDiv = document.getElementById('previewLore');
+
+  // 名称
+  if(nameRaw){
+    nameDiv.innerHTML = parseFormatToHtml(nameRaw);
+  } else {
+    nameDiv.innerHTML = '<span style="color:#888;font-style:italic">未设置名称</span>';
+  }
+
+  // Lore
+  if(STATE.loreLines.length === 0){
+    loreDiv.innerHTML = '<div class="preview-lore-line" style="color:#666;font-style:italic">无描述行</div>';
+  } else {
+    loreDiv.innerHTML = STATE.loreLines.map(line =>
+      `<div class="preview-lore-line">${parseFormatToHtml(line)}</div>`
+    ).join('');
+  }
+}
+
+// 名称输入框实时预览
+document.getElementById('itemName').addEventListener('input', renderPreview);
+
+// 重写 renderLoreList 增加预览刷新
+const _origRenderLoreList = renderLoreList;
+renderLoreList = function(){
+  _origRenderLoreList();
+  renderPreview();
+};
+
+// ==================== 特殊符号面板 ====================
+
+const SYM_CATEGORIES = {
+  '常用': '★☆✯✭✮✷✸✦✧✩♪♫♬♥♦♣♠☀☁☂☃☄♨✂✈☠⚔⚡✨⛏⚒⛏',
+  '箭头': '→←↑↓↔⇒⇐⇑⇓➔➤➜➥➲⬆⬇⬅➡',
+  '装饰': '▸▪▫■□◆◇◈◎●○◉◦⬟⬢◈⬥⬦⬩',
+  '数学': '±∞√∑∫∏∝≈≠≤≥∠∟∀∂∃',
+  '货币': '€£¥₽₹₿¢₴₪₩',
+  '格式': '§«»•·…¦ºª¹²³½¼¾',
+  '表情': '😀😎😈💀👑🗡️🛡️🔥💧❄️⚡🌟💎🎯🎵'
+};
+
+let symActiveCat = '常用';
+
+function toggleSymPanel(){
+  const body = document.getElementById('symBody');
+  const icon = document.getElementById('symToggleIcon');
+  if(body.style.display === 'none'){
+    body.style.display = '';
+    icon.textContent = '▼';
+    renderSymTabs();
+    renderSymGrid();
+  } else {
+    body.style.display = 'none';
+    icon.textContent = '▶';
+  }
+}
+
+function renderSymTabs(){
+  document.getElementById('symTabs').innerHTML = Object.keys(SYM_CATEGORIES).map(cat =>
+    `<span class="sym-tab${cat===symActiveCat?' active':''}" onclick="selectSymCat('${cat}')">${cat}</span>`
+  ).join('');
+}
+
+function selectSymCat(cat){
+  symActiveCat = cat;
+  renderSymTabs();
+  renderSymGrid();
+}
+
+function renderSymGrid(){
+  const chars = SYM_CATEGORIES[symActiveCat] || '';
+  // 将字符串按码点拆分（表情占 2 个 UTF-16 码元）
+  const arr = [...chars];
+  document.getElementById('symGrid').innerHTML = arr.map(ch =>
+    `<span class="sym-char" onclick="insertSym('${escHtml(ch)}')" title="${escHtml(ch)}">${escHtml(ch)}</span>`
+  ).join('');
+  // 修复 onclick 中特殊字符问题——改用事件委托
+  initSymClickEvents();
+}
+
+function initSymClickEvents(){
+  document.querySelectorAll('#symGrid .sym-char').forEach(el => {
+    el.addEventListener('click', function(){
+      insertSym(this.textContent);
+    });
+  });
+}
+
+// ★ 追踪最后聚焦的文本输入框，符号插入时用
+let lastFocusedInput = 'itemName';
+document.addEventListener('focusin', function(e){
+  if(e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'){
+    if(e.target.id === 'itemName' || e.target.id === 'newLoreLine' || e.target.closest('.lore-row')){
+      lastFocusedInput = e.target.id || 'itemName';
+    }
+  }
+});
+
+/** 将字符插入当前聚焦的输入框光标位置 */
+function insertSym(ch){
+  let el = document.getElementById(lastFocusedInput);
+  if(!el || !(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+    el = document.getElementById('itemName');
+  }
+  const start = el.selectionStart;
+  const end = el.selectionEnd;
+  const val = el.value;
+  el.value = val.substring(0, start) + ch + val.substring(end);
+  el.selectionStart = el.selectionEnd = start + ch.length;
+  el.focus();
+  if(el.id === 'itemName' || el.id === 'newLoreLine') renderPreview();
+}
+
+// ==================== 选区格式化工具栏 ====================
+
+/** 初始化格式化工具栏的颜色按钮 */
+(function initFmtColors(){
+  const buildBtns = () => MC_COLOR_NAMES.map(code =>
+    `<span class="fmt-color" style="background:${MC_COLORS[code]}" onclick="fmtApply('&${code}','itemName')" title="&${code} ${MC_COLORS[code]}"></span>`
+  ).join('');
+  document.getElementById('fmtColorsName').innerHTML = buildBtns();
+  document.getElementById('fmtColorsLore').innerHTML = buildBtns();
+  // Lore 工具栏颜色使用 newLoreLine
+  document.querySelectorAll('#fmtColorsLore .fmt-color').forEach(el => {
+    el.setAttribute('onclick', el.getAttribute('onclick').replace("'itemName'","'newLoreLine'"));
+  });
+})();
+
+/** 显示/隐藏格式化工具栏 */
+function showFmtToolbar(inputId){
+  // 隐藏所有工具栏
+  document.getElementById('fmtToolbarName').style.display = 'none';
+  document.getElementById('fmtToolbarLore').style.display = 'none';
+  // 显示对应的
+  const toolbarId = inputId === 'itemName' ? 'fmtToolbarName' : 'fmtToolbarLore';
+  document.getElementById(toolbarId).style.display = 'flex';
+}
+
+// 名称输入框聚焦时显示工具栏
+document.getElementById('itemName').addEventListener('focus', ()=>showFmtToolbar('itemName'));
+// 名称输入框监听选区变化
+document.getElementById('itemName').addEventListener('mouseup', ()=>showFmtToolbar('itemName'));
+document.getElementById('itemName').addEventListener('keyup', (e)=>{
+  if(e.key === 'Shift' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') showFmtToolbar('itemName');
+});
+
+/** 对输入框的选中文本应用格式化码 */
+function fmtApply(code, inputId){
+  const el = document.getElementById(inputId);
+  if(!el) return;
+  const start = el.selectionStart;
+  const end = el.selectionEnd;
+  if(start === end) {
+    // 无选区——直接插入码
+    const val = el.value;
+    el.value = val.substring(0, start) + code + val.substring(start);
+    el.selectionStart = el.selectionEnd = start + code.length;
+  } else {
+    // 有选区——包裹选中文本
+    const val = el.value;
+    const selected = val.substring(start, end);
+    // 如果已以 &r 结尾的包裹去掉旧重置
+    const wrapped = code + selected + '&r';
+    el.value = val.substring(0, start) + wrapped + val.substring(end);
+    el.selectionStart = start;
+    el.selectionEnd = start + wrapped.length;
+  }
+  el.focus();
+  if(inputId === 'itemName' || inputId === 'newLoreLine') renderPreview();
+  // 名称修改后也更新
+  if(inputId === 'itemName') renderPreview();
+}
+
+// ==================== Lore / 名称居中对齐（空格填充） ====================
+
+// Minecraft 默认字体（ascii.png）字符像素宽度表
+// 按码点索引，未列出的字符默认宽度 6px（拉丁）/ 12px（CJK）
+const MC_CHAR_WIDTH = (()=>{
+  const w = {};
+  // 宽度 2
+  '!.,:;i|¡¦\''.split('').forEach(c=>w[c]=2);
+  // 宽度 3
+  '`l'.split('').forEach(c=>w[c]=3);
+  // 宽度 4
+  '()*I[]t{}'.split('').forEach(c=>w[c]=4);
+  // 宽度 5
+  '"$^fk<>'.split('').forEach(c=>w[c]=5);
+  // 宽度 7
+  '~MWmw@#'.split('').forEach(c=>w[c]=7);
+  // 空格
+  w[' ']=4;
+  return w;
+})();
+
+/** 目标行宽（像素）。Minecraft 物品 tooltip 文本区约 154-160px。 */
+const MC_TARGET_WIDTH = 154;
+
+/** 剥离 & 格式码（&0-&f 颜色 + &k&l&o&n&m&r 格式），返回纯文本。 */
+function stripFormatCodes(text){
+  return text.replace(/&[0-9a-fA-FklmnorKLMNOR]/g, '');
+}
+
+/** 计算文本在 Minecraft 默认字体下的近似像素宽度。 */
+function measureMcWidth(text){
+  let w = 0;
+  for(const ch of text){
+    const code = ch.codePointAt(0);
+    if(MC_CHAR_WIDTH[ch] !== undefined){
+      w += MC_CHAR_WIDTH[ch];
+    } else if(code >= 0x4E00 && code <= 0x9FFF){
+      // CJK 统一汉字 — 约 12px
+      w += 12;
+    } else if(code >= 0x3000 && code <= 0x303F){
+      // CJK 标点
+      w += 12;
+    } else if(code >= 0xFF00 && code <= 0xFFEF){
+      // 全角字符
+      w += 12;
+    } else if(code >= 0x3040 && code <= 0x309F){
+      // 平假名
+      w += 12;
+    } else if(code >= 0x30A0 && code <= 0x30FF){
+      // 片假名
+      w += 12;
+    } else if(code >= 0xAC00 && code <= 0xD7AF){
+      // 韩文
+      w += 12;
+    } else if(code > 127){
+      // 其他非 ASCII — 通常用 unifont 渲染 ~9-12px
+      w += 10;
+    } else {
+      // 默认拉丁字符宽度
+      w += 6;
+    }
+  }
+  return w;
+}
+
+/** 对文本输入框的内容用空格填充居中。 */
+function centerTextInput(inputId){
+  const el = document.getElementById(inputId);
+  if(!el) return;
+  const raw = el.value;
+  const plain = stripFormatCodes(raw);
+  if(!plain) return;
+
+  const textWidth = measureMcWidth(plain);
+  if(textWidth >= MC_TARGET_WIDTH - 4) return; // 已满宽，无需居中
+
+  // 计算左侧需要填充的像素 → 空格数（空格宽 4px）
+  const leftPadPx = Math.floor((MC_TARGET_WIDTH - textWidth) / 2);
+  const spaces = Math.floor(leftPadPx / 4);
+
+  // 在文本前插入空格（保留原有 & 格式码前缀）
+  // 如果文本以格式码开头，空格放在格式码之后、实际文字之前
+  const fmtMatch = raw.match(/^((?:&[0-9a-fA-FklmnorKLMNOR])+)/);
+  if(fmtMatch && fmtMatch[1]){
+    const fmt = fmtMatch[1];
+    const rest = raw.substring(fmt.length);
+    el.value = fmt + ' '.repeat(Math.max(0, spaces)) + rest;
+  } else {
+    el.value = ' '.repeat(Math.max(0, spaces)) + raw;
+  }
+  el.focus();
+  if(inputId === 'itemName' || inputId === 'newLoreLine') renderPreview();
+}
+
+/** 对已有 Lore 行居中（填充左右空格到现有的行文本）。 */
+function centerLoreLine(index){
+  if(index < 0 || index >= STATE.loreLines.length) return;
+  const raw = STATE.loreLines[index];
+  const plain = stripFormatCodes(raw);
+  if(!plain) return;
+
+  // 先去除已有的首尾空格，避免重复居中叠加空格
+  let trimmed = raw;
+  const fmtMatch = trimmed.match(/^((?:&[0-9a-fA-FklmnorKLMNOR])+)/);
+  const fmt = fmtMatch ? fmtMatch[1] : '';
+  const rest = fmt ? trimmed.substring(fmt.length).trimStart() : trimmed.trimStart();
+  const body = rest.trimEnd();
+  if(!body) return;
+
+  const bodyPlain = stripFormatCodes(body);
+  const textWidth = measureMcWidth(bodyPlain);
+  if(textWidth >= MC_TARGET_WIDTH - 4) return;
+
+  const leftPadPx = Math.floor((MC_TARGET_WIDTH - textWidth) / 2);
+  const spaces = Math.max(0, Math.floor(leftPadPx / 4));
+
+  STATE.loreLines[index] = fmt + ' '.repeat(spaces) + body;
+  renderLoreList();
+}
+
+// 全局点击——失焦后隐藏工具栏
+document.addEventListener('click', function(e){
+  if(!e.target.closest('#itemName') && !e.target.closest('#fmtToolbarName')){
+    document.getElementById('fmtToolbarName').style.display = 'none';
+  }
+  if(!e.target.closest('#newLoreLine') && !e.target.closest('#fmtToolbarLore')){
+    document.getElementById('fmtToolbarLore').style.display = 'none';
+  }
+});
+
+// ★ 初始化：名称输入框实时联动预览
+(function hookNamePreview(){
+  const nameInp = document.getElementById('itemName');
+  nameInp.addEventListener('input', renderPreview);
+})();
+</script>
+</body>
+</html>

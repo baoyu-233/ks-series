@@ -1,0 +1,63 @@
+# ============================================
+# 自动熔炼 (Auto Smelt)
+# EN: Auto Smelt (自动熔炼)
+# 挖掘方块时自动将掉落物熔炼为成品
+# 例如：铁矿石直接掉落铁锭
+# ============================================
+
+# 附魔ID（唯一标识，不可重复）
+# EN: Enchantment ID; must be unique
+id: auto_smelt
+
+# 是否启用此附魔
+# EN: Whether this enchantment is enabled
+enabled: true
+
+# 最大等级（仅1级，有或无）
+max-level: 1
+
+# 稀有度（对应 rarity.yml 中定义的稀有度ID）
+# EN: Rarity ID defined in rarity.yml
+rarity: moonlit
+
+# 所属附魔组（对应 groups.yml）
+# EN: Enchantment group defined in groups.yml
+group: mining
+
+# 可应用的物品类型
+# EN: Applicable item types
+applicable-items:
+  - PICKAXE
+  - SHOVEL
+
+# 冲突的附魔ID列表（与时运/精准采集冲突）
+conflicts:
+  - bountiful
+
+# 获取方式配置
+# EN: Acquisition method configuration
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  loot-table: true
+
+# 附魔台权重（影响附魔台中出现概率）
+# EN: Enchanting table weight; affects chance to appear
+enchanting-table-weight: 15
+
+# 星芒魔典抽取池配置
+# EN: Stellaris Codex roll pool configuration
+codex-pools:
+  moonlit: 15
+  radiant: 8
+
+# 效果配置（核心：Trigger → Condition → Effect 管道）
+# EN: Effect configuration; core pipeline is Trigger -> Condition -> Effect
+effects:
+  # 挖掘方块时自动熔炼
+  - trigger: MINE_BLOCK
+    conditions: []
+    actions:
+      # 将掉落物熔炼为对应产品
+      - type: SMELT

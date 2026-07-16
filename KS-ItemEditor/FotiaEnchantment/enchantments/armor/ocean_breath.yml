@@ -1,0 +1,55 @@
+# ============================================
+# 批量扩展附魔：潮息 (Ocean Breath)
+# EN: Bulk extended enchantment: Ocean Breath (潮息)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: ocean_breath
+enabled: true
+curse: false
+max-level: 3
+rarity: dustlight
+group: utility
+category: armor
+
+applicable-items:
+  - HELMET
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 22
+villager-trade-price-range:
+  - 8
+  - 22
+
+codex-pools:
+  dustlight: 18
+  moonlit: 6
+
+effects:
+  - trigger: DROWNING_DAMAGE
+    cooldown: 100
+    conditions:
+      - type: chance
+        value: "{level} * 15"
+    actions:
+      - type: DAMAGE_REDUCE
+        value: "{level} * 10"
+      - type: ADD_POTION_SELF
+        potion: "WATER_BREATHING"
+        duration: "{level} * 80"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "DRIPPING_WATER"
+        count: 10
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.fishing_bobber.splash"
+        volume: "0.6"
+        pitch: "1.2"
+        at: "SELF"

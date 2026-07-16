@@ -1,0 +1,56 @@
+# ============================================
+# 批量扩展附魔：爆裂箭袋 (Burst Quiver)
+# EN: Bulk extended enchantment: Burst Quiver (爆裂箭袋)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: burst_quiver
+enabled: true
+curse: false
+max-level: 5
+rarity: aureate
+group: offensive
+category: ranged
+
+applicable-items:
+  - BOW
+  - CROSSBOW
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 6
+villager-trade-price-range:
+  - 28
+  - 64
+
+codex-pools:
+  aureate: 10
+  divine: 3
+
+effects:
+  - trigger: BOW_ATTACK
+    cooldown: 115
+    conditions:
+      - type: chance
+        value: "{level} * 6"
+      - type: target_is_living
+    actions:
+      - type: EXPLODE
+        power: "{level} * 0.25"
+        break-blocks: false
+      - type: DAMAGE_ADD
+        value: "{level}"
+      - type: PARTICLE
+        particle: "EXPLOSION"
+        count: 2
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.generic.explode"
+        volume: "0.5"
+        pitch: "1.1"
+        at: "TARGET"

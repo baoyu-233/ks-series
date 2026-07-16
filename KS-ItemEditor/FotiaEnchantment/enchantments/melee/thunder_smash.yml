@@ -1,0 +1,81 @@
+# ============================================
+# 雷霆重击 (Thunder Smash)
+# EN: Thunder Smash (雷霆重击)
+# 暴击时有概率召唤雷电劈向任意生物目标
+# ============================================
+
+# 附魔ID（唯一标识，不可重复）
+# EN: Enchantment ID; must be unique
+id: thunder_smash
+
+# 是否启用此附魔
+# EN: Whether this enchantment is enabled
+enabled: true
+
+# 最大等级
+# EN: Maximum level
+max-level: 5
+
+# 稀有度（对应 rarity.yml 中定义的稀有度ID）
+# EN: Rarity ID defined in rarity.yml
+rarity: aureate
+
+# 所属附魔组（对应 groups.yml）
+# EN: Enchantment group defined in groups.yml
+group: lightning
+
+# 可应用的物品类型
+# EN: Applicable item types
+applicable-items:
+  - SWORD
+  - AXE
+  - MACE
+
+# 冲突的附魔ID列表
+# EN: Conflicting enchantment IDs
+conflicts: []
+
+# 获取方式配置
+# EN: Acquisition method configuration
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  loot-table: true
+
+# 附魔台权重（影响附魔台中出现概率，稀有度较高所以权重较低）
+enchanting-table-weight: 5
+
+# 星芒魔典抽取池配置
+# EN: Stellaris Codex roll pool configuration
+codex-pools:
+  aureate: 12
+  divine: 3
+
+# 效果配置（核心：Trigger → Condition → Effect 管道）
+# EN: Effect configuration; core pipeline is Trigger -> Condition -> Effect
+effects:
+  # 暴击时触发雷电
+  - trigger: MELEE_ATTACK_CRITICAL
+    conditions:
+      # 概率触发
+      # EN: Chance-based trigger
+      - type: chance
+        value: "{level} * 12"
+    actions:
+      # 召唤雷电
+      - type: LIGHTNING
+      # 额外伤害加成
+      - type: DAMAGE_ADD
+        value: "{level} * 2.0"
+      # 播放雷鸣音效
+      - type: SOUND
+        sound: entity.lightning_bolt.thunder
+        volume: 1.0
+        pitch: 0.8
+      # 电光粒子特效
+      - type: PARTICLE
+        particle: ELECTRIC_SPARK
+        count: 20
+    # 冷却时间（tick），较长冷却平衡高伤害
+    cooldown: 200

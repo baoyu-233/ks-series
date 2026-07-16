@@ -1,0 +1,74 @@
+# ============================================
+# 生命源泉 (Vitality Spring)
+# EN: Vitality Spring (生命源泉)
+# 每5秒自动检测血量，低于阈值时持续恢复生命
+# 被动防御型附魔，提供持续的生存能力
+# ============================================
+
+# 附魔ID（唯一标识，不可重复）
+# EN: Enchantment ID; must be unique
+id: vitality_spring
+
+# 是否启用此附魔
+# EN: Whether this enchantment is enabled
+enabled: true
+
+# 最大等级
+# EN: Maximum level
+max-level: 5
+
+# 稀有度（对应 rarity.yml 中定义的稀有度ID）
+# EN: Rarity ID defined in rarity.yml
+rarity: radiant
+
+# 所属附魔组（对应 groups.yml）
+# EN: Enchantment group defined in groups.yml
+group: defensive
+
+# 可应用的物品类型
+# EN: Applicable item types
+applicable-items:
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+# 冲突的附魔ID列表
+# EN: Conflicting enchantment IDs
+conflicts: []
+
+# 获取方式配置
+# EN: Acquisition method configuration
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  loot-table: true
+
+# 附魔台权重（影响附魔台中出现概率）
+# EN: Enchanting table weight; affects chance to appear
+enchanting-table-weight: 12
+
+# 星芒魔典抽取池配置
+# EN: Stellaris Codex roll pool configuration
+codex-pools:
+  radiant: 12
+  aureate: 6
+
+# 效果配置（核心：Trigger → Condition → Effect 管道）
+# EN: Effect configuration; core pipeline is Trigger -> Condition -> Effect
+effects:
+  # 每5秒定时检查，低血量时恢复
+  - trigger: TIMER_5S
+    conditions:
+      # 当自身血量低于60%时触发恢复
+      - type: health_below
+        value: "60"
+    actions:
+      # 恢复生命值
+      # EN: Restore health
+      - type: HEAL
+        value: "{level} * 0.5"
+      # 治愈粒子特效（绿色心形）
+      - type: PARTICLE
+        particle: HEART
+        count: 3

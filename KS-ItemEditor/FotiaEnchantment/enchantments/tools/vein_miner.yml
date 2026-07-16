@@ -1,0 +1,73 @@
+# ============================================
+# 连锁采掘 (Vein Miner)
+# EN: Vein Miner (连锁采掘)
+# 挖掘矿石时连锁破坏相邻同类矿石
+# 等级越高连锁范围越大
+# ============================================
+
+# 附魔ID（唯一标识，不可重复）
+# EN: Enchantment ID; must be unique
+id: vein_miner
+
+# 是否启用此附魔
+# EN: Whether this enchantment is enabled
+enabled: true
+
+# 最大等级
+# EN: Maximum level
+max-level: 3
+
+# 稀有度（对应 rarity.yml 中定义的稀有度ID）
+# EN: Rarity ID defined in rarity.yml
+rarity: aureate
+
+# 所属附魔组（对应 groups.yml）
+# EN: Enchantment group defined in groups.yml
+group: mining
+
+# 可应用的物品类型
+# EN: Applicable item types
+applicable-items:
+  - PICKAXE
+
+# 冲突的附魔ID列表
+# EN: Conflicting enchantment IDs
+conflicts: []
+
+# 获取方式配置
+# EN: Acquisition method configuration
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  loot-table: true
+
+# 附魔台权重（影响附魔台中出现概率，较稀有）
+# EN: Enchanting table weight; affects chance to appear and is rarer
+enchanting-table-weight: 6
+
+# 星芒魔典抽取池配置
+# EN: Stellaris Codex roll pool configuration
+codex-pools:
+  aureate: 10
+  divine: 3
+
+# 效果配置（核心：Trigger → Condition → Effect 管道）
+# EN: Effect configuration; core pipeline is Trigger -> Condition -> Effect
+effects:
+  # 挖掘矿石时连锁破坏
+  - trigger: MINE_ORE
+    conditions: []
+    actions:
+      # 连锁采掘相邻矿石，最大数量随等级增加
+      - type: VEIN_MINE
+        max-blocks: "{level} * 4 + 2"
+      # 采掘粒子特效
+      - type: PARTICLE
+        particle: BLOCK_CRUMBLE
+        count: 10
+      # 播放采掘音效
+      - type: SOUND
+        sound: block.stone.break
+        volume: 0.6
+        pitch: 1.0

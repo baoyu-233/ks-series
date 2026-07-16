@@ -1,0 +1,52 @@
+# ============================================
+# 批量扩展附魔：霜触矿工 (Frost Touch Miner)
+# EN: Bulk extended enchantment: Frost Touch Miner (霜触矿工)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: frost_touch_miner
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: ice
+category: tools
+
+applicable-items:
+  - PICKAXE
+  - SHOVEL
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: MINE_BLOCK
+    cooldown: 70
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: HELD_ITEM_REPAIR
+        value: "{level}"
+      - type: PARTICLE
+        particle: "SNOWFLAKE"
+        count: 8
+        offset: "0.35"
+        at: "BLOCK"
+      - type: SOUND
+        sound: "block.powder_snow.place"
+        volume: "0.5"
+        pitch: "0.8"
+        at: "SELF"

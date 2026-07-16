@@ -1,0 +1,94 @@
+# One definition per item. Add new files here and use /ksrpg reload to activate them.
+trailblazer_blade:
+  item:
+    type: SWORD
+    id: KS_TRAILBLAZER_BLADE
+  trigger: SNEAK_RIGHT_CLICK
+  cooldown-seconds: 7
+  mechanics:
+    ARC_SLASH:
+      range: 5.0
+      cone-cosine: 0.50
+      flat-damage: 9.0
+      attack-scale: 0.75
+      haste-ticks: 40
+      speed-ticks: 40
+      next-attack-duration-millis: 3000
+      next-attack-multiplier: 1.08
+
+icefall_shortbow:
+  item:
+    type: BOW
+    id: KS_ICEFALL_SHORTBOW
+  trigger: SNEAK_RIGHT_CLICK
+  cooldown-seconds: 14
+  mechanics:
+    MARK_ARROW:
+      arrow-speed: 2.8
+      mark-duration-millis: 5000
+      ally-damage-multiplier: 1.10
+      pierce-level: 0
+
+salvager_maul:
+  item:
+    type: HAMMER
+    id: KS_SALVAGER_MAUL
+  trigger: SNEAK_RIGHT_CLICK
+  cooldown-seconds: 12
+  mechanics:
+    HAMMER_QUAKE:
+      range: 3.5
+      cone-cosine: 0.35
+      flat-damage: 11.0
+      attack-scale: 0.70
+      slow-ticks: 80
+      slow-amplifier: 8
+      weakness-duration-millis: 4000
+      weakness-damage-multiplier: 1.06
+
+relay_pike:
+  item:
+    type: SPEAR
+    id: KS_RELAY_PIKE
+  trigger: SNEAK_RIGHT_CLICK
+  cooldown-seconds: 10
+  mechanics:
+    RELAY_DASH:
+      dash-velocity: 1.15
+      dash-y: 0.28
+      range: 4.5
+      ray-radius: 0.65
+      flat-damage: 10.0
+      attack-scale: 0.70
+      relay-duration-millis: 3000
+      ally-damage-multiplier: 1.12
+      next-attack-duration-millis: 3000
+      next-attack-multiplier: 1.08
+
+quarry_maul:
+  item:
+    type: HAMMER
+    id: KS_QUARRY_MAUL
+  trigger: SNEAK_RIGHT_CLICK
+  cooldown-seconds: 16
+  mechanics:
+    HEAVY_QUAKE:
+      range: 3.0
+      cone-cosine: 0.35
+      flat-damage: 15.0
+      attack-scale: 1.0
+      exposure-scoreboard-tag: Frostbound_WeaponExposed
+      exposure-multiplier: 1.18
+
+windward_bow:
+  item:
+    type: BOW
+    id: KS_WINDWARD_BOW
+  trigger: SNEAK_RIGHT_CLICK
+  cooldown-seconds: 18
+  mechanics:
+    MARK_ARROW:
+      arrow-speed: 3.2
+      mark-duration-millis: 6000
+      ally-damage-multiplier: 1.10
+      pierce-level: 1

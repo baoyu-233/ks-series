@@ -1,0 +1,65 @@
+# ============================================
+# 批量扩展附魔：稳固握持 (Steady Grip)
+# EN: Bulk extended enchantment: Steady Grip (稳固握持)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: steady_grip
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: utility
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: HOLD_ITEM_CHANGE
+    cooldown: 70
+    conditions:
+      - type: chance
+        value: "{level} * 9"
+    actions:
+      - type: HELD_ITEM_REPAIR
+        value: "{level}"
+      - type: PARTICLE
+        particle: "ENCHANT"
+        count: 6
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "item.armor.equip_leather"
+        volume: "0.4"
+        pitch: "1.5"
+        at: "SELF"

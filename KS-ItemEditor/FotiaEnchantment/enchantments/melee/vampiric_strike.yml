@@ -1,0 +1,80 @@
+# ============================================
+# 吸血打击 (Vampiric Strike)
+# EN: Vampiric Strike (吸血打击)
+# 攻击时有概率吸取目标生命值恢复自身
+# ============================================
+
+# 附魔ID（唯一标识，不可重复）
+# EN: Enchantment ID; must be unique
+id: vampiric_strike
+
+# 是否启用此附魔
+# EN: Whether this enchantment is enabled
+enabled: true
+
+# 最大等级
+# EN: Maximum level
+max-level: 3
+
+# 稀有度（对应 rarity.yml 中定义的稀有度ID）
+# EN: Rarity ID defined in rarity.yml
+rarity: moonlit
+
+# 所属附魔组（对应 groups.yml）
+# EN: Enchantment group defined in groups.yml
+group: offensive
+
+# 可应用的物品类型
+# EN: Applicable item types
+applicable-items:
+  - SWORD
+  - AXE
+
+# 冲突的附魔ID列表
+# EN: Conflicting enchantment IDs
+conflicts: []
+
+# 获取方式配置
+# EN: Acquisition method configuration
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  loot-table: true
+
+# 附魔台权重（影响附魔台中出现概率）
+# EN: Enchanting table weight; affects chance to appear
+enchanting-table-weight: 20
+
+# 星芒魔典抽取池配置
+# EN: Stellaris Codex roll pool configuration
+codex-pools:
+  moonlit: 15
+  radiant: 8
+
+# 效果配置（核心：Trigger → Condition → Effect 管道）
+# EN: Effect configuration; core pipeline is Trigger -> Condition -> Effect
+effects:
+  # 攻击时概率吸血
+  - trigger: MELEE_ATTACK
+    conditions:
+      # 概率触发，等级越高概率越大
+      # EN: Chance-based trigger; higher levels increase the chance
+      - type: chance
+        value: "{level} * 15"
+    actions:
+      # 生命窃取：按造成伤害的百分比回复生命
+      - type: LIFESTEAL
+        value: "{level} * 10"
+      # 粒子特效：红色粒子表示吸血
+      - type: PARTICLE
+        particle: DAMAGE_INDICATOR
+        count: 5
+      # 播放吸血音效
+      - type: SOUND
+        sound: entity.witch.drink
+        volume: 0.5
+        pitch: 1.4
+    # 冷却时间（tick）
+    # EN: Cooldown time in ticks
+    cooldown: 40

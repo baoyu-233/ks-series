@@ -1,0 +1,54 @@
+# ============================================
+# 批量扩展附魔：雷暴弩矢 (Storm Bolt)
+# EN: Bulk extended enchantment: Storm Bolt (雷暴弩矢)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: storm_bolt
+enabled: true
+curse: false
+max-level: 5
+rarity: aureate
+group: lightning
+category: ranged
+
+applicable-items:
+  - CROSSBOW
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 6
+villager-trade-price-range:
+  - 28
+  - 64
+
+codex-pools:
+  aureate: 10
+  divine: 3
+
+effects:
+  - trigger: CROSSBOW_ATTACK
+    cooldown: 110
+    conditions:
+      - type: chance
+        value: "{level} * 6"
+      - type: target_is_living
+    actions:
+      - type: LIGHTNING
+        damage: "{level}"
+      - type: TRUE_DAMAGE
+        value: "{level}"
+      - type: PARTICLE
+        particle: "ELECTRIC_SPARK"
+        count: 22
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.lightning_bolt.thunder"
+        volume: "0.5"
+        pitch: "1.5"
+        at: "TARGET"

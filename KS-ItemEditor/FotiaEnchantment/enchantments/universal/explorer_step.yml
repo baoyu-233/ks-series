@@ -1,0 +1,66 @@
+# ============================================
+# 批量扩展附魔：探险步伐 (Explorer Step)
+# EN: Bulk extended enchantment: Explorer Step (探险步伐)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: explorer_step
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: movement
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: CHANGE_BIOME
+    cooldown: 140
+    conditions:
+      - type: chance
+        value: "{level} * 9"
+    actions:
+      - type: SPEED_BOOST
+        value: 0
+        duration: "{level} * 50"
+      - type: PARTICLE
+        particle: "CLOUD"
+        count: 8
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.horse.gallop"
+        volume: "0.4"
+        pitch: "1.5"
+        at: "SELF"

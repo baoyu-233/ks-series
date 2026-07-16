@@ -1,0 +1,65 @@
+# ============================================
+# FotiaEnchantment English Message Configuration
+# Supports MiniMessage format and legacy color codes (&/§)
+# ============================================
+
+# Message prefix
+prefix: "<!i><gray>[<gradient:#ff6b35:#ff8c42>Enchant</gradient>]</gray> "
+
+# Enchant operation messages
+enchant-applied: "{prefix}<!i><green>Successfully enchanted item with <gold>{enchant_name} {level}</gold>"
+enchant-removed: "{prefix}<!i><green>Removed enchantment <gold>{enchant_name}</gold>"
+enchant-conflict: "{prefix}<!i><red>This enchantment conflicts with <gold>{conflict_name}</gold>"
+enchant-not-applicable: "{prefix}<!i><red>This enchantment cannot be applied to this item"
+max-enchants-reached: "{prefix}<!i><red>This item has reached the maximum number of enchantments (<gold>{max}</gold>)"
+group-limit-reached: "{prefix}<!i><red>This item has reached the limit for <gold>{group}</gold> group enchantments"
+enchant-slot-empty: "<!i><dark_gray>[마법 부여 슬롯]"
+enchant-slot-summary: "<!i><dark_gray>마법 부여 슬롯: {used}/{max}"
+
+# Permission and error messages
+no-permission: "{prefix}<!i><red>You do not have permission to do this"
+player-not-found: "{prefix}<!i><red>Player <gold>{player}</gold> not found"
+enchant-not-found: "{prefix}<!i><red>Enchantment <gold>{enchant_id}</gold> not found"
+invalid-level: "{prefix}<!i><red>Invalid level, max level for this enchantment is <gold>{max_level}</gold>"
+not-holding-item: "{prefix}<!i><red>Please hold an item"
+item-not-found: "{prefix}<!i><red>Item <gold>{item_id}</gold> not found"
+
+# Command messages
+command-help: "{prefix}<!i><gold>Commands: <yellow>/fe list [category] [page]</yellow><gray>, <yellow>/fe info <enchant_id></yellow><gray>, <yellow>/fe gui [guide|admin]</yellow><gray>, <yellow>/fe reload</yellow>"
+give-success: "{prefix}<!i><green>Gave <gold>{player}</gold> enchanted book: <gold>{enchant_name} {level}</gold>"
+admin-gui-give-book-success: "{prefix}<!i><green>Received enchanted book: <gold>{enchant_name} {level}</gold>"
+give-item-success: "{prefix}<!i><green>Gave <gold>{player}</gold> item: <gold>{item_name}</gold> x{amount}"
+reload-success: "{prefix}<!i><green>Configuration reloaded"
+reload-config-errors-header: "{prefix}<!i><red>설정 오류가 <gold>{count}</gold>개 발견되었습니다. 관련 설정 또는 인챈트는 로드되지 않았습니다. 콘솔을 확인하세요"
+reload-config-error-entry: "{prefix}<!i><gray>- File: <white>{file}</white><gray> | Path: <yellow>{path}</yellow><gray> | Reason: <red>{message}</red>"
+reload-config-errors-more: "{prefix}<!i><gray>추가 설정 오류가 <gold>{count}</gold>개 더 있습니다. 콘솔을 확인하세요"
+reload-undefined-conflicts-header: "{prefix}<!i><yellow>설정을 다시 불러왔지만 정의되지 않은 충돌 인챈트 참조가 <gold>{count}</gold>개 발견되었습니다. 콘솔을 확인하세요"
+reload-undefined-conflict-entry: "{prefix}<!i><gray>- File: <white>{file}</white><gray> | Path: <yellow>conflicts</yellow><gray> | <white>{source}</white><gray> -> <white>{conflict}</white>"
+reload-undefined-conflicts-more: "{prefix}<!i><gray>추가로 <gold>{count}</gold>개가 더 있습니다. 콘솔을 확인하세요"
+list-header: "{prefix}<!i><gold>Enchantment List (Page {current}/{total}):"
+list-empty: "{prefix}<!i><red>There are no enchantments to display"
+list-entry: "  <!i><gray>- {rarity_color}{enchant_name} <!i><gray>({rarity_name}) [Max Level {max_level}]"
+info-header: "{prefix}<!i><gold>Enchantment Details: {rarity_color}{enchant_name}"
+info-level: "  <!i><gray>Max Level: <white>{max_level}"
+info-rarity: "  <!i><gray>Rarity: {rarity_color}{rarity_name}"
+info-group: "  <!i><gray>Group: <white>{group}"
+info-applicable: "  <!i><gray>Applicable: <white>{items}"
+info-conflicts: "  <!i><gray>Conflicts: <white>{conflicts}"
+
+# Item messages
+codex-reveal-success: "{prefix}<!i><green>Reveal successful! Obtained enchantment: {rarity_color}{enchant_name} {level}"
+codex-reveal-invalid: "{prefix}<!i><red>This Stellaris Codex is missing valid rarity data and cannot be revealed"
+codex-reveal-empty-pool: "{prefix}<!i><red>Rarity <gold>{rarity_name}</gold> has no available codex enchantments. Check <yellow>codex-pools</yellow> in enchantment configs"
+codex-craft-success: "{prefix}<!i><green>Crafting successful! Obtained {rarity_color}{rarity_name} <!i><green>Stellaris Codex"
+disenchant-success: "{prefix}<!i><green>Disenchant successful! Obtained book: <gold>{enchant_name} {level}</gold>"
+disenchant-fail: "{prefix}<!i><red>Disenchant failed..."
+disenchant-destroyed: "{prefix}<!i><dark_red>Disenchant failed! The enchantment was destroyed"
+fragment-not-enough: "{prefix}<!i><red>Not enough Starweave Fragments, need <gold>{cost}</gold>"
+update-available: "{prefix}<!i><yellow>새 버전 <gold>{latest}</gold><gray> 사용 가능, 현재 버전 <white>{current}</white><gray>. 다운로드: <aqua>{url}</aqua>"
+
+# Rarity names
+rarity-dustlight: "Dustlight"
+rarity-moonlit: "Moonlit"
+rarity-radiant: "Radiant"
+rarity-aureate: "Aureate"
+rarity-divine: "Divine"

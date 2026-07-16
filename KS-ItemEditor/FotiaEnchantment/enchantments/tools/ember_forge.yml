@@ -1,0 +1,50 @@
+# ============================================
+# 批量扩展附魔：余烬锻炉 (Ember Forge)
+# EN: Bulk extended enchantment: Ember Forge (余烬锻炉)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: ember_forge
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: fire
+category: tools
+
+applicable-items:
+  - PICKAXE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: MINE_ORE
+    cooldown: 60
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: SMELT
+      - type: PARTICLE
+        particle: "FLAME"
+        count: 10
+        offset: "0.35"
+        at: "BLOCK"
+      - type: SOUND
+        sound: "block.furnace.fire_crackle"
+        volume: "0.5"
+        pitch: "1.2"
+        at: "SELF"

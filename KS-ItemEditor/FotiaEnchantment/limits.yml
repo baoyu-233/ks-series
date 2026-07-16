@@ -1,0 +1,53 @@
+# ============================================
+# 附魔数量限制配置
+# EN: Enchantment count limit configuration
+# ============================================
+# 说明：
+# EN: Notes:
+# - 这里限制单个物品最终允许拥有的附魔总数。
+# EN: - Limits the final total number of enchantments allowed on one item.
+# - 统计范围包含原版附魔、插件注册的真实附魔、旧版 PDC 自定义附魔。
+# EN: - Count includes vanilla enchantments, plugin-registered true enchantments, and legacy PDC custom enchantments.
+# - -1 表示不限制，0 表示禁止该物品继续新增附魔。
+# EN: - -1 means unlimited; 0 means the item cannot receive more enchantments.
+# - 优先级：materials 单独材料 > item-groups 物品类型组 > default-max-enchantments。
+# EN: - Priority: per-material materials > item-groups > default-max-enchantments.
+# ============================================
+
+# 通用附魔数量上限
+# EN: Default enchantment count limit
+default-max-enchantments: 8
+
+# 按物品类型组限制
+# EN: Limits by item group
+# 支持 fishing-rods / fishing_rods 这类写法，大小写不敏感。
+# EN: Supports formats such as fishing-rods or fishing_rods; case-insensitive.
+item-groups:
+  helmets: 8
+  chestplates: 8
+  leggings: 8
+  boots: 8
+  swords: 8
+  spears: 6
+  axes: 6
+  pickaxes: 6
+  shovels: 6
+  hoes: 6
+  bows: 6
+  crossbows: 6
+  tridents: 6
+  fishing-rods: 5
+  shields: 5
+  books: 8
+
+# 按具体材料单独覆盖
+# EN: Per-material overrides
+# 支持 DIAMOND_CHESTPLATE / diamond-chestplate / minecraft:diamond_chestplate 这类写法。
+# EN: Supports formats such as DIAMOND_CHESTPLATE, diamond-chestplate, or minecraft:diamond_chestplate.
+materials:
+  # 示例：钻石胸甲最多 7 个附魔
+  # EN: Example: diamond chestplates can have at most 7 enchantments
+  # DIAMOND_CHESTPLATE: 7
+  # 示例：下界合金斧最多 5 个附魔
+  # EN: Example: netherite axes can have at most 5 enchantments
+  # NETHERITE_AXE: 5

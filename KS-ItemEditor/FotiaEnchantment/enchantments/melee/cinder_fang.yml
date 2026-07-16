@@ -1,0 +1,55 @@
+# ============================================
+# 批量扩展附魔：灰烬獠牙 (Cinder Fang)
+# EN: Bulk extended enchantment: Cinder Fang (灰烬獠牙)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: cinder_fang
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: fire
+category: melee
+
+applicable-items:
+  - SWORD
+  - AXE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: MELEE_ATTACK_CRITICAL
+    cooldown: 50
+    conditions:
+      - type: chance
+        value: "{level} * 10"
+      - type: target_is_living
+    actions:
+      - type: DAMAGE_ADD
+        value: "{level} * 1.4"
+      - type: IGNITE_TARGET
+        duration: "{level} * 25"
+      - type: PARTICLE
+        particle: "ASH"
+        count: 10
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.player.attack.crit"
+        volume: "0.7"
+        pitch: "1.1"
+        at: "TARGET"

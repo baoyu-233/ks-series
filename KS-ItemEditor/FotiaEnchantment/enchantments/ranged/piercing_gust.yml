@@ -1,0 +1,56 @@
+# ============================================
+# 批量扩展附魔：贯风 (Piercing Gust)
+# EN: Bulk extended enchantment: Piercing Gust (贯风)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: piercing_gust
+enabled: true
+curse: false
+max-level: 4
+rarity: radiant
+group: movement
+category: ranged
+
+applicable-items:
+  - BOW
+  - CROSSBOW
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: PROJECTILE_HIT_ENTITY
+    cooldown: 70
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+      - type: target_is_living
+    actions:
+      - type: DAMAGE_ADD
+        value: "{level} * 1.2"
+      - type: LAUNCH
+        value: "{level} * 0.15"
+        direction: "UP"
+      - type: PARTICLE
+        particle: "CLOUD"
+        count: 16
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.phantom.flap"
+        volume: "0.6"
+        pitch: "1.4"
+        at: "TARGET"

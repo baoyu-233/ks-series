@@ -1,0 +1,18 @@
+name: ks-Sentinel
+version: "1.0.0"
+main: org.kssentinel.KsSentinel
+api-version: "1.20"
+description: ks-Series 管理员行为审计插件 — 记录全体玩家高危指令，接入 ks-core Web 鉴权查看/筛选
+softdepend: [ks-core]
+commands:
+  sentinel:
+    description: 管理员行为审计
+    usage: |
+      /sentinel token — 获取 Web 查看令牌（管理员）
+      /sentinel log [玩家] [条数] — 控制台/游戏内查看最近记录
+      /sentinel exclude <add|remove|list> <指令前缀> — 管理排除规则
+    permission: kssentinel.admin
+permissions:
+  kssentinel.admin:
+    description: 查看与管理 ks-Sentinel 审计日志
+    default: op

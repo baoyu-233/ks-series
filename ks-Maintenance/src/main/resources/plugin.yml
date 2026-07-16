@@ -1,0 +1,21 @@
+name: ks-Maintenance
+version: "1.0.0"
+main: org.kseries.maintenance.KsMaintenance
+api-version: "1.21"
+description: Simple maintenance gate. OP and bypass permission can join while enabled.
+authors: [baoyu, codex]
+
+commands:
+  ksmaintenance:
+    description: Manage maintenance mode
+    usage: /ksmaintenance <on|off|status|reload|kick>
+    aliases: [maintenance, ksmaint]
+    permission: ksmaintenance.admin
+
+permissions:
+  ksmaintenance.admin:
+    description: Manage maintenance mode
+    default: op
+  ksmaintenance.bypass:
+    description: Join during maintenance mode
+    default: op

@@ -1,0 +1,56 @@
+# ============================================
+# 批量扩展附魔：霜寒屏障 (Frost Barrier)
+# EN: Bulk extended enchantment: Frost Barrier (霜寒屏障)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: frost_barrier
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: ice
+category: armor
+
+applicable-items:
+  - CHESTPLATE
+  - LEGGINGS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: TAKE_ENTITY_DAMAGE
+    cooldown: 100
+    conditions:
+      - type: chance
+        value: "{level} * 7"
+    actions:
+      - type: DAMAGE_REDUCE
+        value: "{level} * 6"
+      - type: ADD_POTION_TARGET
+        potion: "SLOWNESS"
+        duration: "{level} * 35"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "SNOWFLAKE"
+        count: 14
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "block.glass.place"
+        volume: "0.5"
+        pitch: "0.7"
+        at: "SELF"

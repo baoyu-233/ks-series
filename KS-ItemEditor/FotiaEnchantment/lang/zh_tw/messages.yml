@@ -1,0 +1,73 @@
+# ============================================
+# FotiaEnchantment 中文消息配置
+# EN: FotiaEnchantment Chinese message configuration
+# 支持 MiniMessage 格式和旧版颜色码(&/§)
+# EN: Supports MiniMessage and legacy color codes (&/§)
+# ============================================
+
+# 消息前缀
+# EN: Message prefix
+prefix: "<!i><gray>[<gradient:#ff6b35:#ff8c42>附魔</gradient>]</gray> "
+
+# 附魔操作消息
+# EN: Enchantment operation messages
+enchant-applied: "{prefix}<!i><green>成功为物品附魔 <gold>{enchant_name} {level}</gold>"
+enchant-removed: "{prefix}<!i><green>已移除附魔 <gold>{enchant_name}</gold>"
+enchant-conflict: "{prefix}<!i><red>该附魔与 <gold>{conflict_name}</gold> 冲突"
+enchant-not-applicable: "{prefix}<!i><red>此附魔无法应用于该物品"
+max-enchants-reached: "{prefix}<!i><red>此物品已达到附魔数量上限 (<gold>{max}</gold>)"
+group-limit-reached: "{prefix}<!i><red>此物品已达到 <gold>{group}</gold> 组附魔上限"
+enchant-slot-empty: "<!i><dark_gray>[可附魔槽位]"
+enchant-slot-summary: "<!i><dark_gray>可附魔槽位: {used}/{max}"
+
+# 权限和错误消息
+# EN: Permission and error messages
+no-permission: "{prefix}<!i><red>你没有权限执行此操作"
+player-not-found: "{prefix}<!i><red>找不到玩家 <gold>{player}</gold>"
+enchant-not-found: "{prefix}<!i><red>找不到附魔 <gold>{enchant_id}</gold>"
+invalid-level: "{prefix}<!i><red>无效的等级，此附魔最大等级为 <gold>{max_level}</gold>"
+not-holding-item: "{prefix}<!i><red>请手持一个物品"
+item-not-found: "{prefix}<!i><red>找不到道具 <gold>{item_id}</gold>"
+
+# 命令消息
+# EN: Command messages
+command-help: "{prefix}<!i><gold>命令: <yellow>/fe list [分类] [页码]</yellow><gray>, <yellow>/fe info <附魔ID></yellow><gray>, <yellow>/fe gui [guide|admin]</yellow><gray>, <yellow>/fe reload</yellow>"
+give-success: "{prefix}<!i><green>已给予 <gold>{player}</gold> 附魔书: <gold>{enchant_name} {level}</gold>"
+admin-gui-give-book-success: "{prefix}<!i><green>已获得附魔书: <gold>{enchant_name} {level}</gold>"
+give-item-success: "{prefix}<!i><green>已给予 <gold>{player}</gold> 道具: <gold>{item_name}</gold> x{amount}"
+reload-success: "{prefix}<!i><green>配置已重载"
+reload-config-errors-header: "{prefix}<!i><red>發現 <gold>{count}</gold> 個配置錯誤，相關配置或附魔未載入，請查看控制台"
+reload-config-error-entry: "{prefix}<!i><gray>- 文件: <white>{file}</white><gray> | 位置: <yellow>{path}</yellow><gray> | 原因: <red>{message}</red>"
+reload-config-errors-more: "{prefix}<!i><gray>還有 <gold>{count}</gold> 個配置錯誤未顯示，請查看控制台"
+reload-undefined-conflicts-header: "{prefix}<!i><yellow>配置已重載，但發現 <gold>{count}</gold> 個未定義衝突附魔，請查看控制台"
+reload-undefined-conflict-entry: "{prefix}<!i><gray>- 文件: <white>{file}</white><gray> | 位置: <yellow>conflicts</yellow><gray> | <white>{source}</white><gray> -> <white>{conflict}</white>"
+reload-undefined-conflicts-more: "{prefix}<!i><gray>還有 <gold>{count}</gold> 條未顯示，請查看控制台"
+list-header: "{prefix}<!i><gold>附魔列表 (第 {current}/{total} 页):"
+list-empty: "{prefix}<!i><red>当前没有可显示的附魔"
+list-entry: "  <!i><gray>- {rarity_color}{enchant_name} <!i><gray>({rarity_name}) [最高{max_level}级]"
+info-header: "{prefix}<!i><gold>附魔详情: {rarity_color}{enchant_name}"
+info-level: "  <!i><gray>最大等级: <white>{max_level}"
+info-rarity: "  <!i><gray>稀有度: {rarity_color}{rarity_name}"
+info-group: "  <!i><gray>分组: <white>{group}"
+info-applicable: "  <!i><gray>适用: <white>{items}"
+info-conflicts: "  <!i><gray>冲突: <white>{conflicts}"
+
+# 道具消息
+# EN: Item messages
+codex-reveal-success: "{prefix}<!i><green>揭示成功！获得附魔: {rarity_color}{enchant_name} {level}"
+codex-reveal-invalid: "{prefix}<!i><red>這本星芒魔典缺少有效品質資料，無法揭示"
+codex-reveal-empty-pool: "{prefix}<!i><red>品質 <gold>{rarity_name}</gold> 目前沒有可抽取的附魔，請檢查附魔配置裡的 <yellow>codex-pools</yellow>"
+codex-craft-success: "{prefix}<!i><green>合成成功！获得 {rarity_color}{rarity_name} <!i><green>星芒魔典"
+disenchant-success: "{prefix}<!i><green>拆卸成功！获得附魔书: <gold>{enchant_name} {level}</gold>"
+disenchant-fail: "{prefix}<!i><red>拆卸失败..."
+disenchant-destroyed: "{prefix}<!i><dark_red>拆卸失败！附魔已被销毁"
+fragment-not-enough: "{prefix}<!i><red>星辉残页不足，需要 <gold>{cost}</gold> 个"
+update-available: "{prefix}<!i><yellow>發現新版本 <gold>{latest}</gold><gray>，目前版本 <white>{current}</white><gray>。下載: <aqua>{url}</aqua>"
+
+# 稀有度名称
+# EN: Rarity names
+rarity-dustlight: "尘光"
+rarity-moonlit: "月华"
+rarity-radiant: "辉芒"
+rarity-aureate: "耀金"
+rarity-divine: "神辉"

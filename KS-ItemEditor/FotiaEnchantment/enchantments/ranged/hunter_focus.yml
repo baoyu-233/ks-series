@@ -1,0 +1,55 @@
+# ============================================
+# 批量扩展附魔：猎手专注 (Hunter Focus)
+# EN: Bulk extended enchantment: Hunter Focus (猎手专注)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: hunter_focus
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: offensive
+category: ranged
+
+applicable-items:
+  - BOW
+  - CROSSBOW
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: BOW_ATTACK
+    cooldown: 70
+    conditions:
+      - type: chance
+        value: "{level} * 7"
+      - type: target_is_living
+      - type: target_distance_above
+        value: 8
+    actions:
+      - type: DAMAGE_ADD
+        value: "{level} * 1.6"
+      - type: PARTICLE
+        particle: "CRIT"
+        count: 12
+        offset: "0.35"
+        at: "TARGET"
+      - type: SOUND
+        sound: "entity.arrow.hit_player"
+        volume: "0.7"
+        pitch: "1.2"
+        at: "TARGET"

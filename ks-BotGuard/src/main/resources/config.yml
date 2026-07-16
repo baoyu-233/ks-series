@@ -1,0 +1,26 @@
+shield-mythiclib-from-leaves-serverbot-damage: true
+shield-mythiclib-from-leaves-serverbot-actions: true
+include-projectiles-shot-by-serverbots: true
+damage:
+  entity-damage: true
+  entity-damage-by-entity: true
+actions:
+  block-break: true
+  block-place: true
+  interact: true
+  interact-entity: true
+  interact-at-entity: true
+  bucket-empty: true
+  bucket-fill: true
+  item-drop: true
+  fish: true
+  swap-hand-items: true
+  toggle-sneak: true
+  experience-change: true
+  item-consume: false
+  shear-entity: true
+  projectile-launch: true
+  shoot-bow: true
+  vehicle-enter: true
+  vehicle-exit: true
+debug: false

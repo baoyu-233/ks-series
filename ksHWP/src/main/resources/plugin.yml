@@ -1,0 +1,39 @@
+name: ksHWP
+version: 1.2.0
+main: org.kshwp.KsHWP
+api-version: '1.21'
+description: ks-Series 硬世界地图 — Web 地图渲染、图层独立化、区域管理、隐藏模式
+authors: [you]
+depend: [ks-core]
+softdepend: [Multiverse-Core]
+
+commands:
+  kshwp:
+    description: ksHWP 管理命令
+    usage: /kshwp [reload|status|forcerender|forcerender-area|prerender|cache]
+    aliases: [hwp]
+    permission: kshwp.admin
+  map:
+    description: 打开 Web 地图链接 / 切换隐藏模式
+    usage: /map [hidden]
+    aliases: [worldmap]
+    permission: kshwp.use
+  mapnote:
+    description: 地图备注管理
+    usage: /mapnote [add|list|delete]
+    aliases: [mn]
+    permission: kshwp.note
+
+permissions:
+  kshwp.admin:
+    description: 允许管理 ksHWP（重载配置、强制渲染）
+    default: op
+  kshwp.use:
+    description: 允许使用 Web 地图
+    default: true
+  kshwp.note:
+    description: 允许使用地图备注
+    default: true
+  kshwp.hidden:
+    description: 允许使用 /map hidden 隐藏地图位置
+    default: op

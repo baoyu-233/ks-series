@@ -1,0 +1,67 @@
+# ============================================
+# 批量扩展附魔：夜行者 (Night Runner)
+# EN: Bulk extended enchantment: Night Runner (夜行者)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: night_runner
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: movement
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: TIMER_10S
+    cooldown: 200
+    conditions:
+      - type: time
+        value: "13000-23000"
+    actions:
+      - type: ADD_POTION_SELF
+        potion: "SPEED"
+        duration: "{level} * 60"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "SMOKE"
+        count: 6
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.bat.takeoff"
+        volume: "0.4"
+        pitch: "1.6"
+        at: "SELF"

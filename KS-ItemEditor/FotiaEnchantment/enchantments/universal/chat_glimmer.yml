@@ -1,0 +1,67 @@
+# ============================================
+# 批量扩展附魔：言语微光 (Chat Glimmer)
+# EN: Bulk extended enchantment: Chat Glimmer (言语微光)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: chat_glimmer
+enabled: true
+curse: false
+max-level: 3
+rarity: dustlight
+group: utility
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 22
+villager-trade-price-range:
+  - 8
+  - 22
+
+codex-pools:
+  dustlight: 18
+  moonlit: 6
+
+effects:
+  - trigger: SEND_CHAT
+    cooldown: 90
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: ADD_POTION_SELF
+        potion: "LUCK"
+        duration: "{level} * 35"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "ENCHANT"
+        count: 6
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.allay.ambient_with_item"
+        volume: "0.4"
+        pitch: "1.4"
+        at: "SELF"

@@ -1,0 +1,55 @@
+# ============================================
+# 批量扩展附魔：凤凰斩 (Phoenix Cut)
+# EN: Bulk extended enchantment: Phoenix Cut (凤凰斩)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: phoenix_cut
+enabled: true
+curse: false
+max-level: 5
+rarity: aureate
+group: fire
+category: melee
+
+applicable-items:
+  - SWORD
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 6
+villager-trade-price-range:
+  - 28
+  - 64
+
+codex-pools:
+  aureate: 10
+  divine: 3
+
+effects:
+  - trigger: KILL
+    cooldown: 100
+    conditions:
+      - type: chance
+        value: "{level} * 9"
+    actions:
+      - type: HEAL
+        value: "{level} * 1.5"
+      - type: ADD_POTION_SELF
+        potion: "REGENERATION"
+        duration: "{level} * 35"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "FLAME"
+        count: 18
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.player.levelup"
+        volume: "0.7"
+        pitch: "1.7"
+        at: "SELF"

@@ -1,0 +1,91 @@
+# ks-Compat is a shared compatibility layer. Keep plugin-specific rules in modules.
+
+web:
+  enabled: true
+  plugin-id: "ks-compat"
+  route: "/ks-Compat"
+
+modules:
+  fotia-money-durability:
+    enabled: true
+    enchant-id: "coinbound_pickaxe"
+    applicable-items:
+      - PICKAXE
+      - AXE
+      - SHOVEL
+      - HOE
+      - SHEARS
+      - FISHING_ROD
+      - FLINT_AND_STEEL
+      - BRUSH
+      - CARROT_ON_A_STICK
+      - WARPED_FUNGUS_ON_A_STICK
+    insufficient-money: "allow-durability-damage" # allow-durability-damage | cancel-item-damage
+    notify-every-ticks: 100
+    debug: false
+    repair-threshold-remaining-percent: 10.0
+    repair-target-remaining-percent: 100.0
+    repair-retry-ticks: 20
+    level-price-step: 0.25
+    # Matching a level-price tier overrides the linear level-price-step multiplier.
+    level-price-tiers: []
+    cost-tiers:
+      - from-remaining-percent: 75.0
+        to-remaining-percent: 100.0
+        cost-per-damage: 1000.0
+      - from-remaining-percent: 25.0
+        to-remaining-percent: 75.0
+        cost-per-damage: 200.0
+      - from-remaining-percent: 0.0
+        to-remaining-percent: 25.0
+        cost-per-damage: 20.0
+
+  bot-manager:
+    enabled: true
+    restore-on-start: true
+    restore-delay-ticks: 100
+    prefer-rented-slots: true
+    max-name-length: 16
+    # Enables paid rental and permanent-slot purchases. Disabled keeps bot slots admin-granted only.
+    economy-enabled: false
+    summon-price-per-day: 10000.0
+    permanent-slot-price: 500000.0
+    max-rent-days-per-purchase: 30
+    player-default-permanent-slots: 0
+    action-default-interval-ticks: 20
+    action-default-times: 1
+    action-default-delay-ticks: 0
+    action-min-interval-ticks: 2
+    action-use-min-interval-ticks: 4
+    action-max-times: 100000
+    action-max-delay-ticks: 1200
+    action-max-concurrent: 4
+    action-start-cooldown-millis: 1000
+    action-allow-infinite: true
+    action-prevent-duplicate-types: true
+    use-tick-timeout: 40
+    protect-owned-bots: true
+    default-invincible: true
+    invulnerable: true
+    cancel-damage: true
+    cancel-knockback: true
+    resistance-255: true
+    # External /tp, TPA and plugin teleports bypass bot ownership checks, so block them.
+    # /ksbot tp remains available for the owner; cross-owner teleport needs kscompat.bot.tp.others.
+    block-external-teleports: true
+    # Normal Nether/End portals remain valid physical travel, not remote teleport commands.
+    allow-portal-teleports: true
+
+  vulcan-armorstand-compat:
+    enabled: true
+    # A later hit on the same stand normally arrives one server tick after the first.
+    armorstand-hit-window-millis: 200
+    reset-killaura-violations: true
+    debug: false
+
+  zombified-piglin-aggro:
+    enabled: true
+    refresh-ticks: 20
+    anger-ticks: 1200
+    max-tracked-piglins: 128
+    debug: false

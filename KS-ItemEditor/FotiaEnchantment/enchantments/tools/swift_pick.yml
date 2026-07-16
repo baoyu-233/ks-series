@@ -1,0 +1,53 @@
+# ============================================
+# 批量扩展附魔：迅捷镐 (Swift Pick)
+# EN: Bulk extended enchantment: Swift Pick (迅捷镐)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: swift_pick
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: movement
+category: tools
+
+applicable-items:
+  - PICKAXE
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: MINE_BLOCK_PROGRESS
+    cooldown: 80
+    conditions:
+      - type: chance
+        value: "{level} * 7"
+    actions:
+      - type: ADD_POTION_SELF
+        potion: "HASTE"
+        duration: "{level} * 35"
+        amplifier: 0
+      - type: PARTICLE
+        particle: "CRIT"
+        count: 6
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "block.grindstone.use"
+        volume: "0.4"
+        pitch: "1.6"
+        at: "SELF"

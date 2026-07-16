@@ -1,0 +1,52 @@
+# ============================================
+# 批量扩展附魔：轻羽护甲 (Feather Plate)
+# EN: Bulk extended enchantment: Feather Plate (轻羽护甲)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: feather_plate
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: movement
+category: armor
+
+applicable-items:
+  - BOOTS
+  - LEGGINGS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: FALL_DAMAGE
+    cooldown: 80
+    conditions:
+      - type: chance
+        value: "{level} * 10"
+    actions:
+      - type: DAMAGE_REDUCE
+        value: "{level} * 12"
+      - type: PARTICLE
+        particle: "CLOUD"
+        count: 12
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.chicken.egg"
+        volume: "0.5"
+        pitch: "1.7"
+        at: "SELF"

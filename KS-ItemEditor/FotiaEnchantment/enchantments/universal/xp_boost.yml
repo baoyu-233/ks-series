@@ -1,0 +1,76 @@
+# ============================================
+# 经验增幅 (XP Boost)
+# EN: XP Boost (经验增幅)
+# 获取经验时倍增获得的经验值
+# 通用型附魔，适用于大多数装备
+# ============================================
+
+# 附魔ID（唯一标识，不可重复）
+# EN: Enchantment ID; must be unique
+id: xp_boost
+
+# 是否启用此附魔
+# EN: Whether this enchantment is enabled
+enabled: true
+
+# 最大等级
+# EN: Maximum level
+max-level: 3
+
+# 稀有度（对应 rarity.yml 中定义的稀有度ID）
+# EN: Rarity ID defined in rarity.yml
+rarity: dustlight
+
+# 所属附魔组（对应 groups.yml）
+# EN: Enchantment group defined in groups.yml
+group: utility
+
+# 可应用的物品类型（通用型，可附在多种装备上）
+applicable-items:
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+  - SWORD
+  - PICKAXE
+
+# 冲突的附魔ID列表
+# EN: Conflicting enchantment IDs
+conflicts: []
+
+# 获取方式配置
+# EN: Acquisition method configuration
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  loot-table: true
+
+# 附魔台权重（影响附魔台中出现概率，较常见）
+enchanting-table-weight: 22
+
+# 星芒魔典抽取池配置
+# EN: Stellaris Codex roll pool configuration
+codex-pools:
+  dustlight: 18
+  moonlit: 10
+
+# 效果配置（核心：Trigger → Condition → Effect 管道）
+# EN: Effect configuration; core pipeline is Trigger -> Condition -> Effect
+effects:
+  # 获取经验时触发倍增
+  - trigger: GAIN_XP
+    conditions: []
+    actions:
+      # 经验倍增（使用DAMAGE_MULTIPLY作为倍率效果应用于经验值）
+      - type: DAMAGE_MULTIPLY
+        value: "1 + {level} * 0.25"
+      # 给自己添加短暂的幸运效果作为视觉反馈
+      - type: ADD_POTION_SELF
+        potion: LUCK
+        duration: "40"
+        amplifier: 0
+      # 经验获取粒子特效
+      - type: PARTICLE
+        particle: ENCHANT
+        count: 5

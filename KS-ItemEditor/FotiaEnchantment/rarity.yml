@@ -1,0 +1,54 @@
+# ============================================
+# 稀有度等级定义（光辉系）
+# EN: Rarity tier definitions (radiance theme)
+# weight: 附魔台出现权重（越高越容易出现）
+# EN: weight: enchanting table selection weight; higher values are more likely
+# 参考值：40 常见，25 较常见，15 中等，8 稀有，2 极稀有；0 或负数表示不参与对应随机池。
+# EN: Reference scale: 40 common, 25 uncommon, 15 medium, 8 rare, 2 very rare; zero or negative disables the pool entry.
+# color: 显示颜色（MiniMessage格式）
+# EN: color: display color in MiniMessage format
+# trade-price-multiplier: 村民交易价格倍率
+# EN: trade-price-multiplier: villager trade price multiplier
+# codex-roll-chance: 旧版兼容权重；config.yml 的 stellaris-codex.rarity-weights 优先
+# EN: codex-roll-chance: legacy compatibility weight; config.yml stellaris-codex.rarity-weights takes priority
+# ============================================
+
+dustlight:
+  # 尘光 - 最常见的稀有度
+  # EN: Dustlight - most common rarity
+  weight: 40
+  color: "<gray>"
+  trade-price-multiplier: 1.0
+  codex-roll-chance: 40
+
+moonlit:
+  # 月华 - 较常见
+  # EN: Moonlit - common rarity
+  weight: 25
+  color: "<green>"
+  trade-price-multiplier: 1.5
+  codex-roll-chance: 30
+
+radiant:
+  # 辉芒 - 中等稀有度
+  # EN: Radiant - medium rarity
+  weight: 15
+  color: "<aqua>"
+  trade-price-multiplier: 2.0
+  codex-roll-chance: 18
+
+aureate:
+  # 耀金 - 较稀有
+  # EN: Aureate - rare rarity
+  weight: 8
+  color: "<gold>"
+  trade-price-multiplier: 3.5
+  codex-roll-chance: 9
+
+divine:
+  # 神辉 - 最稀有
+  # EN: Divine - rarest rarity
+  weight: 2
+  color: "<light_purple>"
+  trade-price-multiplier: 6.0
+  codex-roll-chance: 3

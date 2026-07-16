@@ -1,0 +1,36 @@
+# ============================================
+# 原版附魔覆盖: 经验修补 (Mending)
+# EN: Vanilla enchantment override: Mending
+# 示例: 限制最大等级为1，增加冲突
+# EN: Example: limit max level to 1 and add conflicts
+# ============================================
+
+# 是否禁用此原版附魔
+# EN: Whether to disable this vanilla enchantment
+disabled: false
+
+# 覆盖最大等级（-1 表示不修改，使用原版默认值）
+# EN: Override max level; -1 keeps the vanilla default
+max-level: 1
+
+# 额外冲突的附魔ID列表
+# EN: Additional conflicting enchantment IDs
+conflicts:
+  - infinity
+
+# 覆盖适用物品类型（留空表示不修改）
+# EN: Override applicable item types; leave empty to keep vanilla behavior
+applicable-items: []
+
+# 附魔台权重（-1 表示不修改）
+# EN: Enchanting table weight; -1 keeps vanilla behavior
+enchanting-table-weight: 2
+
+# lore 接管时显示的原版附魔名称
+# EN: Vanilla enchantment name shown when lore display is controlled by the plugin
+display-name: "经验修补"
+
+# lore 接管时显示在名称下一行的描述
+# EN: Description shown under the vanilla enchantment name when lore display is controlled by the plugin
+description:
+  - "拾取经验时修复带有该附魔的物品。"

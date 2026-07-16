@@ -1,0 +1,66 @@
+# ============================================
+# 批量扩展附魔：回声步 (Echoing Step)
+# EN: Bulk extended enchantment: Echoing Step (回声步)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: echoing_step
+enabled: true
+curse: false
+max-level: 3
+rarity: dustlight
+group: movement
+category: universal
+
+applicable-items:
+  - SWORD
+  - AXE
+  - PICKAXE
+  - SHOVEL
+  - HOE
+  - BOW
+  - CROSSBOW
+  - TRIDENT
+  - FISHING_ROD
+  - SHIELD
+  - ELYTRA
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 22
+villager-trade-price-range:
+  - 8
+  - 22
+
+codex-pools:
+  dustlight: 18
+  moonlit: 6
+
+effects:
+  - trigger: JUMP
+    cooldown: 50
+    conditions:
+      - type: chance
+        value: "{level} * 10"
+    actions:
+      - type: SPEED_BOOST
+        value: 0
+        duration: "{level} * 25"
+      - type: PARTICLE
+        particle: "NOTE"
+        count: 6
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "block.note_block.harp"
+        volume: "0.5"
+        pitch: "1.6"
+        at: "SELF"

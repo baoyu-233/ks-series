@@ -1,0 +1,83 @@
+# ============================================
+# 追踪箭 (Homing Arrow)
+# EN: Homing Arrow (追踪箭)
+# 箭矢命中实体时标记目标（发光效果），便于追踪
+# ============================================
+
+# 附魔ID（唯一标识，不可重复）
+# EN: Enchantment ID; must be unique
+id: homing_arrow
+
+# 是否启用此附魔
+# EN: Whether this enchantment is enabled
+enabled: true
+
+# 最大等级
+# EN: Maximum level
+max-level: 3
+
+# 稀有度（对应 rarity.yml 中定义的稀有度ID）
+# EN: Rarity ID defined in rarity.yml
+rarity: moonlit
+
+# 所属附魔组（对应 groups.yml）
+# EN: Enchantment group defined in groups.yml
+group: utility
+
+# 可应用的物品类型
+# EN: Applicable item types
+applicable-items:
+  - BOW
+  - CROSSBOW
+
+# 冲突的附魔ID列表
+# EN: Conflicting enchantment IDs
+conflicts:
+  - explosive_arrow
+
+# 获取方式配置
+# EN: Acquisition method configuration
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  loot-table: true
+
+# 附魔台权重（影响附魔台中出现概率）
+# EN: Enchanting table weight; affects chance to appear
+enchanting-table-weight: 18
+
+# 星芒魔典抽取池配置
+# EN: Stellaris Codex roll pool configuration
+codex-pools:
+  moonlit: 12
+  radiant: 6
+
+# 效果配置（核心：Trigger → Condition → Effect 管道）
+# EN: Effect configuration; core pipeline is Trigger -> Condition -> Effect
+effects:
+  # 箭矢命中实体时标记目标
+  - trigger: PROJECTILE_HIT_ENTITY
+    conditions:
+      # 概率触发
+      # EN: Chance-based trigger
+      - type: chance
+        value: "{level} * 25"
+    actions:
+      # 给目标添加发光效果，持续时间随等级增加
+      - type: ADD_POTION_TARGET
+        potion: GLOWING
+        duration: "{level} * 100"
+        amplifier: 0
+      # 追踪粒子特效
+      - type: PARTICLE
+        particle: END_ROD
+        count: 8
+      # 播放标记音效
+      - type: SOUND
+        sound: block.beacon.activate
+        volume: 0.6
+        pitch: 1.8
+    # 冷却时间（tick）
+    # EN: Cooldown time in ticks
+    cooldown: 80

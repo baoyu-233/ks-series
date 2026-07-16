@@ -1,0 +1,54 @@
+# ============================================
+# 批量扩展附魔：静息修补 (Calm Mending)
+# EN: Bulk extended enchantment: Calm Mending (静息修补)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: calm_mending
+enabled: true
+curse: false
+max-level: 4
+rarity: moonlit
+group: defensive
+category: armor
+
+applicable-items:
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 16
+villager-trade-price-range:
+  - 12
+  - 32
+
+codex-pools:
+  moonlit: 16
+  radiant: 6
+
+effects:
+  - trigger: NATURAL_REGEN
+    cooldown: 120
+    conditions:
+      - type: chance
+        value: "{level} * 8"
+    actions:
+      - type: HEAL
+        value: "{level} * 0.8"
+      - type: PARTICLE
+        particle: "HEART"
+        count: 4
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "entity.player.breath"
+        volume: "0.4"
+        pitch: "1.5"
+        at: "SELF"

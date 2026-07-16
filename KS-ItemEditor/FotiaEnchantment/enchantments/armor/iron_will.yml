@@ -1,0 +1,58 @@
+# ============================================
+# 批量扩展附魔：钢铁意志 (Iron Will)
+# EN: Bulk extended enchantment: Iron Will (钢铁意志)
+# ============================================
+# === FotiaEnchantment 100 enchantment expansion ===
+
+id: iron_will
+enabled: true
+curse: false
+max-level: 5
+rarity: radiant
+group: defensive
+category: armor
+
+applicable-items:
+  - HELMET
+  - CHESTPLATE
+  - LEGGINGS
+  - BOOTS
+
+conflicts: []
+
+obtain:
+  enchanting-table: true
+  anvil: true
+  villager-trade: true
+  enchanting-table-weight: 10
+villager-trade-price-range:
+  - 18
+  - 46
+
+codex-pools:
+  radiant: 12
+  aureate: 5
+
+effects:
+  - trigger: TAKE_PLAYER_DAMAGE
+    cooldown: 120
+    conditions:
+      - type: chance
+        value: "{level} * 7"
+    actions:
+      - type: ADD_POTION_SELF
+        potion: "RESISTANCE"
+        duration: "{level} * 35"
+        amplifier: 0
+      - type: DAMAGE_REDUCE
+        value: "{level} * 5"
+      - type: PARTICLE
+        particle: "ENCHANT"
+        count: 12
+        offset: "0.35"
+        at: "SELF"
+      - type: SOUND
+        sound: "item.armor.equip_iron"
+        volume: "0.6"
+        pitch: "1.1"
+        at: "SELF"

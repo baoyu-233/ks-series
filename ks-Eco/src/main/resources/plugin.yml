@@ -1,0 +1,111 @@
+name: ks-Eco
+version: 1.2.0
+main: org.kseco.KsEco
+api-version: '1.21'
+description: ks-Series 经济核心 — 市场系统、官方收购/出售、玩家交易、潜影盒深度解析、动态定价
+authors: [you]
+depend: [ks-core]
+softdepend: [Vault, FastAsyncWorldEdit, WorldEdit, MythicMobs]
+
+commands:
+  kseco:
+    description: ks-Eco 玩家经济面板
+    usage: /kseco [web]
+    aliases: [kse, eco]
+  politic:
+    description: 查看政治身份与法案状态
+    usage: /politic [gui|appeal <提案ID>]
+    aliases: [kspolitic, senate]
+  dungeon:
+    description: 副本大厅 — 房产/模板/网格状态
+    usage: /dungeon
+    aliases: [ksdungeon, raid]
+  land:
+    description: 我的地块 — 领地保护信任名单管理
+    usage: /land
+    aliases: [myland, myplot]
+  house:
+    description: 房屋登记 — 测量棒选区/登记产权/查询房屋
+    usage: /house <wand|register|list|info>
+    aliases: [myhouse]
+  kseco-admin:
+    description: ks-Eco 管理员面板
+    usage: /kseco-admin [web|reload|status|force-price|void-trade]
+    aliases: [ksecoadmin, ecoadmin]
+    permission: kseco.admin
+  market:
+    description: 打开市场 GUI
+    usage: /market
+    aliases: [mkt, ah]
+    permission: kseco.market
+  trade:
+    description: 打开批量物品物流或快速发送主手物品
+    usage: /trade <玩家名> | /trade quote <玩家名> | /trade send <玩家名> [数量]
+    aliases: [deal]
+    permission: kseco.trade
+  storage:
+    description: 打开物品暂存箱
+    usage: /storage
+    aliases: [stash, chest]
+    permission: kseco.storage
+  exchange:
+    description: 打开物品兑换 GUI
+    usage: /exchange
+    aliases: [barter, swap]
+    permission: kseco.exchange
+  exchangeadmin:
+    description: 管理兑换规则 GUI
+    usage: /exchangeadmin
+    aliases: [exadmin, swapadmin]
+    permission: kseco.admin
+  blindboxadmin:
+    description: 管理盲盒卡池与战利品 GUI（支持 NBT 物品）
+    usage: /blindboxadmin
+    aliases: [bbadmin, blindbox-admin]
+    permission: kseco.admin
+  limitedsale:
+    description: 打开限时直售 GUI
+    usage: /limitedsale
+    aliases: [lsale, timesale]
+    permission: kseco.limitedsale
+  limitedsaleadmin:
+    description: 管理限时直售商品 GUI（支持完整 NBT 物品）
+    usage: /limitedsaleadmin
+    aliases: [lsaleadmin, timesaleadmin]
+    permission: kseco.admin
+  balance:
+    description: 查询自己的余额
+    usage: /balance
+    aliases: [bal, money]
+    permission: kseco.balance
+
+  mo:
+    description: 查看全服主任务
+    usage: /mo
+    aliases: [majororder, majororders]
+
+permissions:
+  kseco.admin:
+    description: 允许管理 ks-Eco
+    default: op
+  kseco.market:
+    description: 允许使用市场
+    default: true
+  kseco.trade:
+    description: 允许玩家间交易
+    default: true
+  kseco.storage:
+    description: 允许使用暂存箱
+    default: true
+  kseco.exchange:
+    description: 允许使用物品兑换
+    default: true
+  kseco.limitedsale:
+    description: 允许使用限时直售
+    default: true
+  kseco.balance:
+    description: 允许查询自己的余额
+    default: true
+  kseco.politic.appeal:
+    description: 允许合资格政治参与者发起全服提案呼吁
+    default: true

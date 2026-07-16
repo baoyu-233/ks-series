@@ -1,0 +1,20 @@
+name: ks-Inherit
+version: "1.0.0"
+main: org.ksinherit.KsInherit
+api-version: "1.20"
+description: ks-Series 物品继承插件 — 跨版本物品保存，GUI 箱子存储全部 NBT
+softdepend: [ks-core, OpenInv]
+commands:
+  inherit:
+    description: 物品继承系统
+    usage: |
+      /inherit open — 打开物品保存GUI
+      /inherit slots <player> <数量> — 设置玩家可用槽位数（管理员）
+    permission: ksinherit.use
+permissions:
+  ksinherit.use:
+    description: 使用物品继承系统
+    default: true
+  ksinherit.admin:
+    description: 管理物品继承系统
+    default: op

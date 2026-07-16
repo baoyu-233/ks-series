@@ -1,0 +1,44 @@
+name: ks-Compat
+version: ${project.version}
+main: org.kseries.compat.KsCompat
+api-version: '1.21'
+description: ks-Series compatibility platform for external plugins and Leaves bots.
+authors: [baoyu, codex]
+depend: [ks-core]
+softdepend: [ks-Eco, Vault, FotiaEnchantment, Vulcan]
+
+commands:
+  kscompat:
+    description: ks-Compat admin command
+    usage: /kscompat <status|reload|web>
+    aliases: [ksc]
+    permission: kscompat.admin
+  ksbot:
+    description: KS Leaves bot quota and summon command
+    usage: /ksbot
+    aliases: [kbot]
+  ksbotstorage:
+    description: Open the independent KSBot recovered-item storage
+    usage: /ksbotstorage [open|status]
+    aliases: [ksstorage, botstorage]
+    permission: kscompat.bot.storage
+
+permissions:
+  kscompat.admin:
+    description: Manage ks-Compat
+    default: op
+  kscompat.bot.use:
+    description: Use player bot commands
+    default: false
+  kscompat.bot.admin:
+    description: Manage other players' bot slots
+    default: op
+  kscompat.bot.slots:
+    description: Set a player's maximum KSBot count
+    default: op
+  kscompat.bot.tp.others:
+    description: Teleport KSBot instances owned by other players with /ksbot tp
+    default: false
+  kscompat.bot.storage:
+    description: Open your own KSBot recovered-item storage
+    default: true
