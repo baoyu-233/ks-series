@@ -26,7 +26,7 @@
 
 如果某个入口提示“功能暂未开放”，说明服主通过经济功能门控暂时关闭了它，不是命令格式错误。
 
-![ks-Eco 玩家功能总览](assets/ks-eco-overview.svg)
+![KS-Series 玩家功能总览](assets/ks-series-overview.png)
 
 ## 玩家权限组
 

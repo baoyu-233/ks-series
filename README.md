@@ -12,7 +12,7 @@
 >
 > 经济核心：`ks-Eco`，支持库存 GUI、Web 页面和可选 Extra 模块
 
-![KS-Eco 总览](docs/assets/ks-eco-overview.svg)
+![KS-Series 总览](docs/assets/ks-series-overview.png)
 
 ## 目录
 
