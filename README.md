@@ -1,6 +1,6 @@
-# KS Series — Minecraft RPG 综合服务器插件体系
+# KS Series — Minecraft 服务器插件体系
 
-这是我为 LeavesMC 1.21.11 维护的一套 Minecraft 服务器插件集合。项目围绕生存服的经济、市场、土地、企业、Boss、机器人和 RPG 扩展组织成多个模块，目标是让各个系统能够独立构建、按需部署，并在长期运营中保持清晰的边界。
+这是一套 Minecraft 服务器插件集合。项目围绕生存服的经济、市场、土地、企业、Boss、机器人和 RPG 扩展组织成多个模块，目标是让各个系统能够独立构建、按需部署，并在长期运营中保持清晰的边界。
 可以很明确的说，这些插件全都是由Claude Code、CodeX编写的代码，我只起到一个提出需求的作用，测试由我和服务器玩家实际游玩测试，目前仍处于不完善状态，可以提出自己的意见
 
 这份 README 负责介绍项目结构、主要能力和常用入口。命令、权限、部署位置、模块设计以及 `ks-Eco` 的实现细节，统一放在 [完整技术报告](docs/KS-SERIES-REPORT.md)；面向玩家的玩法和普通命令见 [玩家版指南](docs/KS-SERIES-PLAYER-README.md)。
@@ -1386,79 +1386,8 @@ M2 = M1 + 定期存款 ≈ M1 (当前简化)
 | 负利率支持 | 央行可设 -100%~+100% 利率 | 模拟非常规货币政策（量化宽松） |
 | 利率浮动限制 | 商行利率 = 基准利率 ± 浮动限制 | 防止恶性竞争，维护金融稳定 |
 
-### 数据库可靠性设计
-
-三层保障机制确保表创建不会遗漏：
-
-1. **第一层 — Extra 模块 init()**: 各模块 `BankManager.createTables()` / `EnterpriseManager` / `TaxExtra` 各自建表。
-2. **第二层 — `EcoWebHandler.ensureAllTables()`**: 首次 API 调用时创建全部 20+ 张业务表。双重检查锁定（volatile + synchronized），线程安全，确保只执行一次。
-3. **第三层 — ALTER TABLE 兼容旧库**: 检测新列是否已存在 → `ALTER TABLE ADD COLUMN`（try-catch 忽略重复列）。旧数据库无缝升级，无需手动删除。
-
-### 历次迭代关键修复
-
-| # | 问题 | 根因 | 解决方案 |
-|---|------|------|----------|
-| 1 | 邀请按钮缺失 | 银行/企业列表无直接邀请入口 | 每行增加「邀请」「权限」操作按钮 |
-| 2 | 银行无权限系统 | 银行只有角色系统，无细粒度权限 | 新建 `ks_bank_permissions` 表 + 6 种权限 + API + UI |
-| 3 | 个人无法投标 | 投标仅支持企业 | 新增 `bidderType: PLAYER` + `bidderUuid` 字段 |
-| 4 | SQLITE_ERROR on `ks_bank_money_supply` | 表创建延迟 | 三层保障机制 |
-| 5 | Extra JAR 被 Bukkit 当独立插件 | 放错目录 | 严格分离 `plugins/` 顶层 vs `plugins/ks-Eco/extra/` |
-| 6 | plugman reload 不重置 extra classloader | Paper 的 reload 不清理自定义 ClassLoader | 必须整服 restart |
-| 7 | Gson null 序列化返回 `{}` | `new Gson()` 默认不序列化 null | 加 `hasActive` 布尔字段让前端明确区分 |
-| 8 | consul+SENATOR 双重计票 | 同一 UUID 在 SENATOR 和 consul 列表中各计一票 | LinkedHashSet 按 UUID 去重 |
-
 ---
 
-## 服务端目录结构
-
-```
-test_1_21/                         # 测试服根目录
-├── server.jar                     # LeavesMC 1.21.11 核心
-├── start-leaves.bat               # 启动脚本 (JDK 21 + 4G)
-│
-├── server.properties              # 服务器配置
-├── bukkit.yml                     # Bukkit 配置
-├── spigot.yml                     # Spigot 配置
-├── leaves.yml                     # Leaves 专属配置
-│
-├── plugins/                       # 插件目录（35+）
-│   ├── ks-core/                   #   KS 网关 + 数据库 (data.db ~30表)
-│   ├── ks-Eco/                    #   KS 经济核心 + dungeon_schematics/
-│   │   └── extra/                 #   Extra 子模块 JAR (6 个)
-│   ├── KS-ItemEditor/             #   KS 物品编辑器
-│   ├── KS-ItemSteal/              #   KS 物品窃取
-│   ├── ks-Inherit/                #   KS 物品继承 (items.db)
-│   ├── ItemsAdder/                #   自定义资源包
-│   ├── MythicMobs/                #   自定义怪物配置
-│   └── LuckPerms/                 #   权限配置
-│
-├── world/                         # 主世界
-├── world_nether/                  # 地狱
-├── world_the_end/                 # 末地
-├── test_world/                    # 测试世界
-├── ks-dungeon-world/              # 副本虚空世界（FLAT+air）
-│
-├── logs/                          # 运行日志
-├── crash-reports/                 # 崩溃报告
-└── libraries/                     # 依赖库
-```
-
----
-
-## 常见问题排障
-
-| 问题 | 可能原因 | 排查方法 |
-|------|----------|----------|
-| Web 页面无法访问 | 端口被占用或防火墙阻止 | `netstat -ano \| findstr 8123`（测试）/ `58578`（生产） |
-| Token 总是过期 | 服务器时间不同步 | 检查系统时间 |
-| 路由未注册 | `config.yml` 中未启用 | 检查 `sub-plugins.xxx.enabled: true` |
-| Extra 模块不加载 | JAR 未放入 `plugins/ks-Eco/extra/` 或未在 config 中启用 | 检查 extra 目录和 `ks-Eco/config.yml` 的 `enabled-modules` 列表 |
-| SQLite 数据库锁定 | 并发写入冲突 | 检查是否有多个进程访问 data.db |
-| Vault 对接失败 | Vault 未安装或无经济插件 | 安装 Vault + ks-Eco BuiltinEconomy 兜底 |
-| 副本 start 无反应 | FAWE 未安装或 `dungeon_schematics/` 缺 `.schem` 文件 | `/dungeon` → 确认模板 schematic 字段文件名 |
-| `build_all.ps1` 部署后未生效 | Extra JAR 需整服 restart（plugman reload 不重置 classloader） | 完整重启服务器 |
-| `/market` GUI 商品房 Tab 无内容 | `ks_re_houses` 表缺少数据 | 先通过 `/house register` 登记房屋 |
-| MCSM 10.x API 404 | API 路径变更 | 新路径是 `/api/protected_instance/*`，旧版无 `/api/` 前缀 |
 
 ---
 
