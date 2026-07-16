@@ -66,6 +66,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ks-series-jars
-          path: '**/target/*.jar'
+          path: |
+            **/target/*.jar
+            !**/target/original-*.jar
           if-no-files-found: error
           retention-days: 14
