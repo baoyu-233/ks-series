@@ -35,8 +35,9 @@ Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
 - The GUI skill's asset checker passed all 22 current ks-Eco Web JavaScript files.
 - The public GitHub repository is `https://github.com/baoyu-233/ks-series`. The prepared publishing
   checkout is `E:\ks_series`; it contains the 21 ks plugin modules, project docs, scripts and a local
-  `.gitignore`, while test-server data, backups, runtime databases, tokens, build caches and `mcsm-panel`
-  are excluded. The first published commit is `3531a7d` on `main`.
+ `.gitignore`, while test-server data, backups, runtime databases, tokens, build caches and `mcsm-panel`
+ are excluded. The first published commit is `3531a7d` on `main`.
+- The public repository uses the standard Mozilla Public License 2.0 (`MPL-2.0`).
 - The Browser Codex plugin remains installed for local Web regression testing.
 - `build-web-apps@openai-api-curated` is installed and enabled for ks-Eco Web, real-estate map,
   and local admin/player UI implementation and browser QA.
