@@ -1,0 +1,71 @@
+name: Build KS-Series
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ks-series-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Maven modules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: '**/pom.xml'
+
+      - name: Build modules in dependency order
+        shell: bash
+        run: |
+          set -euo pipefail
+          modules=(
+            ks-core
+            ks-Eco
+            ks-Eco-bank
+            ks-Eco-enterprise
+            ks-Eco-tax
+            ks-Eco-RealEstate
+            ks-Eco-RealEstateDungeon
+            ks-Eco-politic
+            ks-Compat
+            ks-BotGuard
+            ks-BossCombat
+            ks-RPG
+            ks-RPG-Gui
+            ks-Skill
+            ks-Title
+            ksHWP
+            ks-Inherit
+            KS-ItemEditor
+            KS-ItemSteal
+            ks-Maintenance
+            ks-Sentinel
+          )
+          for module in "${modules[@]}"; do
+            test -f "$module/pom.xml"
+            mvn -B -ntp -f "$module/pom.xml" clean install
+          done
+
+      - name: Upload built JARs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ks-series-jars
+          path: '**/target/*.jar'
+          if-no-files-found: error
+          retention-days: 14
