@@ -2,7 +2,7 @@
 
 > [中文](CODEBASE_MAP.zh-CN.md) | English
 
-Last verified: 2026-07-16
+Last verified: 2026-07-17
 
 Current cross-session handoff: `docs/CODEX_MEMORY.md`
 
@@ -21,16 +21,34 @@ Market listing write/read and atomic quantity claim: `ListingManager.java`
 
 Player market workflows and Vault settlement: `MarketManager.java`
 
+Bounded async execution: `AsyncWorkPool.java`. `execute` submits pure computation to a bounded multi-worker lane;
+`executeDatabase` submits SQL/audit work to a bounded single-worker lane. Both expose queue metrics and pressure/rejection
+logging. Do not submit Bukkit, ItemStack, GUI, or Vault work to either lane.
+
 Official low-price acquisition: `OfficialMarketSweepManager.java`
 
 Official and protected price calculation: `MarketValueService.java`
 
 Dynamic official material prices and trade history: `PriceEngine.java`
 
-Player storage and official warehouse: `StorageManager.java`, `OfficialWarehouseManager.java`
+Player storage: `StorageManager.java` and `gui/StorageMenu.java`. Official acquisition storage:
+`OfficialWarehouseManager.java` and administrator-only `gui/OfficialWarehouseGui.java`. The warehouse GUI loads raw
+immutable pages on the database lane, decodes ItemStacks on the server thread, atomically claims rows and restores a
+claim if delivery cannot complete. Its entry is `/kseco gui` slot 30.
 
 Limited-sale purchase preparation, stock transaction, and settlement callbacks: `LimitedSaleManager.java`.
-Player single/ten/limited blind-box batch preparation and pity transaction: `BlindBoxManager.java`.
+Player single/ten/limited blind-box batch preparation and pity transaction: `BlindBoxManager.java`. Its
+`loadPoolsAsync` and `loadLootViewsAsync` admin/Web read paths query on the serial database lane, return raw item bytes,
+then decode ItemStack/lore and complete callbacks on the server thread. `BlindBoxAdminGui` renders loading/error states
+and consumes one predecoded preview per loot row instead of issuing per-slot SQL queries.
+
+Purchase orders: `PurchaseOrderManager.loadActiveOrderSnapshots` reads raw immutable rows on the database lane and
+`materializeOrders` decodes `ItemStack` on the server thread. `createAsync`, `fulfillAsync`, and `cancelAsync` snapshot
+items and Vault state on the server thread, execute order/storage reservation transactions on the serial database lane,
+then return to the server thread for inventory and Vault settlement. Finite fulfillment reserves quantity and writes
+invisible `ks_eco_purchase_order_pending_items` rows atomically; successful settlement promotes them into buyer storage,
+while failure compensation deletes them and restores quantity or refunds a concurrently cancelled slice.
+`PurchaseOrderMenu` owns per-operation in-flight guards and overload feedback.
 
 ## ks-BotGuard
 
@@ -97,6 +115,43 @@ current ks-RPG catalog after `/ksrpg reload`. `RpgMenuListener.java` cancels eve
 Layout and Chinese copy live in the independent `plugins/ks-RPG-Gui/menu.yml`; `/rpgmenu reload` parses it
 asynchronously, then atomically swaps the immutable layout on the server thread. Build ks-RPG before ks-RPG-Gui because
 its compile-only API dependency resolves from the current ks-RPG target JAR.
+
+## ks-InstanceWorld
+
+Standalone plugin entry: `ks-InstanceWorld/src/main/java/org/kseries/instanceworld/KsInstanceWorld.java`.
+
+Stable service surface: `api/InstanceWorldApi.java`, `InstancePreparation.java`, `InstancePrepareRequest.java`,
+`PreparedInstance.java`, `InstanceSnapshot.java`, and `InstanceLifecycleEvent.java`. Prepare/release mutations start
+on the server thread; their futures complete on the server thread. Cached snapshot/grid queries are immutable and
+safe for Web readers.
+
+Lifecycle orchestration: `InstanceWorldService.java`. Worker-only persistence and legacy read-only import:
+`internal/InstanceStore.java`. Worker-only schematic parsing and namespace-root containment:
+`internal/SchematicRepository.java`. Server-thread WorldEdit/FAWE canvas operations and tick-bounded Bukkit marker
+scans: `internal/CanvasService.java` and `internal/MarkerScanner.java`.
+
+Persistence belongs to `plugins/ks-InstanceWorld/instance-world.db` (`iw_pools`, `iw_grids`, `iw_instances`,
+`iw_meta`). The optional legacy import reads but never modifies `plugins/ks-core/data.db:ks_dungeon_grids`.
+
+`ks-Eco-RealEstateDungeon/DungeonInstanceManager.java` is the first consumer. It stores the external handle in
+`ks_dungeon_instances.instance_world_id`, retains all economy/party/revive/reward/Boss behavior, and interprets
+generic marker data through `MythicSpawner`. `DungeonCommand.java` and `DungeonWebHandler.java` read grid state from
+`InstanceWorldApi`; Web actions that touch Bukkit or Vault are marshalled to the server thread.
+
+## ks-Cinematic
+
+Standalone observer-cinematic plugin: `ks-Cinematic/src/main/java/org/kseries/cinematic/KsCinematic.java`.
+`CinematicService.java` owns private per-story package loading, configured item triggers, spectator sessions,
+timeline actions, PDC-backed recovery, and `ks-InstanceWorld` release. `CinematicCommand.java` manages list,
+reload, admin preview and editor selection. Private content is rooted at
+`plugins/ks-Cinematic/stories/<id>/story.yml`; `KsCinematic` registers that root as the `ks-cinematic`
+schematic namespace. PDC trigger items are generated only through `/cinematic give <story> [player]`; external
+MMOItems triggers remain configuration-only. `BLOCK` timeline actions and private commands are applied only to
+the prepared instance. No schematic, MythicMobs content, model, resource-pack asset, economy rule, or combat
+progression belongs to the public module.
+
+`InstancePrepareRequest` accepts a contained relative schematic path such as `gaze/gaze.schem`, rejects absolute
+and traversal paths, and `SchematicRepository` enforces the registered-root boundary again before file access.
 
 ## ks-Eco Web UI
 
@@ -170,6 +225,10 @@ Worker threads:
 - Pure valuation through `MarketFloorSession` and `PreparedItem`
 - Pure sorting, aggregation and report construction
 
+Use `AsyncWorkPool.executeDatabase` for SQL/audit tasks submitted through this pool and `execute` only for pure computation. Both
+queues are bounded; rejection is logged and surfaced to the submitter. Interactive callers still need explicit
+operation-specific rejection cleanup before queue saturation can be treated as a fully handled user-facing state.
+
 Never deserialize or inspect Bukkit ItemStack state on a worker. Snapshot it on the server
 thread first. Never hold a database transaction while waiting for the server thread.
 
@@ -196,24 +255,36 @@ multipliers. `BlindBoxManager` owns `ks_bb_pools.min_enterprise_level` and valid
 Purchased enterprise tickets are retired. Old ticket tables may still exist in deployed databases but have no active manager,
 route, GUI, table-creation or reset entry. Do not reintroduce the old shared-counter model.
 
+## Enterprise Governance And Dividends
+
+`ks-Eco-enterprise/EnterpriseManager.java` owns join requests, approval/rejection, voluntary leave, dissolution and both
+configured/custom dividend settlement. `ks_ent_join_requests` is the approval source of truth; only an approved request
+creates `ks_ent_members`. Leave/removal cancels its approved row so reapplication remains possible. `EnterpriseGui.java`
+owns the in-game approval list and second-click leave/dissolve confirmation.
+
+Dividend headers live in `ks_ent_dividends`; recipient gross/tax/net details live in `ks_ent_dividend_payouts`; tax audit
+lives in `ks_tax_records` under `DIVIDEND_TAX`. Rates may be stored as `0.10` or legacy `10` and are normalized before
+settlement. `EcoWebHandler.handleEnterpriseAdminEdit` owns the full administrator edit transaction and mirrors corporate
+balance changes into the selected corporate bank; `EnterpriseLevelManager` applies the post-transaction level/cache update.
+
 ## Threading Audit Backlog
 
 Highest priority:
 
 - Add a durable settlement journal for the remaining crash window between SQLite commit and
   external Vault settlement. Normal failures already use atomic asynchronous compensation.
-- Move PurchaseOrderManager creation, fulfillment and cancellation DB work off the server thread.
-- Remove worker-side ItemStack deserialization from PurchaseOrderManager and the remaining legacy blind-box
-  list/admin/enterprise surfaces; player single/ten/limited batches are already separated.
+- Remove synchronous SQL and legacy settlement from enterprise blind-box GUI paths and limited-sale detail reads;
+  player batches plus admin/Web pool and loot-list reads are already separated.
 - Convert bank, enterprise, bidding, invites, real-estate, tax and enterprise blind-box GUIs to
   loading views backed by async DTO queries.
 
 Infrastructure:
 
-- Replace the shared unbounded fixed thread pool with a bounded compute pool and a serialized
-  database writer with queue metrics.
+- Add operation-specific rejection cleanup and user/Web errors for bounded executor saturation.
 - Make EconomyResetManager run as an explicit maintenance operation outside the server thread.
-- Route every AsyncChatEvent GUI/message operation back to the server thread.
+
+All 13 current ks-Eco/ks-Eco-RealEstate async chat handlers snapshot only UUID/text/cancellation state before
+returning Player, permission, message, GUI, inventory, ItemStack, Bukkit lookup, and manager work to the server thread.
 
 ## Maintenance Rule
 

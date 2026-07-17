@@ -2,13 +2,15 @@
 
 > [English](CODEX_MEMORY.en.md) | 中文
 
-Last updated: 2026-07-16 Asia/Hong_Kong
+Last updated: 2026-07-17 Asia/Hong_Kong
 
 Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
 
 ## Working Preferences
 
 - Communicate in Chinese.
+- Treat this conversation as the dedicated ks-Eco-series maintenance thread. Keep work focused on ks-Eco,
+  its Extra modules, shared services directly required by them, and their verification/deployment handoffs.
 - Preserve all existing user and prior-agent changes.
 - Default documentation scope is project memory, code map when ownership/contracts change, and the
   relevant specialized knowledge base. Do not edit `docs/KS-SERIES-REPORT.md` or
@@ -49,8 +51,15 @@ Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
 ## Current Deployment
 
 - Core JAR: `test_1_21/plugins/ks-Eco-1.1.0.jar`
-- SHA-256: `D243C894DB826C3CE0C76C35F274A277A5729B38CD57DC795A002A7C6DA91846`
-- Latest backup: `ks-Eco-1.1.0.jar.bak.20260716031107`
+- SHA-256: `8AD0F282BFC6D9724DBC149EB6BB069883B4F0C4351732C654481BB071FD5D1E`
+- Root backup ID: `ks-Eco-20260717T155633323Z-05ade93988e5`
+- Root backup: `backup/ks-Eco/ks-Eco-20260717T155633323Z-05ade93988e5.jar`
+- Enterprise Extra: `test_1_21/plugins/ks-Eco/extra/ks-Eco-enterprise-1.1.0.jar`
+- Enterprise SHA-256: `3949DA5BC1C90F752274B9802761A725F74E633147DB5207310702306E3CFD66`
+- Enterprise root backup ID: `ks-Eco-enterprise-20260717T155652733Z-e14aca5dfab3`
+- Enterprise root backup: `backup/ks-Eco-enterprise/ks-Eco-enterprise-20260717T155652733Z-e14aca5dfab3.jar`
+- Both JARs were built from GitHub commit `cdd3d77` by successful Actions run `29593918604`; the downloaded artifact
+  and deployed target hashes match. Paper was not started or restarted, so game acceptance is pending.
 - RealEstate Extra: `test_1_21/plugins/ks-Eco/extra/ks-Eco-RealEstate-1.1.0.jar`
 - RealEstate SHA-256: `4F78438CF7AD490C3252A161E3191A2ECAA76E05AADC493F8D5AB31333D7D0B3`
 - RealEstate backup: `ks-Eco-RealEstate-1.1.0.jar.bak.20260716030001`
@@ -216,8 +225,31 @@ Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
   by `/rpgmenu reload` or the administrator reload button; changing that layout needs no Paper restart. The menu and
   command feedback are Chinese-localized; item names/lore remain owned by their MMOItems definitions.
 
+## Cinematic Runtime
+
+- `ks-Cinematic` is a new standalone, not-yet-deployed Paper plugin that hard-depends on `ks-InstanceWorld`.
+  Each private story package has its own hot-reloadable `plugins/ks-Cinematic/stories/<id>/story.yml` and schematic.
+  The engine owns configured MMOItems/vanilla/plugin-PDC triggers, spectator camera, titles, sounds, particles,
+  safe block replacement, trusted private commands, PDC completion flags, and cleanup/recovery. `/cinematic give`
+  generates only configured plugin-PDC trigger items; it never creates an external-plugin item or RPG progression.
+- The first private runtime package is `test_1_21/plugins/ks-Cinematic/stories/gaze/` (`凝视`). It has a
+  plugin-owned observation-station pass, independent timeline and a private `RPG_Catalyst` Mythic actor definition.
+  Its `gaze.schem`, model assets, Mythic skills, resource-pack data and actual server configuration remain private;
+  do not copy them to the source tree or public publishing checkout.
+
 ## Completed Architecture Work
 
+- `AsyncWorkPool` now has two real bounded lanes instead of an unbounded fixed-pool queue: a multi-worker
+  compute lane and a single-worker serialized database lane. Existing `AsyncWorkPool` call sites that perform
+  SQL/audit work use `executeDatabase`; both lanes expose active/queued/submitted/completed/rejected metrics, warn at 75% queue
+  occupancy, and fail visibly on rejection instead of growing memory without limit.
+- Purchase-order menu loading now reads immutable `OrderSnapshot` rows and raw item bytes on the database lane,
+  then validates material IDs and deserializes `ItemStack` only after returning to the server thread. Purchase-order
+  create, fulfill, and cancel settlement remain synchronous and are still backlog work.
+- All 13 `AsyncChatEvent`/`AsyncPlayerChatEvent` GUI handlers currently present in ks-Eco and ks-Eco-RealEstate
+  now limit the async side to UUID/text snapshots, event cancellation, and concurrent pending-state lookup. Player,
+  permission, message, GUI, inventory, ItemStack, Bukkit lookup, and manager calls resume through `runTask`;
+  `PlotTrustMenu` pending state is now a `ConcurrentHashMap`.
 - Official dynamic pricing uses two separate components: `supplyPressure` in `[-1,1]` from real official SELL volume versus a rolling historical baseline, and mean-reverting random-walk `driftValue` with optional per-material `trendBias`. The final offset is clamped by `max-fluctuation`; low recent supply can raise the official buy price, while oversupply lowers it.
 - `official-buy.default-items` is the only direct official-buy list. `market-protection.internal-reference-prices` is only a fallback floor for player listings and official sweeps; it must not be treated as an official-buy catalog. Vanilla/Fotia premiums and shulker contents belong to floor valuation rules, not normal official-buy payout.
 - Price refresh minutes and global volatility/test mode persist in `ks_eco_price_settings`; Web changes restart the refresh task without a server restart. Admin `void-trade`/`simulate-trade` rows marked `is_test` are excluded from real supply and market-average queries, so test previews do not change live pricing.
@@ -252,6 +284,32 @@ Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
   worker-side SQLite transaction. Item serialization/deserialization and GUI work stay on the server thread.
 - In-game GUI paths were statically audited and compiled but were not live-tested because Paper was not started.
 
+## Shared Instance World Runtime
+
+- `ks-InstanceWorld` 0.1.0 is the standalone owner of instance-grid allocation, void-world loading,
+  schematic parsing/paste, bounded marker scans, arena cleanup and idempotent release. It has no ks-Eco,
+  Vault, MythicMobs, MMOItems, reward or private-content dependency.
+- `InstanceWorldApi` is registered through Bukkit's `ServicesManager`. A prepare call immediately returns an
+  `InstancePreparation` containing a cancellable instance ID and a server-thread-completed future. The prepared
+  result exposes the world, grid center, schematic bounds, paste center, spawn and immutable generic marker data.
+- Lifecycle state is persisted in `plugins/ks-InstanceWorld/instance-world.db`. SQL and schematic file parsing use
+  a bounded worker pool; Bukkit world/block/entity/event work and WorldEdit/FAWE calls stay on the server thread.
+  Marker scans are split across ticks. Preparation failure, timeout, external cancellation, duplicate release and
+  plugin disable all converge on idempotent grid release.
+- The optional one-time compatibility import reads `plugins/ks-core/data.db:ks_dungeon_grids` without modifying or
+  deleting the source table or old dungeon-instance rows. Imported coordinates live in the new module's own tables;
+  the migration marker is also stored only in the new database.
+- `ks-Eco-RealEstateDungeon` now consumes the API and no longer contains `DungeonGridAllocator`, `SchematicService`,
+  world creation, canvas clearing, schematic paste or block marker scanning. Its `instance_world_id` column is added
+  non-destructively; legacy `grid_id` and `ks_dungeon_grids` data remain untouched for compatibility.
+- The economy dungeon still owns tickets/refunds, property keys, parties, deaths/revives, Boss tracking, rewards,
+  MythicMobs spawning and `/dungeon`/Web entry points. It interprets legacy `[mm]` markers and generic
+  `[marker]/mm/...` data returned by the shared module; the shared module has no Boss or Mythic semantics.
+- Verification on 2026-07-16: `mvn clean install` passed for ks-InstanceWorld with 2 SQLite tests covering grid
+  reuse/idempotent release and non-destructive legacy import; the final shaded JAR opened an in-memory SQLite
+  connection successfully. `mvn clean package -DskipTests` passed for ks-Eco-RealEstateDungeon and ks-Eco, and
+  `node --check` passed for the touched admin Web script. Paper was not started and no JAR was deployed.
+
 ## Limited Sale And Player Blind Box Threading
 
 - Limited-sale direct, boxed, and limited-blind-box purchases now use asynchronous preparation and a worker-side
@@ -264,8 +322,10 @@ Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
   Workers carry immutable metadata and raw item bytes only; the server thread decodes ItemStacks and delivers them.
   Pull logs and all rarity pity counters are persisted in one worker-side transaction, and same-player/same-pool
   overlapping pulls are rejected. Quantities larger than a legal stack are split before inventory/storage delivery.
-- Remaining legacy blind-box admin/list lore decoding and enterprise draw surfaces are not yet fully separated;
-  they belong with the enterprise GUI/Web threading backlog and must not be treated as covered by this pass.
+- Blind-box admin pool/loot reads now use the serial database lane and show a loading state. Raw loot bytes return
+  to the server thread before ItemStack/lore decoding, one decoded preview travels with each GUI DTO, and the old
+  per-slot `getLootItemStack` SQL path is removed. The Web loot-list endpoint reuses this boundary and returns explicit
+  queue-busy, timeout, and interruption errors. Enterprise draw/GUI and limited-sale detail reads remain backlog work.
 
 ## Enterprise Levels And Retired Tickets
 
@@ -284,6 +344,49 @@ Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
 - Blind-box pools persist `min_enterprise_level` (default 1) and reject under-level enterprise draws before charging.
 - Enterprise-owned agricultural/industrial percentage perks scale by level; player-owned plots remain unchanged.
 
+## Enterprise Governance And Dividend Fixes (2026-07-17)
+
+- Joining an enterprise now creates a durable `ks_ent_join_requests` PENDING row. Membership is inserted only after a
+  manager with `MANAGE_MEMBERS` approves it in the in-game enterprise GUI; rejection, voluntary leave and manager
+  removal close the request so the player may apply again later.
+- Ordinary members can leave with a second-click confirmation. Owners cannot silently leave; a single-owner enterprise
+  can be dissolved only after confirmation and only when no active/overdue enterprise loan or pending loan request exists.
+  Dissolution atomically marks the enterprise, clears its corporate account/current assets and cancels pending joins
+  before the remaining balance is returned. Multi-owner enterprises require ownership adjustment rather than unilateral
+  dissolution.
+- Dividend tax accepts both fractional (`0.10`) and legacy percentage (`10`) storage, normalizes to `0..1`, and calculates
+  `tax = gross * rate`, `net = gross - tax`. Both enterprise-manager and administrator-Web distributions write the
+  dividend header, per-recipient gross/tax/net payout rows and a `DIVIDEND_TAX` tax record. The in-game history shows
+  tax rate, tax paid, net amount and payout count.
+- Administrator enterprise editing now covers name, description, type, region, industry, owners, registered capital,
+  corporate balance, dividend percentage, status and level. Ownership rows, corporate-bank mirrored assets, member
+  count, dividend shares and the level cache are synchronized by the edit workflow.
+
+## Official Warehouse And Rankings (2026-07-17)
+
+- `/kseco gui` slot 30 now exposes an administrator-only official warehouse GUI. It asynchronously pages immutable raw
+  rows, decodes ItemStacks on the server thread, checks inventory capacity, atomically claims a row and restores it if
+  delivery cannot complete. Player temporary storage remains a separate slot and metric.
+- Admin Web market statistics now distinguish `storedItems` from `officialWarehouseItems`; the official warehouse card
+  no longer labels player temporary storage as official inventory.
+- Personal Top50 filters system, console and central-bank identities. Rank sub-tabs explicitly load their own data and
+  set `个人财富 / 企业财富 / 银行资产 Top50` titles, preventing a stale central-bank title on the personal ranking.
+
+## Spark Performance Incident (2026-07-17)
+
+- Two unchanged-configuration Spark samples confirm sustained main-thread overload, not a GC pause or a
+  one-off spike. `uVylazNECl.sparkprofile` ended at 16.84 TPS / 59.34 ms mean MSPT with 3,901 entities;
+  `rcWHSIi3AJ.sparkprofile` ended at 14.41 TPS / 69.37 ms despite only 3,041 entities.
+- The highest actionable regression is hopper activity plus CoreProtect logging: native hopper push work rose
+  from about 152k to 182k sampled ms, CoreProtect aggregate time from about 59k to 116k, and its inventory-move
+  listener from about 20k to 36k. Disable `hopper-transactions` in
+  `test_1_21/plugins/CoreProtect/config.yml` before considering a logger replacement, then collect another
+  comparable 10-minute Spark profile.
+- FotiaEnchantment normalization remains a secondary main-thread cost but fell between samples; ItemsAdder,
+  Multiverse and ksHWP stayed broadly level. Heap increased from 2.66 GiB to 5.09 GiB with no old-generation
+  collection, so heap/GC tuning is not the first intervention. Loaded chunks rose to about 6.3k and tile entities
+  remained about 8.6k; bot/loaded-chunk and entity caps are follow-up work after hopper logging is tested.
+
 ## Local Web Test Bench
 
 - `web/test.html` embeds the exact production admin/player pages with localhost-only fixtures.
@@ -299,15 +402,35 @@ Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
 - Player Web bootstrap intersects feature gates with actual module availability.
 - Admin pages retain management views and render missing modules as offline/empty states.
 
+## Purchase Order Async Settlement (2026-07-17)
+
+- `PurchaseOrderManager.createAsync`, `fulfillAsync`, and `cancelAsync` replace the former synchronous GUI paths.
+  Bukkit item snapshots, inventory mutation, messages, sounds and all Vault calls remain on the server thread.
+- The serial database lane inserts orders and atomically reserves finite-order quantity together with rows in the
+  private `ks_eco_purchase_order_pending_items` table. After main-thread inventory/Vault settlement, a worker atomically
+  promotes those rows into buyer storage, preventing the buyer from claiming delivery before the seller is settled.
+  Worker tasks carry only primitive, byte-array and immutable collection data; ItemStack decoding stays on the server thread.
+- Fulfillment rechecks the seller's current main-hand item before delivery. Offline sellers, changed items, failed
+  unlimited-order charges and failed seller deposits trigger idempotent storage/quantity compensation. A concurrent
+  cancellation that already refunded the visible remainder causes the reserved slice to be refunded separately.
+- Purchase-order GUI operations have per-operation in-flight guards and explicit bounded-queue rejection feedback.
+  A failed cancellation refund attempts to reactivate the order instead of silently leaving it cancelled.
+- The broader durable settlement journal remains required for a process crash between a committed SQLite reservation
+  and the following main-thread Vault/inventory settlement. No live acceptance test has been run yet.
+
 ## Next Priorities
 
-1. Live-test enterprise levels, blind-box level rejection and land-perk multipliers after the user restarts Paper.
-2. Move PurchaseOrderManager create/fulfill/cancel workflows to async reservation transactions.
-3. Remove worker-side ItemStack deserialization from PurchaseOrderManager and the remaining legacy
-   BlindBoxManager admin/enterprise paths.
+1. Deploy and live-test ks-InstanceWorld plus a normal combat dungeon: prepare, marker spawn, entry, Boss clear,
+   timeout, last-player leave, repeated force release and plugin-disable recovery.
+2. After the user restarts Paper, live-test enterprise join approval/rejection, voluntary leave, manager removal,
+   single-owner dissolution blocks, 10% dividend tax and payout/tax logs, full administrator editing, enterprise levels,
+   blind-box level rejection, land-perk multipliers, the official warehouse GUI, and personal Top50 filtering.
+3. Remove synchronous SQL and legacy draw settlement from enterprise blind-box GUI paths, then move limited-sale
+   detail metadata reads off the server thread. Admin pool/loot reads and Web loot lore decoding are separated.
 4. Convert bank, enterprise, bidding, invites, real-estate, tax and enterprise blind-box GUIs/Web actions to async DTO loading.
 5. Add a durable settlement journal for the SQLite-to-external-Vault crash window.
-6. Split the shared unbounded work pool into bounded compute and serialized DB executors.
+6. Add operation-specific overload responses for bounded executor rejection so interactive requests always clear
+   in-flight state and return a player/Web error under extreme queue pressure.
 
 ## Verification Baseline
 
@@ -319,6 +442,26 @@ Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
   checker pass after the limited-sale/player-blind-box async refactor. The affected in-game paths were statically
   audited but not live-tested because Paper was not started.
 - The project currently has no automated Java test sources for ks-Eco or ks-Eco-RealEstate.
+- On 2026-07-17, local `mvn test` compiled all 62 ks-Eco sources successfully and reported no tests after the
+  final 13-handler async-chat sweep and the purchase-order create/fulfill/cancel async transaction refactor.
+  Targeted `rg` review found no remaining synchronous purchase-order GUI mutation entry. It was not packaged,
+  deployed or live-tested; no JAR was replaced and Paper was not started or restarted.
+- On 2026-07-17, local `mvn test` compiled all 63 ks-Eco sources successfully after the blind-box admin/Web DTO
+  loading refactor and again reported no test sources. No package, deployment, JAR replacement, or Paper start occurred.
+- On 2026-07-17, the final enterprise/governance, official-warehouse GUI and ranking integration pass compiled all
+  63 ks-Eco sources plus 5 ks-Eco-enterprise sources with `mvn test`; both modules still have no test sources. Four
+  touched admin scripts passed `node --check`. Browser desktop QA verified personal/enterprise rank switching, correct
+  Top50 titles/data, official-warehouse statistics and the expanded enterprise edit panel. The configured
+  `scripts/check-web-assets.ps1` was unavailable in this workspace, so that aggregate check could not be rerun.
+  No package/deployment/JAR replacement occurred, and Paper was not started or restarted.
+- On 2026-07-17, the source and paired module READMEs were committed as `cdd3d77`. GitHub Actions run `29593918604`
+  built all configured Maven modules successfully and uploaded `ks-series-jars`; documentation-language run
+  `29593917909` also passed. The downloaded Actions artifacts were deployed through `scripts/deploy-plugin.ps1`:
+  ks-Eco hash `8AD0F282BFC6D9724DBC149EB6BB069883B4F0C4351732C654481BB071FD5D1E`, backup
+  `ks-Eco-20260717T155633323Z-05ade93988e5`; enterprise hash
+  `3949DA5BC1C90F752274B9802761A725F74E633147DB5207310702306E3CFD66`, backup
+  `ks-Eco-enterprise-20260717T155652733Z-e14aca5dfab3`. Source/deployed hashes and both append-only index records
+  were verified. Paper was not started or restarted; all affected game paths remain pending live acceptance.
 - `mvn clean install` passes for ks-Eco and `mvn clean package` passes for ks-Eco-RealEstate. Browser desktop QA
   verified enterprise level editing, pool requirements, player lock states and all four Web test scenarios.
 - `CODEBASE_MAP.md`, the economy knowledge base, `KS-SERIES-REPORT.md`, and the player README are synchronized
