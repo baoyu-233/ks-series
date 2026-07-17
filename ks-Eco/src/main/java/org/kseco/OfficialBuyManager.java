@@ -141,7 +141,7 @@ public final class OfficialBuyManager {
         }
         if (!trades.isEmpty()) {
             List<PriceEngine.TradeRecord> completedTrades = List.copyOf(trades);
-            plugin.asyncWorkPool().execute(() -> priceEngine.recordTrades(completedTrades));
+            plugin.asyncWorkPool().executeDatabase(() -> priceEngine.recordTrades(completedTrades));
         }
         player.updateInventory();
         player.sendMessage("§a官方批量收购完成：出售 " + totalItems + " 个物品，获得 "

@@ -61,5 +61,10 @@
     input.addEventListener('change',function(){resolve(input);}); input.addEventListener('blur',function(){resolve(input);});
   }
   function wireAll(root){ (root||document).querySelectorAll('input').forEach(wire); }
-  wireAll(); new MutationObserver(function(records){records.forEach(function(record){record.addedNodes.forEach(function(node){if(node.nodeType===1)wireAll(node);});});}).observe(document.body,{childList:true,subtree:true});
+  function start(){
+    if(!document.body)return;
+    wireAll();
+    new MutationObserver(function(records){records.forEach(function(record){record.addedNodes.forEach(function(node){if(node.nodeType===1)wireAll(node);});});}).observe(document.body,{childList:true,subtree:true});
+  }
+  if(document.body)start();else document.addEventListener('DOMContentLoaded',start,{once:true});
 })();

@@ -70,6 +70,8 @@ public final class BlindBoxAdminGui implements InventoryHolder {
     // 加载的数据
     final List<Map<String, Object>> pools = new ArrayList<>();
     final List<Map<String, Object>> loots = new ArrayList<>();
+    private boolean loading;
+    private long loadGeneration;
 
     private static final int ROWS = 6;
     private static final int PAGE_SIZE = 36;
@@ -103,23 +105,59 @@ public final class BlindBoxAdminGui implements InventoryHolder {
         this.view = 0;
         this.page = 0;
         this.selectedPoolId = null;
-        loadPools();
-        build();
-        player.openInventory(inventory);
+        refreshPools(player);
     }
 
     // ---- 数据加载 ----
 
-    void loadPools() {
-        pools.clear();
-        pools.addAll(plugin.blindBoxManager().listPools());
+    private void refreshPools(Player player) {
+        refreshPools(player, null);
     }
 
-    void loadLoots() {
+    private void refreshPools(Player player, Runnable afterLoad) {
+        long generation = ++loadGeneration;
+        loading = true;
+        pools.clear();
+        build();
+        player.openInventory(inventory);
+        plugin.blindBoxManager().loadPoolsAsync(rows -> {
+            if (generation != loadGeneration || !isStillOpen(player)) return;
+            pools.clear();
+            pools.addAll(rows);
+            loading = false;
+            if (afterLoad != null) afterLoad.run();
+            else rebuildAndOpen(player);
+        }, error -> finishLoadError(player, generation, error));
+    }
+
+    private void refreshLoots(Player player) {
+        long generation = ++loadGeneration;
+        loading = true;
         loots.clear();
-        if (selectedPoolId != null) {
-            loots.addAll(plugin.blindBoxManager().listLoot(selectedPoolId));
+        build();
+        player.openInventory(inventory);
+        if (selectedPoolId == null) {
+            loading = false;
+            return;
         }
+        plugin.blindBoxManager().loadLootViewsAsync(selectedPoolId, true, rows -> {
+            if (generation != loadGeneration || !isStillOpen(player)) return;
+            loots.clear();
+            loots.addAll(rows);
+            loading = false;
+            rebuildAndOpen(player);
+        }, error -> finishLoadError(player, generation, error));
+    }
+
+    private void finishLoadError(Player player, long generation, String error) {
+        if (generation != loadGeneration || !isStillOpen(player)) return;
+        loading = false;
+        player.sendMessage("§c" + error);
+        rebuildAndOpen(player);
+    }
+
+    private boolean isStillOpen(Player player) {
+        return player.isOnline() && player.getOpenInventory().getTopInventory().getHolder() == this;
     }
 
     /** 重建并打开后恢复 Q 捕获状态；openInventory 会同步触发旧窗口的 close 清理。 */
@@ -155,7 +193,8 @@ public final class BlindBoxAdminGui implements InventoryHolder {
         for (int i = 0; i < PAGE_SIZE && (start + i) < pools.size(); i++) {
             inventory.setItem(9 + i, buildPoolIcon(pools.get(start + i)));
         }
-        if (pools.isEmpty()) inventory.setItem(22, hint("§7暂无卡池，点击下方按钮新建"));
+        if (loading) inventory.setItem(22, hint("§e正在加载卡池..."));
+        else if (pools.isEmpty()) inventory.setItem(22, hint("§7暂无卡池，点击下方按钮新建"));
 
         // 底栏
         inventory.setItem(46, navButton(Material.OAK_SIGN, "§a➕ 新建卡池",
@@ -198,7 +237,8 @@ public final class BlindBoxAdminGui implements InventoryHolder {
         for (int i = 0; i < PAGE_SIZE && (start + i) < loots.size(); i++) {
             inventory.setItem(9 + i, buildLootIcon(loots.get(start + i)));
         }
-        if (loots.isEmpty()) inventory.setItem(22, hint("§7暂无战利品，点击下方按钮添加"));
+        if (loading) inventory.setItem(22, hint("§e正在加载战利品..."));
+        else if (loots.isEmpty()) inventory.setItem(22, hint("§7暂无战利品，点击下方按钮添加"));
 
         inventory.setItem(46, navButton(Material.EMERALD, "§a🎁 添加战利品",
                 "§7手持物品后点击，或 Q 键丢入",
@@ -378,7 +418,12 @@ public final class BlindBoxAdminGui implements InventoryHolder {
             inventory.setItem(13, preview);
         } else if (selectedLootId != null) {
             // 显示当前物品
-            ItemStack cur = plugin.blindBoxManager().getLootItemStack(selectedLootId);
+            ItemStack cur = loots.stream()
+                    .filter(row -> selectedLootId.equals(row.get("id")))
+                    .map(row -> row.get("previewItem"))
+                    .filter(ItemStack.class::isInstance)
+                    .map(ItemStack.class::cast)
+                    .findFirst().orElse(null);
             if (cur != null) {
                 ItemStack preview = cur.clone();
                 ItemMeta pm = preview.getItemMeta();
@@ -492,9 +537,9 @@ public final class BlindBoxAdminGui implements InventoryHolder {
     }
 
     private ItemStack buildLootIcon(Map<String, Object> l) {
-        // 优先用 BLOB 渲染真实物品，lore 追加元信息
+        // 真实物品已随异步 DTO 在主线程完成解码，不再逐条同步查询数据库。
         String lootId = String.valueOf(l.get("id"));
-        ItemStack base = plugin.blindBoxManager().getLootItemStack(lootId);
+        ItemStack base = l.get("previewItem") instanceof ItemStack item ? item : null;
 
         if (base == null || base.getType().isAir()) {
             base = new ItemStack(Material.BARRIER);
@@ -537,9 +582,7 @@ public final class BlindBoxAdminGui implements InventoryHolder {
         this.selectedPoolId = poolId;
         this.view = 1;
         this.page = 0;
-        loadLoots();
-        build();
-        player.openInventory(inventory);
+        refreshLoots(player);
     }
 
     void togglePool(String poolId, boolean enable, Player player) {
@@ -564,9 +607,7 @@ public final class BlindBoxAdminGui implements InventoryHolder {
             player.sendMessage("§a已" + (enable ? "启用" : "停用") + "卡池 " + p.get("name"));
             break;
         }
-        loadPools();
-        build();
-        player.openInventory(inventory);
+        refreshPools(player);
     }
 
     void deletePool(String poolId, Player player) {
@@ -574,17 +615,13 @@ public final class BlindBoxAdminGui implements InventoryHolder {
                 .map(p -> String.valueOf(p.get("name"))).findFirst().orElse(poolId);
         boolean ok = plugin.blindBoxManager().deletePool(poolId);
         player.sendMessage(ok ? "§a已删除卡池 " + name : "§c删除失败");
-        loadPools();
-        build();
-        player.openInventory(inventory);
+        refreshPools(player);
     }
 
     void deleteLoot(String lootId, Player player) {
         boolean ok = plugin.blindBoxManager().deleteLoot(lootId);
         player.sendMessage(ok ? "§a已删除战利品" : "§c删除失败");
-        loadLoots();
-        build();
-        player.openInventory(inventory);
+        refreshLoots(player);
     }
 
     /** 进入 view=3 编辑卡池 */
@@ -634,8 +671,9 @@ public final class BlindBoxAdminGui implements InventoryHolder {
         }
         editName = "";
         editPityRules = "";
-        loadPools();
-        view = 1; page = 0; loadLoots(); build(); player.openInventory(inventory);
+        view = 1;
+        page = 0;
+        refreshPools(player, () -> refreshLoots(player));
     }
 
     /** 进入 view=4 编辑战利品 */
@@ -668,7 +706,9 @@ public final class BlindBoxAdminGui implements InventoryHolder {
         pendingEditItem = null;
         pendingDrop.remove(player.getUniqueId());
         selectedLootId = null;
-        loadLoots(); view = 1; page = 0; rebuildAndOpen(player);
+        view = 1;
+        page = 0;
+        refreshLoots(player);
     }
 
     void confirmAddLoot(Player player) {
@@ -711,18 +751,16 @@ public final class BlindBoxAdminGui implements InventoryHolder {
             pendingQty = 1;
             if (!bundleContinue && pendingBundleId == null) {
                 // 独立奖品模式：直接返回战利品列表
-                loadLoots();
                 view = 1;
-                rebuildAndOpen(player);
+                refreshLoots(player);
             } else {
                 // bundle 模式：留在 view=2 继续添加
                 if (!bundleContinue) {
                     // 用户点了「独立奖品」按钮，退出 bundle 模式
                     pendingBundleId = null;
                     pendingBundleSlot = 0;
-                    loadLoots();
                     view = 1;
-                    rebuildAndOpen(player);
+                    refreshLoots(player);
                 } else {
                     rebuildAndOpen(player);
                 }
@@ -811,6 +849,7 @@ public final class BlindBoxAdminGui implements InventoryHolder {
                 player.sendMessage("§c权限已失效。");
                 return;
             }
+            if (gui.loading) return;
 
             int slot = event.getRawSlot();
             if (slot < 0 || slot >= gui.getInventory().getSize()) return;
@@ -822,7 +861,9 @@ public final class BlindBoxAdminGui implements InventoryHolder {
             }
             if (slot == 1) {
                 if (gui.view != 1 && gui.selectedPoolId != null) {
-                    gui.view = 1; gui.page = 0; gui.loadLoots(); gui.build(); player.openInventory(gui.getInventory());
+                    gui.view = 1;
+                    gui.page = 0;
+                    gui.refreshLoots(player);
                 } else if (gui.selectedPoolId == null) {
                     player.sendMessage("§c请先在卡池列表选择一个卡池");
                 }
@@ -963,8 +1004,9 @@ public final class BlindBoxAdminGui implements InventoryHolder {
                         gui.pendingBundleId = null;
                         gui.pendingBundleSlot = 0;
                         pendingDrop.remove(player.getUniqueId());
-                        gui.loadLoots(); gui.view = 1; gui.page = 0; gui.build();
-                        player.openInventory(gui.getInventory());
+                        gui.view = 1;
+                        gui.page = 0;
+                        gui.refreshLoots(player);
                         player.sendMessage("§a已退出奖品组模式。");
                     } else {
                         gui.confirmAddLoot(player, false);
@@ -975,8 +1017,9 @@ public final class BlindBoxAdminGui implements InventoryHolder {
                     pendingDrop.remove(player.getUniqueId());
                     gui.pendingBundleId = null;
                     gui.pendingBundleSlot = 0;
-                    gui.view = 1; gui.page = 0; gui.loadLoots(); gui.build();
-                    player.openInventory(gui.getInventory());
+                    gui.view = 1;
+                    gui.page = 0;
+                    gui.refreshLoots(player);
                 }
             }
 
@@ -1155,101 +1198,98 @@ public final class BlindBoxAdminGui implements InventoryHolder {
 
         @EventHandler
         public void onChat(AsyncPlayerChatEvent event) {
-            Player player = event.getPlayer();
-            UUID playerId = player.getUniqueId();
+            UUID playerId = event.getPlayer().getUniqueId();
             boolean hasPending = pendingPoolNameEdit.containsKey(playerId)
                     || pendingPoolRulesEdit.containsKey(playerId) || pendingCreate.containsKey(playerId);
-            if (hasPending && !player.hasPermission("kseco.admin")) {
-                pendingPoolNameEdit.remove(playerId);
-                pendingPoolRulesEdit.remove(playerId);
-                pendingCreate.remove(playerId);
-                event.setCancelled(true);
-                player.sendMessage("§c权限已失效，输入已取消。");
-                return;
-            }
-
-            // view=3 池名字编辑
-            BlindBoxAdminGui editGui = pendingPoolNameEdit.get(player.getUniqueId());
-            if (editGui != null) {
-                event.setCancelled(true);
-                String msg = event.getMessage().trim();
-                pendingPoolNameEdit.remove(player.getUniqueId());
-                if (msg.equalsIgnoreCase("cancel")) {
-                    player.sendMessage("§c已取消名字修改。");
-                } else if (msg.length() < 2 || msg.length() > 32) {
-                    player.sendMessage("§c名字需在2-32字符之间，已取消修改。");
-                } else {
-                    editGui.editName = msg;
-                    player.sendMessage("§a名字将改为: §f" + msg + " §7（请确认保存）");
-                }
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    editGui.build();
-                    player.openInventory(editGui.getInventory());
-                });
-                return;
-            }
-
-            BlindBoxAdminGui rulesGui = pendingPoolRulesEdit.get(player.getUniqueId());
-            if (rulesGui != null) {
-                event.setCancelled(true);
-                String msg = event.getMessage().trim();
-                pendingPoolRulesEdit.remove(player.getUniqueId());
-                if (msg.equalsIgnoreCase("cancel")) {
-                    player.sendMessage("§c已取消保底规则修改。");
-                } else if (msg.equalsIgnoreCase("0") || msg.equalsIgnoreCase("none") || msg.equalsIgnoreCase("clear")) {
-                    rulesGui.editPityRules = "";
-                    player.sendMessage("§a分级保底规则已清空，将使用 pityMax 兜底（请确认保存）。");
-                } else {
-                    String normalized = BlindBoxManager.normalizePityRules(msg, rulesGui.editPityMax);
-                    if (normalized.isBlank()) {
-                        player.sendMessage("§c规则无效，示例: RARE:50,EPIC:120,LEGENDARY:300");
-                    } else {
-                        rulesGui.editPityRules = normalized;
-                        player.sendMessage("§a分级保底规则将改为: §f" + normalized + " §7（请确认保存）");
-                    }
-                }
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    rulesGui.build();
-                    player.openInventory(rulesGui.getInventory());
-                });
-                return;
-            }
-
-            PendingCreatePool pending = pendingCreate.get(player.getUniqueId());
-            if (pending == null) return;
+            if (!hasPending) return;
 
             event.setCancelled(true);
             String msg = event.getMessage().trim();
-            if (msg.equalsIgnoreCase("cancel")) {
-                pendingCreate.remove(player.getUniqueId());
-                player.sendMessage("§c已取消新建卡池。");
-                Bukkit.getScheduler().runTask(plugin, () -> {
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player == null) {
+                    pendingPoolNameEdit.remove(playerId);
+                    pendingPoolRulesEdit.remove(playerId);
+                    pendingCreate.remove(playerId);
+                    return;
+                }
+                if (!player.hasPermission("kseco.admin")) {
+                    pendingPoolNameEdit.remove(playerId);
+                    pendingPoolRulesEdit.remove(playerId);
+                    pendingCreate.remove(playerId);
+                    player.sendMessage("§c权限已失效，输入已取消。");
+                    return;
+                }
+
+                // view=3 池名字编辑
+                BlindBoxAdminGui editGui = pendingPoolNameEdit.remove(playerId);
+                if (editGui != null) {
+                    if (msg.equalsIgnoreCase("cancel")) {
+                        player.sendMessage("§c已取消名字修改。");
+                    } else if (msg.length() < 2 || msg.length() > 32) {
+                        player.sendMessage("§c名字需在2-32字符之间，已取消修改。");
+                    } else {
+                        editGui.editName = msg;
+                        player.sendMessage("§a名字将改为: §f" + msg + " §7（请确认保存）");
+                    }
+                    editGui.build();
+                    player.openInventory(editGui.getInventory());
+                    return;
+                }
+
+                BlindBoxAdminGui rulesGui = pendingPoolRulesEdit.remove(playerId);
+                if (rulesGui != null) {
+                    if (msg.equalsIgnoreCase("cancel")) {
+                        player.sendMessage("§c已取消保底规则修改。");
+                    } else if (msg.equalsIgnoreCase("0") || msg.equalsIgnoreCase("none") || msg.equalsIgnoreCase("clear")) {
+                        rulesGui.editPityRules = "";
+                        player.sendMessage("§a分级保底规则已清空，将使用 pityMax 兜底（请确认保存）。");
+                    } else {
+                        String normalized = BlindBoxManager.normalizePityRules(msg, rulesGui.editPityMax);
+                        if (normalized.isBlank()) {
+                            player.sendMessage("§c规则无效，示例: RARE:50,EPIC:120,LEGENDARY:300");
+                        } else {
+                            rulesGui.editPityRules = normalized;
+                            player.sendMessage("§a分级保底规则将改为: §f" + normalized + " §7（请确认保存）");
+                        }
+                    }
+                    rulesGui.build();
+                    player.openInventory(rulesGui.getInventory());
+                    return;
+                }
+
+                PendingCreatePool pending = pendingCreate.get(playerId);
+                if (pending == null) return;
+                if (msg.equalsIgnoreCase("cancel")) {
+                    pendingCreate.remove(playerId);
+                    player.sendMessage("§c已取消新建卡池。");
                     BlindBoxAdminGui gui = new BlindBoxAdminGui(plugin);
                     gui.open(player);
-                });
-                return;
-            }
+                    return;
+                }
 
-            Bukkit.getScheduler().runTask(plugin, () -> {
                 switch (pending.step) {
                     case 1 -> {
                         if (msg.length() < 2 || msg.length() > 32) {
                             player.sendMessage("§c名称需在2-32字符之间，重新输入：");
-                            pendingCreate.put(player.getUniqueId(), new PendingCreatePool(1, null, 0, "ITEM"));
+                            pendingCreate.put(playerId, new PendingCreatePool(1, null, 0, "ITEM"));
                             return;
                         }
-                        pendingCreate.put(player.getUniqueId(), new PendingCreatePool(2, msg, 0, "ITEM"));
+                        pendingCreate.put(playerId, new PendingCreatePool(2, msg, 0, "ITEM"));
                         player.sendMessage("§a请输入价格（如 100）：");
                     }
                     case 2 -> {
                         try {
                             double price = Double.parseDouble(msg);
-                            if (price <= 0) { player.sendMessage("§c价格必须 > 0，重新输入："); return; }
-                            pendingCreate.put(player.getUniqueId(), new PendingCreatePool(3, pending.name, price, "ITEM"));
+                            if (price <= 0) {
+                                player.sendMessage("§c价格必须 > 0，重新输入：");
+                                return;
+                            }
+                            pendingCreate.put(playerId, new PendingCreatePool(3, pending.name, price, "ITEM"));
                             player.sendMessage("§a请输入类型 §fITEM§7/§fMATERIAL§7/§fEQUIPMENT §7（直接回车默认 ITEM）：");
                         } catch (NumberFormatException e) {
                             player.sendMessage("§c无效价格，重新输入：");
-                            pendingCreate.put(player.getUniqueId(), new PendingCreatePool(2, pending.name, 0, "ITEM"));
+                            pendingCreate.put(playerId, new PendingCreatePool(2, pending.name, 0, "ITEM"));
                         }
                     }
                     case 3 -> {
@@ -1261,7 +1301,7 @@ public final class BlindBoxAdminGui implements InventoryHolder {
                         boolean ok = plugin.blindBoxManager().upsertPool(
                                 poolId, pending.name, poolType, pending.price,
                                 true, 50, "", "PUBLIC", "", "");
-                        pendingCreate.remove(player.getUniqueId());
+                        pendingCreate.remove(playerId);
                         if (ok) {
                             player.sendMessage("§a卡池 「" + pending.name + "」 创建成功！ID: " + poolId);
                             player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.5f, 2.0f);

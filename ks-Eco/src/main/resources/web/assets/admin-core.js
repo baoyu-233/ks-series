@@ -47,7 +47,7 @@ function ksPreviewApi(path){
   if(path==='/api/bank/list')return {banks:[{id:'B-AURORA',name:'曙光发展银行',type:'COMMERCIAL',total_assets:330182382,loan_rate:.02,status:'ACTIVE'},{id:'B-NOVA',name:'新星储备银行',type:'COMMERCIAL',total_assets:210093000,loan_rate:.026,status:'ACTIVE'},{id:'GUIDE-BANK',name:'城邦发展银行',type:'GUIDANCE',total_assets:96000000,loan_rate:.015,status:'ACTIVE'}]};
   if(path==='/api/realestate/zones')return {moduleLoaded:true,zones:zones};
   if(path==='/api/realestate/plots')return {plots:plots};
-  if(path==='/api/market/stats')return {activeListings:46,storedItems:1280,officialBuyEnabled:true};
+  if(path==='/api/market/stats')return {activeListings:46,storedItems:1280,officialWarehouseItems:84,officialBuyEnabled:true};
   if(path==='/api/eco/public-info')return {prices:[{material:'DIAMOND',chineseName:'钻石',buyPrice:130,marketAvg:124,trend:'UP'},{material:'IRON_INGOT',chineseName:'铁锭',buyPrice:7.01,marketAvg:7.65,trend:'DOWN'},{material:'GOLD_INGOT',chineseName:'金锭',buyPrice:32.38,marketAvg:29.2,trend:'UP'}]};
   if(path==='/api/listings')return {listings:[{id:'L-1',material:'DIAMOND',sellerName:'NovaMiner',quantity:32,unitPrice:148,totalPrice:4736},{id:'L-2',material:'IRON_INGOT',sellerName:'RailWorks',quantity:256,unitPrice:8,totalPrice:2048}]};
   if(path==='/api/admin/listings')return {count:2,listings:[
@@ -242,7 +242,7 @@ async function loadMacroData(){
     if(!m||m.error)return;
     var ms='';
     ms+='<div class="stat-card" onclick="switchTab(\'market-overview\')" title="进入市场监控"><div class="stat-val">'+fmt(m.activeListings)+'</div><div class="stat-label">活跃挂单 →</div></div>';
-    ms+='<div class="stat-card" onclick="switchTab(\'market-overview\')" title="进入市场监控"><div class="stat-val">'+fmt(m.storedItems)+'</div><div class="stat-label">官方仓储·暂存 →</div></div>';
+    ms+='<div class="stat-card" onclick="switchTab(\'market-overview\')" title="进入市场监控"><div class="stat-val">'+fmt(m.officialWarehouseItems||0)+'</div><div class="stat-label">官方仓库 →</div></div>';
     ms+='<div class="stat-card" onclick="switchTab(\'prices\')" title="进入官方定价"><div class="stat-val">'+(m.officialBuyEnabled?'开':'关')+'</div><div class="stat-label">官方收购 →</div></div>';
     var box=document.getElementById('macroStats');if(box)box.insertAdjacentHTML('beforeend',ms);
   }).catch(function(){});
@@ -529,7 +529,7 @@ async function saveEconomicThresholds(){
   if(d.message)toast(d.message,'ok');else toast(d.error||'保存失败','err');
 }
 async function saveEnterpriseProfile(){
-  var d=await api('POST','/api/admin/enterprise/edit',{enterpriseId:document.getElementById('editEnterpriseId').value,name:document.getElementById('editEnterpriseName').value,description:document.getElementById('editEnterpriseDescription').value,level:Number(document.getElementById('editEnterpriseLevel').value)||1,status:document.getElementById('editEnterpriseStatus').value});
+  var d=await api('POST','/api/admin/enterprise/edit',{enterpriseId:document.getElementById('editEnterpriseId').value,name:document.getElementById('editEnterpriseName').value,description:document.getElementById('editEnterpriseDescription').value,type:document.getElementById('editEnterpriseType').value,region:document.getElementById('editEnterpriseRegion').value,industry:document.getElementById('editEnterpriseIndustry').value,ownerUuids:document.getElementById('editEnterpriseOwners').value,registeredCapital:Number(document.getElementById('editEnterpriseCapital').value),corporateBalance:Number(document.getElementById('editEnterpriseBalance').value),dividendRate:Number(document.getElementById('editEnterpriseDividendRate').value),level:Number(document.getElementById('editEnterpriseLevel').value)||1,status:document.getElementById('editEnterpriseStatus').value});
   if(d.message){toast(d.message,'ok');loadEntList();}else toast(d.error||'保存失败','err');
 }
 async function dissolveEnterprise(){
@@ -851,6 +851,7 @@ async function loadMarketOverview(){
   var s='';
   s+='<div class="stat-card"><div class="stat-val">'+fmt(d.activeListings)+'</div><div class="stat-label">活跃挂单</div></div>';
   s+='<div class="stat-card"><div class="stat-val">'+fmt(d.storedItems)+'</div><div class="stat-label">暂存物品数</div></div>';
+  s+='<div class="stat-card"><div class="stat-val">'+fmt(d.officialWarehouseItems||0)+'</div><div class="stat-label">官方仓库物品</div></div>';
   s+='<div class="stat-card"><div class="stat-val">'+(d.vaultAvailable?'✅':'❌')+'</div><div class="stat-label">Vault 经济</div></div>';
   s+='<div class="stat-card"><div class="stat-val">'+(d.officialBuyEnabled?'开':'关')+'</div><div class="stat-label">官方收购</div></div>';
   document.getElementById('marketStats').innerHTML=s;
@@ -1926,7 +1927,7 @@ async function setLegislativeMode(){
 
 // ============ 副本系统 (Dungeon, admin) ============
 var DG='/api/realestate-dungeon';
-var DG_NEXT={'grid.world_name':1,'grid.spacing':1,'grid.max_grids':1,'map.base_y':1,'map.arena_radius':1};
+var DG_NEXT={'grid.world_name':1,'grid.spacing':1,'grid.max_grids':1,'map.base_y':1,'map.arena_radius':1,'map.prepare_timeout_seconds':1};
 var dgTplCache=[];
 function dgTime(t){return t?new Date(t*1000).toLocaleString('zh-CN'):'—';}
 
@@ -2086,7 +2087,7 @@ async function loadProtocolsHub(){
 async function loadMarketHub(){
   var data=await Promise.all([api('GET','/api/market/stats'),api('GET','/api/eco/public-info'),api('GET','/api/listings'),api('GET','/api/blindbox/pools')]);
   var stats=data[0],prices=data[1].prices||[],listings=data[2].listings||[],pools=data[3].pools||[];
-  hubStats('marketHubStats',[{value:fmt(stats.activeListings||listings.length),label:'ACTIVE LISTINGS'},{value:fmt(stats.storedItems||0),label:'WAREHOUSE ITEMS'},{value:fmt(pools.filter(function(x){return x.enabled;}).length),label:'LIVE GACHA POOLS'},{value:stats.officialBuyEnabled?'ONLINE':'OFFLINE',label:'OFFICIAL BUY'}]);
+  hubStats('marketHubStats',[{value:fmt(stats.activeListings||listings.length),label:'ACTIVE LISTINGS'},{value:fmt(stats.officialWarehouseItems||0),label:'OFFICIAL WAREHOUSE'},{value:fmt(pools.filter(function(x){return x.enabled;}).length),label:'LIVE GACHA POOLS'},{value:stats.officialBuyEnabled?'ONLINE':'OFFLINE',label:'OFFICIAL BUY'}]);
   hubRows('marketHubListingBody',listings.slice(0,10).map(function(l){return '<tr><td>'+escapeHtml(l.material||'—')+'</td><td>'+escapeHtml(l.sellerName||'—')+'</td><td>'+fmt(l.quantity||0)+'</td><td>'+fmt(l.unitPrice||0)+'</td><td>'+fmt(l.totalPrice||0)+'</td></tr>';}).join(''),5,'暂无活跃挂单');
   hubRows('marketHubPriceBody',prices.slice(0,10).map(function(p){return '<tr><td>'+escapeHtml(p.chineseName||p.material||'—')+'</td><td>'+fmt(p.buyPrice||0)+'</td><td>'+fmt(p.marketAvg||0)+'</td><td>'+escapeHtml(p.trend||'—')+'</td></tr>';}).join(''),4,'暂无官方材料价格');
 }

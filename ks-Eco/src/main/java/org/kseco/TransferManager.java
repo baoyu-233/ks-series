@@ -74,7 +74,7 @@ public final class TransferManager {
         String senderUuid = sender.getUniqueId().toString();
         String senderName = sender.getName();
         String recipientName = recipient.getName() == null ? recipient.getUniqueId().toString() : recipient.getName();
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
                 if (conn == null) return;
                 try (PreparedStatement ps = conn.prepareStatement(

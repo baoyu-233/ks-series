@@ -65,7 +65,7 @@ public final class MarketManager {
 
         int maxListings = plugin.ecoConfig().getMaxListingsPerPlayer();
         // 异步：检查上限 + 写 DB，完成后回主线程通知玩家
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             List<ListingManager.Listing> myListings = plugin.listingManager().getPlayerListings(sellerUuid);
             if (myListings.size() >= maxListings) {
                 org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
@@ -114,7 +114,7 @@ public final class MarketManager {
             return;
         }
         // async 读挂单，避免主线程 DB 阻塞
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             ListingManager.Listing target = plugin.listingManager().getListing(listingId);
             // 读完回主线程做 Vault/库存操作
             org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
@@ -162,7 +162,7 @@ public final class MarketManager {
                                           double totalWithTax) {
         UUID buyerUuid = buyer.getUniqueId();
         String buyerName = buyer.getName();
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             ListingManager.PurchaseReservation reservation =
                     plugin.listingManager().reservePurchase(target, buyerUuid, quantity);
             org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
@@ -177,7 +177,7 @@ public final class MarketManager {
                 var seller = org.bukkit.Bukkit.getOfflinePlayer(target.sellerUuid());
                 if (!plugin.vaultHook().deposit(seller, totalCost)) {
                     boolean buyerRefunded = plugin.vaultHook().deposit(buyer, totalWithTax);
-                    plugin.asyncWorkPool().execute(() -> {
+                    plugin.asyncWorkPool().executeDatabase(() -> {
                         boolean rolledBack = plugin.listingManager().rollbackPurchase(reservation);
                         if (!rolledBack || !buyerRefunded) {
                             plugin.getLogger().severe("[市场] 卖家入账失败且回滚不完整: " + target.id());
@@ -187,7 +187,7 @@ public final class MarketManager {
                     return;
                 }
 
-                plugin.asyncWorkPool().execute(() -> plugin.priceEngine().recordTrade(
+                plugin.asyncWorkPool().executeDatabase(() -> plugin.priceEngine().recordTrade(
                         target.itemMaterial(), quantity, target.unitPrice(), buyerUuid.toString(),
                         target.sellerUuid().toString(), "PLAYER"));
                 recordTax(buyerUuid.toString(), buyerName, "MARKET_TRADE",
@@ -443,7 +443,7 @@ public final class MarketManager {
         }
         if (!trades.isEmpty()) {
             List<PriceEngine.TradeRecord> completedTrades = List.copyOf(trades);
-            plugin.asyncWorkPool().execute(() -> plugin.priceEngine().recordTrades(completedTrades));
+            plugin.asyncWorkPool().executeDatabase(() -> plugin.priceEngine().recordTrades(completedTrades));
         }
         player.updateInventory();
         player.sendMessage("§a官方收购完成！出售 " + extraction.quantity() + " 个物品，获得: "
@@ -493,7 +493,7 @@ public final class MarketManager {
     private void recordTax(String payerUuid, String payerName, String category,
                            double baseAmount, double taxRate, double taxAmount, String description) {
         if (taxAmount <= 0) return;
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
                 if (conn == null) return;
                 try (PreparedStatement ps = conn.prepareStatement(

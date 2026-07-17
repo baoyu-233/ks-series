@@ -69,9 +69,9 @@
 <div class="card">
 <h3>🏆 财富排行</h3>
 <div class="inline-tabs" style="margin-bottom:12px;">
-  <button class="inline-tab active" onclick="switchRankSub('players',event)">个人 Top50</button>
-  <button class="inline-tab" onclick="switchRankSub('enterprises',event)">企业 Top50</button>
-  <button class="inline-tab" onclick="switchRankSub('banks',event)">银行 Top50</button>
+  <button type="button" class="inline-tab active" onclick="switchRankSub('players',event)">个人 Top50</button>
+  <button type="button" class="inline-tab" onclick="switchRankSub('enterprises',event)">企业 Top50</button>
+  <button type="button" class="inline-tab" onclick="switchRankSub('banks',event)">银行 Top50</button>
 </div>
 <div class="rank-sub active" id="rank-sub-players">
 <div class="table-wrap"><table><thead><tr><th>#</th><th>玩家</th><th>UUID</th><th>余额</th><th>状态</th></tr></thead><tbody id="rankPlayerBody"></tbody></table></div>
@@ -315,8 +315,15 @@
 <label>企业ID<br><input id="editEnterpriseId" placeholder="企业ID"/></label>
 <label>企业名称<br><input id="editEnterpriseName" placeholder="允许管理员重命名"/></label>
 <label>描述<br><input id="editEnterpriseDescription" placeholder="企业简介" style="width:300px;"/></label>
+<label>类型<br><select id="editEnterpriseType"><option value="PRIVATE">私营</option><option value="STATE">国有</option><option value="STATE_OWNED">国有（官方注资）</option></select></label>
+<label>地区<br><input id="editEnterpriseRegion" placeholder="注册地区"/></label>
+<label>行业<br><select id="editEnterpriseIndustry"><option value="OTHER">其他</option><option value="INDUSTRY">工业</option><option value="AGRICULTURE">农业</option><option value="REAL_ESTATE">房地产</option></select></label>
+<label>所有者 UUID<br><input id="editEnterpriseOwners" placeholder="多个 UUID 用英文逗号分隔" style="width:360px;"/></label>
+<label>注册资本<br><input id="editEnterpriseCapital" type="number" min="0" step="0.01"/></label>
+<label>公户余额<br><input id="editEnterpriseBalance" type="number" min="0" step="0.01"/></label>
+<label>分红比例（%）<br><input id="editEnterpriseDividendRate" type="number" min="0" max="100" step="0.01"/></label>
 <label>企业等级<br><input id="editEnterpriseLevel" type="number" min="1" max="10" value="1"/></label>
-<label>状态<br><select id="editEnterpriseStatus"><option value="ACTIVE">正常</option><option value="SUSPENDED">暂停</option><option value="FROZEN">冻结</option><option value="DISSOLVED">已注销</option></select></label>
+<label>状态<br><select id="editEnterpriseStatus"><option value="ACTIVE">正常</option><option value="SUSPENDED">暂停</option><option value="FROZEN">冻结</option></select></label>
 <button class="btn btn-sm btn-success" onclick="saveEnterpriseProfile()">保存企业资料</button>
 </div>
 </div>

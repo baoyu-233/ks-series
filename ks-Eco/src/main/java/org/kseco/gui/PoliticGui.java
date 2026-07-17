@@ -969,19 +969,21 @@ public final class PoliticGui implements InventoryHolder {
 
         @EventHandler
         public void onChat(AsyncPlayerChatEvent event) {
-            Player player = event.getPlayer();
-            PendingProposal pending = pendingProposal.remove(player.getUniqueId());
+            UUID playerId = event.getPlayer().getUniqueId();
+            PendingProposal pending = pendingProposal.remove(playerId);
             if (pending == null) return;
 
             event.setCancelled(true);
             String msg = event.getMessage().trim();
-            if (msg.equalsIgnoreCase("cancel")) {
-                player.sendMessage("§c已取消。");
-                Bukkit.getScheduler().runTask(plugin, () -> new PoliticGui(plugin).open(player));
-                return;
-            }
-
             Bukkit.getScheduler().runTask(plugin, () -> {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player == null) return;
+                if (msg.equalsIgnoreCase("cancel")) {
+                    player.sendMessage("§c已取消。");
+                    new PoliticGui(plugin).open(player);
+                    return;
+                }
+
                 switch (pending.step) {
                     case 1 -> {
                         String type = switch (msg) {

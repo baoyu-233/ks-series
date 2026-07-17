@@ -24,14 +24,17 @@ import org.kseco.ShulkerBoxParser;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 
 /** 玩家求购大厅：列表、详情数量选择、成交与创建求购。 */
 public final class PurchaseOrderMenu implements InventoryHolder {
     private static final int SIZE = 54;
     private static final int PAGE_SIZE = 45;
     private static final Map<UUID, PendingCreation> PENDING = new ConcurrentHashMap<>();
+    private static final Set<String> ACTIVE_OPERATIONS = ConcurrentHashMap.newKeySet();
 
     private final KsEco plugin;
     private Inventory inventory;
@@ -55,16 +58,26 @@ public final class PurchaseOrderMenu implements InventoryHolder {
         fillEmpty();
         player.openInventory(inventory);
 
-        plugin.asyncWorkPool().execute(() -> {
-            List<PurchaseOrderManager.Order> loaded = plugin.purchaseOrderManager().activeOrders();
-            Bukkit.getScheduler().runTask(plugin, () -> {
-                if (!player.isOnline()
-                        || player.getOpenInventory().getTopInventory().getHolder() != this) return;
-                orders = loaded;
-                build(player);
-                player.openInventory(inventory);
+        UUID playerId = player.getUniqueId();
+        try {
+            plugin.asyncWorkPool().executeDatabase(() -> {
+                List<PurchaseOrderManager.OrderSnapshot> snapshots =
+                        plugin.purchaseOrderManager().loadActiveOrderSnapshots();
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    Player current = Bukkit.getPlayer(playerId);
+                    if (current == null || !current.isOnline()
+                            || current.getOpenInventory().getTopInventory().getHolder() != this) return;
+                    List<PurchaseOrderManager.Order> loaded =
+                            plugin.purchaseOrderManager().materializeOrders(snapshots);
+                    orders = loaded;
+                    build(current);
+                    current.openInventory(inventory);
+                });
             });
-        });
+        } catch (RejectedExecutionException rejected) {
+            inventory.setItem(22, button(Material.BARRIER, "§c系统繁忙，请稍后重试"));
+            player.openInventory(inventory);
+        }
     }
 
     private void build(Player player) {
@@ -332,22 +345,40 @@ public final class PurchaseOrderMenu implements InventoryHolder {
         }
 
         private void fulfill(Player player, PurchaseOrderMenu menu, PurchaseOrderManager.Order order) {
-            PurchaseOrderManager.FulfillmentResult result = plugin.purchaseOrderManager().fulfill(
-                    player, order, player.getInventory().getItemInMainHand(), menu.selectedQuantity);
-            player.sendMessage((result.success() ? "§a" : "§c") + result.message());
-            player.playSound(player.getLocation(), result.success()
-                    ? Sound.ENTITY_EXPERIENCE_ORB_PICKUP : Sound.BLOCK_NOTE_BLOCK_BASS, 0.6f, 1.2f);
-            if (result.success()) menu.open(player);
-            else menu.rebuild(player);
+            UUID playerId = player.getUniqueId();
+            String operationKey = "fulfill:" + order.id() + ":" + playerId;
+            if (!ACTIVE_OPERATIONS.add(operationKey)) {
+                player.sendMessage("§e该求购单正在结算，请稍候。");
+                return;
+            }
+            player.sendMessage("§7正在结算求购单...");
+            plugin.purchaseOrderManager().fulfillAsync(
+                    player, order, player.getInventory().getItemInMainHand(), menu.selectedQuantity, result -> {
+                        ACTIVE_OPERATIONS.remove(operationKey);
+                        Player current = Bukkit.getPlayer(playerId);
+                        if (current == null || !current.isOnline()) return;
+                        current.sendMessage((result.success() ? "§a" : "§c") + result.message());
+                        current.playSound(current.getLocation(), result.success()
+                                ? Sound.ENTITY_EXPERIENCE_ORB_PICKUP : Sound.BLOCK_NOTE_BLOCK_BASS, 0.6f, 1.2f);
+                        new PurchaseOrderMenu(plugin).open(current);
+                    });
         }
 
         private void cancel(Player player, PurchaseOrderMenu menu, PurchaseOrderManager.Order order) {
-            if (plugin.purchaseOrderManager().cancel(player, order)) {
-                player.sendMessage("§a求购单已撤销，剩余预存款已退回。");
-                menu.open(player);
-            } else {
-                player.sendMessage("§c撤销失败，求购单可能已结束。");
+            UUID playerId = player.getUniqueId();
+            String operationKey = "cancel:" + order.id();
+            if (!ACTIVE_OPERATIONS.add(operationKey)) {
+                player.sendMessage("§e该求购单正在处理，请稍候。");
+                return;
             }
+            player.sendMessage("§7正在撤销求购单...");
+            plugin.purchaseOrderManager().cancelAsync(player, order, result -> {
+                ACTIVE_OPERATIONS.remove(operationKey);
+                Player current = Bukkit.getPlayer(playerId);
+                if (current == null || !current.isOnline()) return;
+                current.sendMessage((result.success() ? "§a" : "§c") + result.message());
+                new PurchaseOrderMenu(plugin).open(current);
+            });
         }
     }
 
@@ -360,12 +391,15 @@ public final class PurchaseOrderMenu implements InventoryHolder {
 
         @EventHandler
         public void onChat(AsyncChatEvent event) {
-            Player player = event.getPlayer();
-            PendingCreation pending = PENDING.remove(player.getUniqueId());
-            if (pending == null) return;
+            UUID playerId = event.getPlayer().getUniqueId();
+            if (!PENDING.containsKey(playerId)) return;
             event.setCancelled(true);
             String input = PlainTextComponentSerializer.plainText().serialize(event.message()).trim();
-            Bukkit.getScheduler().runTask(plugin, () -> handleInput(player, pending, input));
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                PendingCreation pending = PENDING.remove(playerId);
+                Player player = Bukkit.getPlayer(playerId);
+                if (pending != null && player != null) handleInput(player, pending, input);
+            });
         }
 
         @EventHandler
@@ -387,10 +421,22 @@ public final class PurchaseOrderMenu implements InventoryHolder {
                         ? -1 : Integer.parseInt(parts[1]);
                 if (quantity == 0) quantity = -1;
                 if (!Double.isFinite(price) || price <= 0 || quantity < -1) throw new IllegalArgumentException();
-                boolean created = plugin.purchaseOrderManager().create(
-                        player, pending.template(), pending.exactNbt(), price, quantity);
-                player.sendMessage(created ? "§a求购单已创建。" : "§c创建失败，请检查余额、单价与数量。");
-                new PurchaseOrderMenu(plugin).open(player);
+                UUID playerId = player.getUniqueId();
+                String operationKey = "create:" + playerId;
+                if (!ACTIVE_OPERATIONS.add(operationKey)) {
+                    PENDING.put(playerId, pending);
+                    player.sendMessage("§e已有求购单正在创建，请稍候。");
+                    return;
+                }
+                player.sendMessage("§7正在创建求购单...");
+                plugin.purchaseOrderManager().createAsync(
+                        player, pending.template(), pending.exactNbt(), price, quantity, result -> {
+                            ACTIVE_OPERATIONS.remove(operationKey);
+                            Player current = Bukkit.getPlayer(playerId);
+                            if (current == null || !current.isOnline()) return;
+                            current.sendMessage((result.success() ? "§a" : "§c") + result.message());
+                            new PurchaseOrderMenu(plugin).open(current);
+                        });
             } catch (RuntimeException e) {
                 PENDING.put(player.getUniqueId(), pending);
                 player.sendMessage("§c格式无效。请输入“单价 数量”，例如 50 128；或输入 cancel 取消。");

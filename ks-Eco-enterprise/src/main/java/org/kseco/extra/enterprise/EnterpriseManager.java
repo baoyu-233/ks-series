@@ -52,6 +52,20 @@ public final class EnterpriseManager {
                         PRIMARY KEY (enterprise_id, player_uuid)
                     )
                 """);
+                stmt.execute("""
+                    CREATE TABLE IF NOT EXISTS ks_ent_join_requests (
+                        id TEXT PRIMARY KEY,
+                        enterprise_id TEXT NOT NULL,
+                        applicant_uuid TEXT NOT NULL,
+                        applicant_name TEXT DEFAULT '',
+                        status TEXT NOT NULL DEFAULT 'PENDING',
+                        created_at INTEGER NOT NULL,
+                        reviewed_by TEXT,
+                        reviewed_at INTEGER DEFAULT 0,
+                        UNIQUE (enterprise_id, applicant_uuid)
+                    )
+                """);
+                stmt.execute("CREATE INDEX IF NOT EXISTS idx_ent_join_requests_status ON ks_ent_join_requests (enterprise_id, status, created_at)");
                 // 招投标项目表
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS ks_ent_projects (
@@ -253,18 +267,193 @@ public final class EnterpriseManager {
         return null;
     }
 
+    /** Submit a join request. Membership is only created after an authorized manager approves it. */
+    public Map<String, Object> requestJoin(String enterpriseId, UUID applicantUuid, String applicantName) {
+        if (enterpriseId == null || enterpriseId.isBlank() || applicantUuid == null) {
+            return result(false, "企业或申请人无效。", null);
+        }
+        long now = System.currentTimeMillis() / 1000;
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return result(false, "数据库未连接。", null);
+            try (PreparedStatement enterprise = conn.prepareStatement(
+                    "SELECT owner_uuids,status FROM ks_ent_enterprises WHERE id=?")) {
+                enterprise.setString(1, enterpriseId);
+                try (ResultSet rs = enterprise.executeQuery()) {
+                    if (!rs.next() || !"ACTIVE".equalsIgnoreCase(rs.getString("status"))) {
+                        return result(false, "该企业不存在或未处于经营状态。", null);
+                    }
+                    if (containsOwner(rs.getString("owner_uuids"), applicantUuid)) {
+                        return result(false, "你已经是该企业所有者。", null);
+                    }
+                }
+            }
+            try (PreparedStatement member = conn.prepareStatement(
+                    "SELECT 1 FROM ks_ent_members WHERE enterprise_id=? AND player_uuid=?")) {
+                member.setString(1, enterpriseId);
+                member.setString(2, applicantUuid.toString());
+                if (member.executeQuery().next()) return result(false, "你已经是该企业成员。", null);
+            }
+            String requestId = UUID.randomUUID().toString();
+            try (PreparedStatement request = conn.prepareStatement("""
+                    INSERT INTO ks_ent_join_requests
+                    (id,enterprise_id,applicant_uuid,applicant_name,status,created_at,reviewed_by,reviewed_at)
+                    VALUES (?,?,?,?,'PENDING',?,NULL,0)
+                    ON CONFLICT(enterprise_id,applicant_uuid) DO UPDATE SET
+                    id=excluded.id, applicant_name=excluded.applicant_name, status='PENDING',
+                    created_at=excluded.created_at, reviewed_by=NULL, reviewed_at=0
+                    WHERE ks_ent_join_requests.status IN ('REJECTED','CANCELLED')
+                    """)) {
+                request.setString(1, requestId);
+                request.setString(2, enterpriseId);
+                request.setString(3, applicantUuid.toString());
+                request.setString(4, applicantName == null ? applicantUuid.toString() : applicantName);
+                request.setLong(5, now);
+                if (request.executeUpdate() == 0) return result(false, "你已有一条待审批申请。", null);
+            }
+            return result(true, "加入申请已提交，等待企业管理者审批。", Map.of("requestId", requestId));
+        } catch (SQLException e) {
+            eco.getLogger().warning("[企业] 提交加入申请失败: " + e.getMessage());
+            return result(false, "提交加入申请失败。", null);
+        }
+    }
+
+    /** Approve or reject a pending request. The request state and member row change atomically. */
+    public Map<String, Object> reviewJoinRequest(String enterpriseId, UUID reviewerUuid,
+                                                 String requestId, boolean approve) {
+        if (enterpriseId == null || reviewerUuid == null || requestId == null || requestId.isBlank()) {
+            return result(false, "审批参数无效。", null);
+        }
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return result(false, "数据库未连接。", null);
+            if (!hasEnterprisePermission(enterpriseId, reviewerUuid, "MANAGE_MEMBERS")) {
+                return result(false, "你没有该企业的成员管理权限。", null);
+            }
+            conn.setAutoCommit(false);
+            try {
+                String applicantUuid;
+                String applicantName;
+                try (PreparedStatement request = conn.prepareStatement(
+                        "SELECT applicant_uuid,applicant_name FROM ks_ent_join_requests WHERE id=? AND enterprise_id=? AND status='PENDING'")) {
+                    request.setString(1, requestId);
+                    request.setString(2, enterpriseId);
+                    try (ResultSet rs = request.executeQuery()) {
+                        if (!rs.next()) throw new IllegalArgumentException("申请不存在或已处理。");
+                        applicantUuid = rs.getString("applicant_uuid");
+                        applicantName = rs.getString("applicant_name");
+                    }
+                }
+                if (approve) {
+                    int maxMembers = 50;
+                    try (PreparedStatement setting = conn.prepareStatement(
+                            "SELECT value FROM ks_eco_settings WHERE key='enterprise_max_members'")) {
+                        try (ResultSet rs = setting.executeQuery()) {
+                            if (rs.next()) maxMembers = Math.max(1, Integer.parseInt(rs.getString(1)));
+                        } catch (NumberFormatException ignored) {}
+                    }
+                    try (PreparedStatement count = conn.prepareStatement(
+                            "SELECT COUNT(*) FROM ks_ent_members WHERE enterprise_id=?")) {
+                        count.setString(1, enterpriseId);
+                        try (ResultSet rs = count.executeQuery()) {
+                            if (rs.next() && rs.getInt(1) >= maxMembers) throw new IllegalStateException("企业成员已达到上限。");
+                        }
+                    }
+                    try (PreparedStatement member = conn.prepareStatement(
+                            "INSERT INTO ks_ent_members (enterprise_id,player_uuid,player_name,role,joined_at) VALUES (?,?,?,'EMPLOYEE',?) ON CONFLICT(enterprise_id,player_uuid) DO NOTHING")) {
+                        member.setString(1, enterpriseId);
+                        member.setString(2, applicantUuid);
+                        member.setString(3, applicantName);
+                        member.setLong(4, System.currentTimeMillis() / 1000);
+                        if (member.executeUpdate() != 1) throw new IllegalStateException("申请人已经是企业成员。");
+                    }
+                }
+                try (PreparedStatement request = conn.prepareStatement(
+                        "UPDATE ks_ent_join_requests SET status=?,reviewed_by=?,reviewed_at=? WHERE id=? AND enterprise_id=? AND status='PENDING'")) {
+                    request.setString(1, approve ? "APPROVED" : "REJECTED");
+                    request.setString(2, reviewerUuid.toString());
+                    request.setLong(3, System.currentTimeMillis() / 1000);
+                    request.setString(4, requestId);
+                    request.setString(5, enterpriseId);
+                    if (request.executeUpdate() != 1) throw new IllegalStateException("申请状态已经变更。");
+                }
+                updateMemberCount(conn, enterpriseId);
+                conn.commit();
+                return result(true, approve ? "加入申请已批准。" : "加入申请已拒绝。", null);
+            } catch (Exception e) {
+                conn.rollback();
+                return result(false, messageOf(e, "审批失败。"), null);
+            } finally {
+                try { conn.setAutoCommit(true); } catch (SQLException ignored) {}
+            }
+        } catch (SQLException e) {
+            return result(false, "审批失败。", null);
+        }
+    }
+
+    /** Ordinary members may leave voluntarily; owners must transfer ownership or dissolve instead. */
+    public Map<String, Object> leave(String enterpriseId, UUID memberUuid) {
+        if (enterpriseId == null || memberUuid == null) return result(false, "退出参数无效。", null);
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return result(false, "数据库未连接。", null);
+            try (PreparedStatement enterprise = conn.prepareStatement(
+                    "SELECT owner_uuids,status FROM ks_ent_enterprises WHERE id=?")) {
+                enterprise.setString(1, enterpriseId);
+                try (ResultSet rs = enterprise.executeQuery()) {
+                    if (!rs.next() || !"ACTIVE".equalsIgnoreCase(rs.getString("status"))) return result(false, "企业不存在或未处于经营状态。", null);
+                    if (containsOwner(rs.getString("owner_uuids"), memberUuid)) return result(false, "企业所有者不能直接退出，请先由管理员调整所有权或解散企业。", null);
+                }
+            }
+            conn.setAutoCommit(false);
+            try (PreparedStatement member = conn.prepareStatement(
+                    "DELETE FROM ks_ent_members WHERE enterprise_id=? AND player_uuid=?")) {
+                member.setString(1, enterpriseId);
+                member.setString(2, memberUuid.toString());
+                if (member.executeUpdate() != 1) throw new IllegalArgumentException("你不是该企业成员。");
+                try (PreparedStatement permissions = conn.prepareStatement(
+                        "DELETE FROM ks_ent_permissions WHERE enterprise_id=? AND player_uuid=?")) {
+                    permissions.setString(1, enterpriseId);
+                    permissions.setString(2, memberUuid.toString());
+                    permissions.executeUpdate();
+                }
+                try (PreparedStatement request = conn.prepareStatement(
+                        "UPDATE ks_ent_join_requests SET status='CANCELLED',reviewed_by=?,reviewed_at=? "
+                                + "WHERE enterprise_id=? AND applicant_uuid=? AND status='APPROVED'")) {
+                    request.setString(1, memberUuid.toString());
+                    request.setLong(2, System.currentTimeMillis() / 1000);
+                    request.setString(3, enterpriseId);
+                    request.setString(4, memberUuid.toString());
+                    request.executeUpdate();
+                }
+                updateMemberCount(conn, enterpriseId);
+                conn.commit();
+                return result(true, "你已退出企业。", null);
+            } catch (Exception e) {
+                conn.rollback();
+                return result(false, messageOf(e, "退出企业失败。"), null);
+            } finally {
+                try { conn.setAutoCommit(true); } catch (SQLException ignored) {}
+            }
+        } catch (SQLException e) {
+            return result(false, "退出企业失败。", null);
+        }
+    }
+
     /**
      * 注销企业。
      */
     public boolean dissolve(String enterpriseId, UUID requesterUuid) {
         Enterprise ent = getEnterprise(enterpriseId);
         if (ent == null || !ent.ownerUuids().contains(requesterUuid)) return false;
+        // A single owner may not unilaterally dissolve a joint-owned enterprise.
+        if (ent.ownerUuids().size() != 1) return false;
 
         // 先用条件更新把状态从 ACTIVE 原子翻到 DISSOLVED，成功才派发资产。
         // 旧顺序（先派发后更新、且不检查状态）可以对同一企业反复注销反复派发 = 无限印钞。
         double payout = ent.currentAssets();
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return false;
+            if (hasBlockingDissolutionRelations(conn, enterpriseId)) return false;
+            conn.setAutoCommit(false);
+            try {
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE ks_ent_enterprises SET status='DISSOLVED' WHERE id=? AND status='ACTIVE'")) {
                 ps.setString(1, enterpriseId);
@@ -293,6 +482,20 @@ public final class EnterpriseManager {
                     "UPDATE ks_ent_enterprises SET current_assets=0 WHERE id=?")) {
                 ps.setString(1, enterpriseId);
                 ps.executeUpdate();
+            }
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE ks_ent_join_requests SET status='CANCELLED',reviewed_by=?,reviewed_at=? WHERE enterprise_id=? AND status='PENDING'")) {
+                ps.setString(1, requesterUuid.toString());
+                ps.setLong(2, System.currentTimeMillis() / 1000);
+                ps.setString(3, enterpriseId);
+                ps.executeUpdate();
+            }
+            conn.commit();
+            } catch (Exception e) {
+                conn.rollback();
+                throw new SQLException("企业解散事务失败", e);
+            } finally {
+                try { conn.setAutoCommit(true); } catch (SQLException ignored) {}
             }
         } catch (SQLException e) {
             eco.getLogger().warning("[企业] 注销失败: " + e.getMessage());
@@ -562,10 +765,7 @@ public final class EnterpriseManager {
                     ps.executeUpdate();
                 }
                 adjustCorporateBankAssets(conn, enterpriseId, -grossAmount);
-                try (PreparedStatement ps = conn.prepareStatement("SELECT rate FROM ks_tax_rates WHERE category='DIVIDEND_TAX'")) {
-                    ResultSet rs = ps.executeQuery();
-                    if (rs.next()) taxRate = rs.getDouble(1);
-                } catch (SQLException ignored) {}
+                taxRate = readDividendTaxRate(conn);
                 taxPaid = grossAmount * taxRate;
                 netAmount = grossAmount - taxPaid;
                 long now = System.currentTimeMillis() / 1000;
@@ -597,6 +797,7 @@ public final class EnterpriseManager {
                     }
                     ps.executeBatch();
                 }
+                insertDividendTaxRecord(conn, enterpriseId, grossAmount, taxRate, taxPaid, now);
                 conn.commit();
             } catch (Exception e) {
                 conn.rollback();
@@ -677,9 +878,7 @@ public final class EnterpriseManager {
                     ps.setDouble(1, grossAmount); ps.setString(2, enterpriseId); ps.executeUpdate();
                 }
                 adjustCorporateBankAssets(conn, enterpriseId, -grossAmount);
-                try (PreparedStatement ps = conn.prepareStatement("SELECT rate FROM ks_tax_rates WHERE category='DIVIDEND_TAX'")) {
-                    ResultSet rs = ps.executeQuery(); if (rs.next()) taxRate = rs.getDouble(1);
-                } catch (SQLException ignored) {}
+                taxRate = readDividendTaxRate(conn);
                 taxPaid = grossAmount * taxRate;
                 netAmount = grossAmount - taxPaid;
                 String dividendId = UUID.randomUUID().toString().substring(0, 8);
@@ -705,6 +904,7 @@ public final class EnterpriseManager {
                     }
                     ps.executeBatch();
                 }
+                insertDividendTaxRecord(conn, enterpriseId, grossAmount, taxRate, taxPaid, now);
                 conn.commit();
             } catch (Exception e) {
                 conn.rollback();
@@ -740,6 +940,74 @@ public final class EnterpriseManager {
             bank.setDouble(1, delta);
             bank.setString(2, bankId);
             if (bank.executeUpdate() != 1) throw new SQLException("企业开户行不可用: " + bankId);
+        }
+    }
+
+    private double readDividendTaxRate(Connection conn) {
+        double rate = eco.getCategoryTaxRate("DIVIDEND_TAX", 0.10);
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT rate FROM ks_tax_rates WHERE category='DIVIDEND_TAX' AND (industry IS NULL OR industry='') ORDER BY updated_at DESC LIMIT 1")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) rate = rs.getDouble(1);
+            }
+        } catch (SQLException ignored) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT rate FROM ks_tax_rates WHERE category='DIVIDEND_TAX' LIMIT 1")) {
+                try (ResultSet rs = ps.executeQuery()) { if (rs.next()) rate = rs.getDouble(1); }
+            } catch (SQLException ignoredLegacySchema) {}
+        }
+        if (!Double.isFinite(rate)) return 0.10;
+        if (rate > 1.0 && rate <= 100.0) rate /= 100.0;
+        return Math.max(0.0, Math.min(1.0, rate));
+    }
+
+    private void insertDividendTaxRecord(Connection conn, String enterpriseId, double grossAmount,
+                                         double taxRate, double taxPaid, long now) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO ks_tax_records (payer_uuid,payer_name,category,base_amount,tax_rate,tax_amount,description,collected_at) VALUES (?,?,'DIVIDEND_TAX',?,?,?,?,?)")) {
+            ps.setString(1, enterpriseId);
+            ps.setString(2, "企业分红");
+            ps.setDouble(3, grossAmount);
+            ps.setDouble(4, taxRate);
+            ps.setDouble(5, taxPaid);
+            ps.setString(6, "企业 " + enterpriseId + " 分红纳税");
+            ps.setLong(7, now);
+            ps.executeUpdate();
+        }
+    }
+
+    private static void updateMemberCount(Connection conn, String enterpriseId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE ks_ent_enterprises SET employee_count=(SELECT COUNT(*) FROM ks_ent_members WHERE enterprise_id=?) WHERE id=?")) {
+            ps.setString(1, enterpriseId);
+            ps.setString(2, enterpriseId);
+            ps.executeUpdate();
+        }
+    }
+
+    private static boolean hasBlockingDissolutionRelations(Connection conn, String enterpriseId) throws SQLException {
+        if (tableExists(conn, "ks_bank_enterprise_loans")) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT 1 FROM ks_bank_enterprise_loans WHERE enterprise_id=? AND status IN ('ACTIVE','OVERDUE') LIMIT 1")) {
+                ps.setString(1, enterpriseId);
+                if (ps.executeQuery().next()) return true;
+            }
+        }
+        if (tableExists(conn, "ks_bank_enterprise_loan_requests")) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT 1 FROM ks_bank_enterprise_loan_requests WHERE enterprise_id=? AND status IN ('PENDING','PROCESSING') LIMIT 1")) {
+                ps.setString(1, enterpriseId);
+                if (ps.executeQuery().next()) return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean tableExists(Connection conn, String table) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")) {
+            ps.setString(1, table);
+            return ps.executeQuery().next();
         }
     }
 

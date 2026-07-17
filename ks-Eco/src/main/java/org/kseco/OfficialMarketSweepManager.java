@@ -25,7 +25,7 @@ public final class OfficialMarketSweepManager {
                 || !plugin.ecoConfig().isMarketProtectionEnabled()) return;
         if (!sweepRunning.compareAndSet(false, true)) return;
         int sampleSize = plugin.ecoConfig().getOfficialSweepSampleSize();
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             try {
                 List<ListingManager.Listing> listings = new ArrayList<>(plugin.listingManager().getActiveListings("SELL", null));
                 Collections.shuffle(listings);
@@ -82,7 +82,7 @@ public final class OfficialMarketSweepManager {
             if (completion != null) completion.run();
             return;
         }
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             ListingManager.Listing latest = null;
             RuntimeException loadFailure = null;
             try {
@@ -134,7 +134,7 @@ public final class OfficialMarketSweepManager {
             finishEvaluation(listingId, completion);
             return;
         }
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             double protectedUnitPrice;
             OfficialWarehouseManager.Acquisition acquisition = null;
             RuntimeException valuationFailure = null;
@@ -188,7 +188,7 @@ public final class OfficialMarketSweepManager {
     private void settleAcquisition(OfficialWarehouseManager.Acquisition acquisition) {
         var seller = Bukkit.getOfflinePlayer(acquisition.sellerUuid());
         if (!plugin.vaultHook().deposit(seller, acquisition.payment())) {
-            plugin.asyncWorkPool().execute(() -> {
+            plugin.asyncWorkPool().executeDatabase(() -> {
                 if (!plugin.officialWarehouseManager().rollbackAcquisition(acquisition)) {
                     plugin.getLogger().severe("Could not roll back unpaid official acquisition: "
                             + acquisition.listingId());
@@ -196,7 +196,7 @@ public final class OfficialMarketSweepManager {
             });
             return;
         }
-        plugin.asyncWorkPool().execute(() -> plugin.priceEngine().recordTrade(
+        plugin.asyncWorkPool().executeDatabase(() -> plugin.priceEngine().recordTrade(
                 acquisition.material(), acquisition.quantity(), acquisition.unitPrice(), "OFFICIAL",
                 acquisition.sellerUuid().toString(), "OFFICIAL_MARKET_SWEEP"));
         var onlineSeller = Bukkit.getPlayer(acquisition.sellerUuid());

@@ -9,6 +9,7 @@ import org.bukkit.inventory.ItemStack;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -337,51 +338,66 @@ public final class BlindBoxManager {
         return out;
     }
 
-    /** 列出某池所有战利品（含 lore、bundle 字段，按 bundle_slot + 权重降序排列） */
+    /**
+     * 列出某池所有战利品的纯数据库元数据。
+     *
+     * <p>此方法不会反序列化 ItemStack，因此可在数据库通道使用。需要真实物品或 lore 的
+     * GUI/Web 调用方应使用 {@link #loadLootViewsAsync(String, boolean, Consumer, Consumer)}。</p>
+     */
     public List<Map<String, Object>> listLoot(String poolId) {
         List<Map<String, Object>> out = new ArrayList<>();
-        try (var conn = plugin.ksCore().dataStore().getConnection()) {
-            if (conn == null) return out;
-            try (var ps = conn.prepareStatement(
-                    "SELECT id, pool_id, item_material, item_data, display_name, weight, rarity, quantity, " +
-                    "COALESCE(bundle_id, '') AS bundle_id, COALESCE(bundle_slot, 0) AS bundle_slot, created_at " +
-                    "FROM ks_bb_loot WHERE pool_id=? ORDER BY COALESCE(bundle_slot,0) ASC, weight DESC, created_at ASC")) {
-                ps.setString(1, poolId);
-                try (var rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        Map<String, Object> m = new LinkedHashMap<>();
-                        m.put("id", rs.getString("id"));
-                        m.put("poolId", rs.getString("pool_id"));
-                        m.put("itemMaterial", rs.getString("item_material"));
-                        m.put("displayName", rs.getString("display_name"));
-                        m.put("weight", rs.getInt("weight"));
-                        m.put("rarity", rs.getString("rarity"));
-                        m.put("quantity", rs.getInt("quantity"));
-                        String bundleId = rs.getString("bundle_id");
-                        m.put("bundleId", bundleId != null && !bundleId.isEmpty() ? bundleId : null);
-                        m.put("bundleSlot", rs.getInt("bundle_slot"));
-                        m.put("createdAt", rs.getLong("created_at"));
-                        // 提取 lore（从 BLOB 反序列化）
-                        List<String> lore = new ArrayList<>();
-                        byte[] blob = rs.getBytes("item_data");
-                        if (blob != null && blob.length > 0) {
-                            try {
-                                ItemStack is = ItemStack.deserializeBytes(blob);
-                                if (is.hasItemMeta() && is.getItemMeta() != null && is.getItemMeta().hasLore()) {
-                                    List<String> rawLore = is.getItemMeta().getLore();
-                                    if (rawLore != null) lore.addAll(rawLore);
-                                }
-                            } catch (Exception ignored) {}
-                        }
-                        m.put("lore", lore);
-                        out.add(m);
-                    }
-                }
-            }
-        } catch (SQLException e) {
-            plugin.getLogger().warning("列出盲盒战利品失败: " + e.getMessage());
+        for (LootSnapshot snapshot : loadLootSnapshots(poolId)) {
+            Map<String, Object> row = new LinkedHashMap<>(snapshot.meta());
+            row.put("lore", List.of());
+            out.add(Collections.unmodifiableMap(row));
         }
-        return out;
+        return List.copyOf(out);
+    }
+
+    /** 在数据库通道读取卡池 DTO，并在服务器线程交付结果。 */
+    public void loadPoolsAsync(Consumer<List<Map<String, Object>>> callback, Consumer<String> errorCallback) {
+        Objects.requireNonNull(callback, "callback");
+        Objects.requireNonNull(errorCallback, "errorCallback");
+        try {
+            plugin.asyncWorkPool().executeDatabase(() -> {
+                try {
+                    List<Map<String, Object>> rows = new ArrayList<>();
+                    for (Map<String, Object> row : listPools()) {
+                        rows.add(Collections.unmodifiableMap(new LinkedHashMap<>(row)));
+                    }
+                    completeOnServerThread(() -> callback.accept(List.copyOf(rows)));
+                } catch (RuntimeException exception) {
+                    plugin.getLogger().warning("异步加载盲盒池失败: " + exception.getMessage());
+                    completeOnServerThread(() -> errorCallback.accept("加载盲盒池失败"));
+                }
+            });
+        } catch (RejectedExecutionException exception) {
+            completeOnServerThread(() -> errorCallback.accept("数据库队列繁忙，请稍后重试"));
+        }
+    }
+
+    /**
+     * 数据库通道只读取原始字节；ItemStack、物品元数据和 lore 均在服务器线程构造。
+     * includePreviewItem 仅供游戏内 GUI 使用，Web 返回应传 false。
+     */
+    public void loadLootViewsAsync(String poolId, boolean includePreviewItem,
+                                   Consumer<List<Map<String, Object>>> callback,
+                                   Consumer<String> errorCallback) {
+        Objects.requireNonNull(callback, "callback");
+        Objects.requireNonNull(errorCallback, "errorCallback");
+        try {
+            plugin.asyncWorkPool().executeDatabase(() -> {
+                try {
+                    List<LootSnapshot> snapshots = loadLootSnapshots(poolId);
+                    completeOnServerThread(() -> callback.accept(materializeLootViews(snapshots, includePreviewItem)));
+                } catch (RuntimeException exception) {
+                    plugin.getLogger().warning("异步加载盲盒战利品失败: " + exception.getMessage());
+                    completeOnServerThread(() -> errorCallback.accept("加载战利品失败"));
+                }
+            });
+        } catch (RejectedExecutionException exception) {
+            completeOnServerThread(() -> errorCallback.accept("数据库队列繁忙，请稍后重试"));
+        }
     }
 
     /** 单条卡池 */
@@ -890,47 +906,6 @@ public final class BlindBoxManager {
         return false;
     }
 
-    /**
-     * 反序列化某条战利品的 ItemStack（优先读 BLOB，失败 fallback 到 Material）。
-     * 返回 null 表示 lootId 不存在。
-     */
-    public ItemStack getLootItemStack(String lootId) {
-        try (var conn = plugin.ksCore().dataStore().getConnection()) {
-            if (conn == null) return null;
-            try (var ps = conn.prepareStatement(
-                    "SELECT item_data, item_material, display_name, quantity FROM ks_bb_loot WHERE id=?")) {
-                ps.setString(1, lootId);
-                try (var rs = ps.executeQuery()) {
-                    if (!rs.next()) return null;
-                    byte[] blob = rs.getBytes("item_data");
-                    int qty = Math.max(1, rs.getInt("quantity"));
-                    if (blob != null && blob.length > 0) {
-                        try {
-                            return ItemStack.deserializeBytes(blob);
-                        } catch (Exception ignored) {}
-                    }
-                    String matName = rs.getString("item_material");
-                    try {
-                        Material mat = Material.valueOf(matName);
-                        ItemStack fallback = new ItemStack(mat, qty);
-                        String dn = rs.getString("display_name");
-                        if (dn != null && !dn.isEmpty()) {
-                            var meta = fallback.getItemMeta();
-                            if (meta != null) {
-                                meta.setDisplayName(ChatColor.translateAlternateColorCodes('&', dn));
-                                fallback.setItemMeta(meta);
-                            }
-                        }
-                        return fallback;
-                    } catch (IllegalArgumentException ignored) {}
-                }
-            }
-        } catch (SQLException e) {
-            plugin.getLogger().warning("getLootItemStack 失败: " + e.getMessage());
-        }
-        return null;
-    }
-
     // ================================================================
     // 内部：单次查询加载所有战利品（含预构建 ItemStack，避免逐条 getLootItemStack）
     // ================================================================
@@ -958,8 +933,7 @@ public final class BlindBoxManager {
     private record PullLog(String material, String rarity) {}
 
     /**
-     * 一次 SQL 查询加载指定池的所有战利品，并反序列化 BLOB → ItemStack。
-     * 比 listLoot() + N×getLootItemStack() 少 N 次数据库往返。
+     * 一次 SQL 查询加载指定池的所有原始战利品快照，不接触 Bukkit 物品对象。
      */
     private List<LootSnapshot> loadLootSnapshots(String poolId) {
         List<LootSnapshot> out = new ArrayList<>();
@@ -967,13 +941,15 @@ public final class BlindBoxManager {
             if (conn == null) return out;
             try (var ps = conn.prepareStatement(
                     "SELECT id, pool_id, item_material, item_data, display_name, weight, rarity, quantity, " +
-                    "COALESCE(bundle_id,'') AS bundle_id, COALESCE(bundle_slot,0) AS bundle_slot " +
-                    "FROM ks_bb_loot WHERE pool_id=? ORDER BY COALESCE(bundle_slot,0) ASC, weight DESC")) {
+                    "COALESCE(bundle_id,'') AS bundle_id, COALESCE(bundle_slot,0) AS bundle_slot, created_at " +
+                    "FROM ks_bb_loot WHERE pool_id=? " +
+                    "ORDER BY COALESCE(bundle_slot,0) ASC, weight DESC, created_at ASC")) {
                 ps.setString(1, poolId);
                 try (var rs = ps.executeQuery()) {
                     while (rs.next()) {
                         Map<String, Object> m = new LinkedHashMap<>();
                         m.put("id", rs.getString("id"));
+                        m.put("poolId", rs.getString("pool_id"));
                         m.put("itemMaterial", rs.getString("item_material"));
                         m.put("displayName", rs.getString("display_name"));
                         m.put("weight", rs.getInt("weight"));
@@ -982,6 +958,7 @@ public final class BlindBoxManager {
                         String bid = rs.getString("bundle_id");
                         m.put("bundleId", bid.isEmpty() ? null : bid);
                         m.put("bundleSlot", rs.getInt("bundle_slot"));
+                        m.put("createdAt", rs.getLong("created_at"));
 
                         byte[] blob = rs.getBytes("item_data");
                         out.add(new LootSnapshot(m, blob));
@@ -1022,6 +999,39 @@ public final class BlindBoxManager {
             out.add(new LootFull(snapshot.meta(), item));
         }
         return out;
+    }
+
+    private List<Map<String, Object>> materializeLootViews(List<LootSnapshot> snapshots,
+                                                            boolean includePreviewItem) {
+        if (!Bukkit.isPrimaryThread()) {
+            throw new IllegalStateException("盲盒物品视图只能在服务器线程构造");
+        }
+        List<LootFull> decoded = decodeLootSnapshots(snapshots);
+        List<Map<String, Object>> out = new ArrayList<>(decoded.size());
+        for (LootFull entry : decoded) {
+            Map<String, Object> row = new LinkedHashMap<>(entry.meta());
+            ItemStack item = entry.item();
+            List<String> lore = new ArrayList<>();
+            if (item != null && item.hasItemMeta()) {
+                var meta = item.getItemMeta();
+                if (meta != null && meta.hasLore()) {
+                    List<String> rawLore = meta.getLore();
+                    if (rawLore != null) lore.addAll(rawLore);
+                }
+            }
+            row.put("lore", List.copyOf(lore));
+            if (includePreviewItem && item != null) row.put("previewItem", item.clone());
+            out.add(Collections.unmodifiableMap(row));
+        }
+        return List.copyOf(out);
+    }
+
+    private void completeOnServerThread(Runnable callback) {
+        if (Bukkit.isPrimaryThread()) {
+            callback.run();
+        } else if (plugin.isEnabled()) {
+            Bukkit.getScheduler().runTask(plugin, callback);
+        }
     }
 
     private List<LootFull> loadLootFull(String poolId) {
@@ -1352,7 +1362,7 @@ public final class BlindBoxManager {
             return;
         }
 
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             try {
                 Map<String, Object> pool = getPool(poolId);
                 String error = validateAsyncPool(pool, playerUuid, enforceLimitedOnly);
@@ -1448,7 +1458,7 @@ public final class BlindBoxManager {
             logs.add(new PullLog(material, rarity));
         }
 
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             persistPullBatch(playerUuid.toString(), poolId, logs, prepared.pityRules(), prepared.finalPityCounts());
             finishPullBatch(operationKey, callback, List.copyOf(results));
         });

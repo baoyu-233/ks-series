@@ -748,53 +748,61 @@ public final class BiddingGui implements InventoryHolder {
 
         @EventHandler
         public void onChat(AsyncPlayerChatEvent event) {
-            Player player = event.getPlayer();
+            UUID playerId = event.getPlayer().getUniqueId();
 
             // Check bid pending first
-            PendingBid bidPending = pendingBid.remove(player.getUniqueId());
+            PendingBid bidPending = pendingBid.remove(playerId);
             if (bidPending != null) {
                 event.setCancelled(true);
                 String msg = event.getMessage().trim();
                 if (msg.equalsIgnoreCase("cancel")) {
-                    player.sendMessage("§c已取消。");
-                    Bukkit.getScheduler().runTask(plugin, () -> new BiddingGui(plugin).open(player));
+                    reopenAfterCancel(playerId);
                     return;
                 }
-                handleBidChat(player, bidPending, msg);
+                handleBidChat(playerId, bidPending, msg);
                 return;
             }
 
             // Check procurement publish wizard
-            PendingPublishProc procPending = pendingPublishProc.remove(player.getUniqueId());
+            PendingPublishProc procPending = pendingPublishProc.remove(playerId);
             if (procPending != null) {
                 event.setCancelled(true);
                 String msg = event.getMessage().trim();
                 if (msg.equalsIgnoreCase("cancel")) {
-                    player.sendMessage("§c已取消。");
-                    Bukkit.getScheduler().runTask(plugin, () -> new BiddingGui(plugin).open(player));
+                    reopenAfterCancel(playerId);
                     return;
                 }
-                handlePublishProcChat(player, procPending, msg);
+                handlePublishProcChat(playerId, procPending, msg);
                 return;
             }
 
             // Check publish pending
-            PendingPublish pubPending = pendingPublish.remove(player.getUniqueId());
+            PendingPublish pubPending = pendingPublish.remove(playerId);
             if (pubPending == null) return;
 
             event.setCancelled(true);
             String msg = event.getMessage().trim();
             if (msg.equalsIgnoreCase("cancel")) {
-                player.sendMessage("§c已取消。");
-                Bukkit.getScheduler().runTask(plugin, () -> new BiddingGui(plugin).open(player));
+                reopenAfterCancel(playerId);
                 return;
             }
-            handlePublishChat(player, pubPending, msg);
+            handlePublishChat(playerId, pubPending, msg);
+        }
+
+        private void reopenAfterCancel(UUID playerId) {
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player == null) return;
+                player.sendMessage("§c已取消。");
+                new BiddingGui(plugin).open(player);
+            });
         }
 
         /** 发布采购聊天向导：企业ID → 标题 → 数量 → 预算，镜像 web handleProcurementPublish 的校验与授权。 */
-        private void handlePublishProcChat(Player player, PendingPublishProc pending, String msg) {
+        private void handlePublishProcChat(UUID playerId, PendingPublishProc pending, String msg) {
             Bukkit.getScheduler().runTask(plugin, () -> {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player == null) return;
                 switch (pending.step) {
                     case 1 -> {
                         String entId = msg.trim();
@@ -876,8 +884,10 @@ public final class BiddingGui implements InventoryHolder {
             });
         }
 
-        private void handleBidChat(Player player, PendingBid pending, String msg) {
+        private void handleBidChat(UUID playerId, PendingBid pending, String msg) {
             Bukkit.getScheduler().runTask(plugin, () -> {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player == null) return;
                 try (var conn = plugin.ksCore().dataStore().getConnection()) {
                     long now = System.currentTimeMillis() / 1000;
                     String bidId = UUID.randomUUID().toString().substring(0, 8);
@@ -964,8 +974,10 @@ public final class BiddingGui implements InventoryHolder {
             });
         }
 
-        private void handlePublishChat(Player player, PendingPublish pending, String msg) {
+        private void handlePublishChat(UUID playerId, PendingPublish pending, String msg) {
             Bukkit.getScheduler().runTask(plugin, () -> {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player == null) return;
                 switch (pending.step) {
                     case 1 -> {
                         if (msg.isBlank() || msg.length() > 128) {

@@ -199,12 +199,14 @@ public final class OfficialBuyAdminGui implements InventoryHolder {
 
         @EventHandler
         public void onChat(AsyncPlayerChatEvent event) {
-            Player player = event.getPlayer();
-            PendingPrice pending = PENDING.remove(player.getUniqueId());
-            if (pending == null) return;
+            UUID playerId = event.getPlayer().getUniqueId();
+            if (!PENDING.containsKey(playerId)) return;
             event.setCancelled(true);
             String input = event.getMessage().trim();
             Bukkit.getScheduler().runTask(plugin, () -> {
+                PendingPrice pending = PENDING.remove(playerId);
+                Player player = Bukkit.getPlayer(playerId);
+                if (pending == null || player == null) return;
                 if (input.equalsIgnoreCase("cancel")) {
                     player.sendMessage("§7已取消官方收购设置。");
                     pending.gui().rebuild(player);
@@ -220,7 +222,7 @@ public final class OfficialBuyAdminGui implements InventoryHolder {
                             : "§a官方收购价已设为 " + plugin.vaultHook().format(price));
                     pending.gui().rebuild(player);
                 } catch (RuntimeException e) {
-                    PENDING.put(player.getUniqueId(), pending);
+                    PENDING.put(playerId, pending);
                     player.sendMessage("§c请输入 0 或不超过一万亿的非负数字，或输入 cancel 取消。");
                 }
             });

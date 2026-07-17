@@ -640,46 +640,57 @@ public final class ExchangeGui implements InventoryHolder {
 
         @EventHandler
         public void onChat(AsyncPlayerChatEvent event) {
-            Player player = event.getPlayer();
+            UUID playerId = event.getPlayer().getUniqueId();
             String msg = event.getMessage().trim();
+            boolean hasPending = pendingName.containsKey(playerId)
+                    || pendingBatchQty.containsKey(playerId)
+                    || (msg.equalsIgnoreCase("cancel") && pendingSet.containsKey(playerId));
+            if (!hasPending) return;
 
-            // 1. 改名 pending
-            ExchangeGui gui = pendingName.remove(player.getUniqueId());
-            if (gui != null) {
-                event.setCancelled(true);
-                if (!player.hasPermission("kseco.admin")) {
-                    player.sendMessage("§c权限已失效，命名已取消。");
+            event.setCancelled(true);
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player == null) {
+                    pendingName.remove(playerId);
+                    pendingSet.remove(playerId);
+                    pendingBatchQty.remove(playerId);
                     return;
                 }
-                if (msg.equalsIgnoreCase("cancel")) {
-                    player.sendMessage("§c已取消命名。");
+
+                // 1. 改名 pending
+                ExchangeGui gui = pendingName.remove(playerId);
+                if (gui != null) {
+                    if (!player.hasPermission("kseco.admin")) {
+                        player.sendMessage("§c权限已失效，命名已取消。");
+                        return;
+                    }
+                    if (msg.equalsIgnoreCase("cancel")) {
+                        player.sendMessage("§c已取消命名。");
+                        gui.reopen(player);
+                        return;
+                    }
+                    gui.ruleName = msg;
+                    player.sendMessage("§a规则名称已设为: " + msg);
                     gui.reopen(player);
                     return;
                 }
-                gui.ruleName = msg;
-                player.sendMessage("§a规则名称已设为: " + msg);
-                Bukkit.getScheduler().runTask(plugin, () -> gui.reopen(player));
-                return;
-            }
 
-            // 2. cancel Q-丢入 pending
-            if (msg.equalsIgnoreCase("cancel")) {
-                PendingSet ps = pendingSet.remove(player.getUniqueId());
-                if (ps != null) {
-                    event.setCancelled(true);
-                    player.sendMessage("§c已取消设定。");
-                    Bukkit.getScheduler().runTask(plugin, () -> ps.gui.reopen(player));
-                    return;
+                // 2. cancel Q-丢入 pending
+                if (msg.equalsIgnoreCase("cancel")) {
+                    PendingSet ps = pendingSet.remove(playerId);
+                    if (ps != null) {
+                        player.sendMessage("§c已取消设定。");
+                        ps.gui.reopen(player);
+                        return;
+                    }
                 }
-            }
 
-            // 3. 批量兑换数量输入 pending
-            PendingBatch pb = pendingBatchQty.remove(player.getUniqueId());
-            if (pb != null) {
-                event.setCancelled(true);
+                // 3. 批量兑换数量输入 pending
+                PendingBatch pb = pendingBatchQty.remove(playerId);
+                if (pb == null) return;
                 if (msg.equalsIgnoreCase("cancel")) {
                     player.sendMessage("§c已取消批量兑换。");
-                    Bukkit.getScheduler().runTask(plugin, () -> pb.gui.reopen(player));
+                    pb.gui.reopen(player);
                     return;
                 }
                 int times;
@@ -687,26 +698,23 @@ public final class ExchangeGui implements InventoryHolder {
                     times = Integer.parseInt(msg.trim());
                 } catch (NumberFormatException e) {
                     player.sendMessage("§c请输入有效的数字，或输入 §ccancel §c取消。");
-                    pendingBatchQty.put(player.getUniqueId(), pb);
+                    pendingBatchQty.put(playerId, pb);
                     return;
                 }
                 if (times <= 0) {
                     player.sendMessage("§c兑换次数必须大于0，请重新输入，或输入 §ccancel §c取消。");
-                    pendingBatchQty.put(player.getUniqueId(), pb);
+                    pendingBatchQty.put(playerId, pb);
                     return;
                 }
-                int requestedTimes = times;
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    String error = plugin.exchangeManager().executeExchangeBatch(
-                            player.getUniqueId(), player.getName(), pb.ruleId(), requestedTimes);
-                    if (error == null) {
-                        player.sendMessage("§a批量兑换成功！共兑换 §b" + requestedTimes + " §a次。");
-                    } else {
-                        player.sendMessage("§c" + error);
-                    }
-                    pb.gui.reopen(player);
-                });
-            }
+                String error = plugin.exchangeManager().executeExchangeBatch(
+                        playerId, player.getName(), pb.ruleId(), times);
+                if (error == null) {
+                    player.sendMessage("§a批量兑换成功！共兑换 §b" + times + " §a次。");
+                } else {
+                    player.sendMessage("§c" + error);
+                }
+                pb.gui.reopen(player);
+            });
         }
     }
 }

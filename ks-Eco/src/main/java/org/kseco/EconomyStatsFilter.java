@@ -88,7 +88,10 @@ public final class EconomyStatsFilter {
                 || uuid.equalsIgnoreCase("SYSTEM")
                 || uuid.startsWith("00000000-")
                 || n.equalsIgnoreCase("SYSTEM")
-                || n.equalsIgnoreCase("CONSOLE");
+                || n.equalsIgnoreCase("CONSOLE")
+                || n.equalsIgnoreCase("中央银行")
+                || n.equalsIgnoreCase("央行")
+                || n.equalsIgnoreCase("CENTRAL BANK");
     }
 
     private static Set<String> configuredUuidExclusions(KsEco plugin) {

@@ -83,7 +83,7 @@ public final class CompensationManager {
     }
 
     private void runQuery(UUID playerUuid, boolean includeDisabled, Consumer<List<Plan>> callback) {
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             List<RawPlan> rows = new ArrayList<>();
             String sql = """
                     SELECT p.*,
@@ -197,7 +197,7 @@ public final class CompensationManager {
     }
 
     public void claim(UUID playerUuid, String playerName, String planId, Consumer<OperationResult> callback) {
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             OperationResult result;
             try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
                 conn.setAutoCommit(false);
@@ -262,7 +262,7 @@ public final class CompensationManager {
     }
 
     private void execute(String action, Consumer<OperationResult> callback, SqlAction sql) {
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             OperationResult result;
             try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
                 sql.run(conn);

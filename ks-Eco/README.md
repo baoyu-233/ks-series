@@ -20,9 +20,17 @@ ks-Eco (核心)
 - **随机供给**: 原官方直售已由盲盒系统替代，玩家通过卡池、权重和保底机制获取稀有物品
 - **玩家交易** (`/trade`): 1v1 GUI，物品+货币同时交换，双方确认
 - **储物箱** (`/storage`): 已购/退回物品暂存，潜影盒递归解析
+- **官方仓库** (`/kseco gui`): 管理员可分页查看并领取官方收购暂存物品；与玩家储物箱分离
 - **动态定价引擎**: 真实官方 SELL 流水产生双向供需压力，叠加均值回归随机漂移（默认 ±30%）
-- **Web 管理面板**: `/ks-Eco` 路由，银行/企业/税收/定价 CRUD
+- **Web 管理面板**: `/ks-Eco` 路由，银行/企业/税收/定价 CRUD；个人财富榜排除中央银行和系统账户
 - **扩展模块系统**: 从 `plugins/ks-Eco/extra/` 动态加载 JAR
+
+## 线程与结算边界
+
+- SQL 与纯数据处理进入有界工作队列；Bukkit、GUI、权限、物品和 Vault 操作留在服务器线程。
+- 采购单创建、履行和取消使用异步事务，并通过私有待结算表阻止买家在卖家结算前领取物品。
+- 盲盒管理员列表在工作线程读取原始数据，回到服务器线程后才解析 `ItemStack`。
+- 外部 Vault 结算与 SQLite 提交之间仍需后续持久化结算日志，以覆盖进程崩溃窗口。
 
 ## 依赖
 
@@ -36,6 +44,7 @@ ks-Eco (核心)
 | `/market` | 打开市场 GUI | kseco.market |
 | `/trade <玩家>` | 发起交易 | kseco.trade |
 | `/storage` | 储物箱 | kseco.storage |
+| `/kseco gui` | 打开经济主菜单；管理员可进入官方仓库 | kseco.use / kseco.admin |
 | `/kseco web` | Web 管理面板链接 | kseco.admin |
 | `/kseco status` | 经济状态 | kseco.admin |
 | `/kseco reload` | 重载配置 | kseco.admin |

@@ -1173,19 +1173,21 @@ public final class BankGui implements InventoryHolder {
 
         @EventHandler
         public void onChat(AsyncPlayerChatEvent event) {
-            Player player = event.getPlayer();
-            Object pending = pendingBank.remove(player.getUniqueId());
+            UUID playerId = event.getPlayer().getUniqueId();
+            Object pending = pendingBank.remove(playerId);
             if (pending == null) return;
 
             event.setCancelled(true);
             String msg = event.getMessage().trim();
-            if (msg.equalsIgnoreCase("cancel")) {
-                player.sendMessage("§c已取消。");
-                Bukkit.getScheduler().runTask(plugin, () -> new BankGui(plugin).open(player));
-                return;
-            }
-
             Bukkit.getScheduler().runTask(plugin, () -> {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player == null) return;
+                if (msg.equalsIgnoreCase("cancel")) {
+                    player.sendMessage("§c已取消。");
+                    new BankGui(plugin).open(player);
+                    return;
+                }
+
                 BankGui gui = new BankGui(plugin);
 
                 switch (pending) {

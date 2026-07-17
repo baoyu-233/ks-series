@@ -140,6 +140,12 @@ public final class EcoGuiMainMenu implements InventoryHolder {
                     "§7每份补偿每人限领一次，过期自动关闭",
                     "", "§b▶ §7点击打开"));
         }
+        if (player.hasPermission("kseco.admin")) {
+            inventory.setItem(30, icon(Material.BARREL, "§3📦 官方仓库",
+                    "§7查看官方收购进入仓库的物品",
+                    "§7左键可安全提取到管理员背包",
+                    "", "§b▸ §7点击打开"));
+        }
         // 主任务 MO（只读进度，核心侧 MajorOrderManager）
         inventory.setItem(31, buildMoItem());
 
@@ -291,8 +297,9 @@ public final class EcoGuiMainMenu implements InventoryHolder {
                 player.sendMessage("§c该功能暂未开放。");
                 return;
             }
+            if (slot == 30 && !player.hasPermission("kseco.admin")) return;
             // 只有真正的功能槽位才关闭菜单；点边框/填充玻璃不应关闭
-            if (feature == null && slot != 12 && slot != 22 && slot != 31
+            if (feature == null && slot != 12 && slot != 22 && slot != 30 && slot != 31
                     && slot != 45 && slot != 49 && slot != 53) return;
             if (slot == 45) { // 刷新面板与余额，不关闭
                 menu.open(player);
@@ -317,6 +324,7 @@ public final class EcoGuiMainMenu implements InventoryHolder {
                 case 25 -> new LimitedSaleGui(plugin).open(player);
                 case 28 -> new TransferGui(plugin).open(player);
                 case 29 -> new CompensationGui(plugin).open(player);
+                case 30 -> new OfficialWarehouseGui(plugin).open(player);
                 case 31, 45 -> new EcoGuiMainMenu(plugin).open(player); // MO 进度 / 余额刷新
                 case 49 -> { /* close */ }
                 case 53 -> handlePlayerWebCommand(player);

@@ -609,7 +609,7 @@ public final class LimitedSaleManager {
             activePurchases.remove(operationKey);
             callback.accept(result);
         };
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             PurchasePreparation preparation = preparePurchase(uuid, saleId, qty, boxed);
             Bukkit.getScheduler().runTask(plugin, () -> {
                 SaleItem sale = materialize(preparation.sale());
@@ -639,7 +639,7 @@ public final class LimitedSaleManager {
                             boxed ? 1 : qty, false));
                     return;
                 }
-                plugin.asyncWorkPool().execute(() -> {
+                plugin.asyncWorkPool().executeDatabase(() -> {
                     PurchaseCommit commit = commitPurchase(uuid, playerName, saleId, qty, boxed, cost);
                     Bukkit.getScheduler().runTask(plugin, () -> {
                         SaleItem committedSale = materialize(commit.sale());
@@ -816,7 +816,7 @@ public final class LimitedSaleManager {
                                    Consumer<PurchaseResult> callback) {
         String saleId = sale == null ? null : sale.id();
         UUID uuid = player.getUniqueId();
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             if (saleId != null) rollbackPurchaseCounters(saleId, uuid, amount);
             Bukkit.getScheduler().runTask(plugin, () -> {
                 refundPlayer(player, cost);

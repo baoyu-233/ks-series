@@ -5,7 +5,7 @@ api-version: '1.21'
 description: ks-Series 经济核心 — 市场系统、官方收购/出售、玩家交易、潜影盒深度解析、动态定价
 authors: [you]
 depend: [ks-core]
-softdepend: [Vault, FastAsyncWorldEdit, WorldEdit, MythicMobs]
+softdepend: [Vault, FastAsyncWorldEdit, WorldEdit, MythicMobs, ks-InstanceWorld]
 
 commands:
   kseco:

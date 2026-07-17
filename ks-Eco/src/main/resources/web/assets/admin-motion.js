@@ -20,8 +20,12 @@
     requestAnimationFrame(fr);
   }
   function scan(){scheduled=false;document.querySelectorAll('.stat-val').forEach(roll);}
-  new MutationObserver(function(){
-    if(scheduled)return;scheduled=true;requestAnimationFrame(scan);
-  }).observe(document.body,{childList:true,subtree:true});
-  scan();
+  function start(){
+    if(!document.body)return;
+    new MutationObserver(function(){
+      if(scheduled)return;scheduled=true;requestAnimationFrame(scan);
+    }).observe(document.body,{childList:true,subtree:true});
+    scan();
+  }
+  if(document.body)start();else document.addEventListener('DOMContentLoaded',start,{once:true});
 })();

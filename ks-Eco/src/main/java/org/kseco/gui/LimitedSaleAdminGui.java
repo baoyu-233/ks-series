@@ -568,17 +568,18 @@ public final class LimitedSaleAdminGui implements InventoryHolder {
 
         @EventHandler
         public void onChat(AsyncPlayerChatEvent event) {
-            Player player = event.getPlayer();
-            PendingInput pending = pendingInput.remove(player.getUniqueId());
-            if (pending == null) return;
+            UUID playerId = event.getPlayer().getUniqueId();
+            if (!pendingInput.containsKey(playerId)) return;
             event.setCancelled(true);
-            if (!player.hasPermission("kseco.admin")) {
-                player.sendMessage(ChatColor.RED + "权限已失效，输入已取消");
-                return;
-            }
-
             String msg = event.getMessage().trim();
             Bukkit.getScheduler().runTask(plugin, () -> {
+                PendingInput pending = pendingInput.remove(playerId);
+                Player player = Bukkit.getPlayer(playerId);
+                if (pending == null || player == null) return;
+                if (!player.hasPermission("kseco.admin")) {
+                    player.sendMessage(ChatColor.RED + "权限已失效，输入已取消");
+                    return;
+                }
                 if (msg.equalsIgnoreCase("cancel")) {
                     player.sendMessage(ChatColor.RED + "已取消输入");
                     pending.gui().reloadEdit(player);
@@ -586,7 +587,7 @@ public final class LimitedSaleAdminGui implements InventoryHolder {
                 }
                 boolean ok = applyInput(player, pending, msg);
                 if (!ok) {
-                    pendingInput.put(player.getUniqueId(), pending);
+                    pendingInput.put(playerId, pending);
                     player.sendMessage(ChatColor.RED + "输入无效，请重新输入或输入 cancel 取消");
                     return;
                 }

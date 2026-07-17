@@ -137,7 +137,7 @@ public final class TransportManager {
         String senderWorld = sender.getWorld().getName();
         String targetWorld = target.getWorld().getName();
         long now = System.currentTimeMillis() / 1000;
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
                 if (conn == null) return;
                 try (PreparedStatement ps = conn.prepareStatement(

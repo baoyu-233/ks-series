@@ -12,9 +12,19 @@ test-trade intervention.
 - Weighted blind boxes with rarity and pity replacing the old direct-sale path for non-production rewards.
 - `/trade`: two-party item and currency exchange.
 - `/storage`: pending delivery and refund queue with recursive shulker-box handling.
+- `/kseco gui`: economy menu with an administrator-only, paginated official warehouse claim view.
 - Dynamic pricing from real official SELL volume, supply pressure, and mean-reverting drift; default ceiling ±30%.
-- `/ks-Eco` Web management routes for economy and optional Extra modules.
+- `/ks-Eco` Web management routes for economy and optional Extra modules. Personal wealth rankings exclude central-bank
+  and system identities.
 - Runtime loading of JARs from `plugins/ks-Eco/extra/`.
+
+## Thread And Settlement Boundary
+
+- SQL and pure data work use bounded worker lanes; Bukkit, GUI, permissions, items, and Vault stay on the server thread.
+- Purchase-order create, fulfill, and cancel paths use asynchronous transactions and a private pending-settlement table
+  so buyers cannot claim delivery before seller settlement.
+- Blind-box administration loads raw rows on the database lane and decodes `ItemStack` values only on the server thread.
+- A durable journal is still planned for the process-crash window between SQLite commits and external Vault settlement.
 
 ## Commands
 
@@ -23,6 +33,7 @@ test-trade intervention.
 | `/market` | `kseco.market` | Open the market. |
 | `/trade <player>` | `kseco.trade` | Start a trade. |
 | `/storage` | `kseco.storage` | Open storage. |
+| `/kseco gui` | `kseco.use` / `kseco.admin` | Open the economy menu and administrator warehouse. |
 | `/kseco web` | `kseco.admin` | Get the admin Web link. |
 | `/kseco status` | `kseco.admin` | Show economy state. |
 | `/kseco reload` | `kseco.admin` | Reload configuration. |

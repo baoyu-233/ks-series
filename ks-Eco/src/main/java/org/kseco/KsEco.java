@@ -25,6 +25,7 @@ import org.kseco.gui.LimitedSaleAdminGui;
 import org.kseco.gui.LimitedSaleGui;
 import org.kseco.gui.MarketMenu;
 import org.kseco.gui.OfficialBuyAdminGui;
+import org.kseco.gui.OfficialWarehouseGui;
 import org.kseco.gui.PoliticGui;
 import org.kseco.gui.PriceInputMenu;
 import org.kseco.gui.PurchaseOrderMenu;
@@ -142,7 +143,7 @@ public final class KsEco extends JavaPlugin {
         this.officialWarehouseManager = new OfficialWarehouseManager(this);
         this.officialMarketSweepManager = new OfficialMarketSweepManager(this);
         this.tradeManager = new TradeManager(this);
-        this.asyncWorkPool = new AsyncWorkPool(6);
+        this.asyncWorkPool = new AsyncWorkPool(6, getLogger());
         this.transportManager = new TransportManager(this);
         this.transferManager = new TransferManager(this);
         this.enterpriseLevelManager = new EnterpriseLevelManager(this);
@@ -311,6 +312,10 @@ public final class KsEco extends JavaPlugin {
             // 企业成员表
             conn.createStatement().executeUpdate(
                 "CREATE TABLE IF NOT EXISTS ks_ent_members (enterprise_id TEXT NOT NULL, player_uuid TEXT NOT NULL, player_name TEXT DEFAULT '', role TEXT DEFAULT 'EMPLOYEE', salary REAL DEFAULT 0.0, joined_at INTEGER DEFAULT (strftime('%s','now')), PRIMARY KEY (enterprise_id, player_uuid))");
+            conn.createStatement().executeUpdate(
+                "CREATE TABLE IF NOT EXISTS ks_ent_join_requests (id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, applicant_uuid TEXT NOT NULL, applicant_name TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'PENDING', created_at INTEGER NOT NULL, reviewed_by TEXT, reviewed_at INTEGER DEFAULT 0, UNIQUE (enterprise_id, applicant_uuid))");
+            conn.createStatement().executeUpdate(
+                "CREATE INDEX IF NOT EXISTS idx_ent_join_requests_status ON ks_ent_join_requests (enterprise_id, status, created_at)");
             // 招投标项目表
             conn.createStatement().executeUpdate(
                 "CREATE TABLE IF NOT EXISTS ks_ent_projects (id TEXT PRIMARY KEY, title TEXT NOT NULL, publisher_uuid TEXT NOT NULL, publisher_type TEXT NOT NULL DEFAULT 'OFFICIAL', budget REAL NOT NULL, prepayment_ratio REAL DEFAULT 0.3, penalty_ratio REAL DEFAULT 0.1, deadline INTEGER NOT NULL, location TEXT, allow_subcontract INTEGER DEFAULT 1, allow_consortium INTEGER DEFAULT 1, status TEXT DEFAULT 'OPEN', created_at INTEGER NOT NULL)");
@@ -369,7 +374,7 @@ public final class KsEco extends JavaPlugin {
 
     /** Periodically expire unfinished joint-venture requests without touching Bukkit state. */
     private void startPendingCreationExpiryTask() {
-        pendingCreationExpiryTask = Bukkit.getScheduler().runTaskTimer(this, () -> asyncWorkPool.execute(() -> {
+        pendingCreationExpiryTask = Bukkit.getScheduler().runTaskTimer(this, () -> asyncWorkPool.executeDatabase(() -> {
             try (var conn = ksCore.dataStore().getConnection();
                  var ps = conn == null ? null : conn.prepareStatement(
                          "UPDATE ks_ent_pending_creations SET status='EXPIRED' WHERE status IN ('PENDING','FINALIZING') AND expires_at<?")) {
@@ -467,6 +472,7 @@ public final class KsEco extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new CompensationGui.ChatListener(this), this);
         getServer().getPluginManager().registerEvents(new OfficialBuyAdminGui.GuiListener(this), this);
         getServer().getPluginManager().registerEvents(new OfficialBuyAdminGui.ChatListener(this), this);
+        getServer().getPluginManager().registerEvents(new OfficialWarehouseGui.Listener(this), this);
     }
 
     private void startPriceRefreshTask() {

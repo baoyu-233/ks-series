@@ -194,49 +194,47 @@ public final class PriceInputMenu implements InventoryHolder {
 
         @EventHandler
         public void onChat(AsyncPlayerChatEvent event) {
-            Player player = event.getPlayer();
-            ItemStack handItem = pendingPriceInput.remove(player.getUniqueId());
-            if (handItem == null) return; // Not in price input mode
+            UUID playerId = event.getPlayer().getUniqueId();
+            if (!pendingPriceInput.containsKey(playerId)) return; // Not in price input mode
 
             event.setCancelled(true); // Don't broadcast the price to chat
-
             String msg = event.getMessage().trim();
-            if (msg.equalsIgnoreCase("cancel")) {
-                player.sendMessage("§c已取消上架。");
-                Bukkit.getScheduler().runTask(plugin, () -> new MarketMenu(plugin).open(player));
-                return;
-            }
-
-            double price;
-            try {
-                price = Double.parseDouble(msg);
-            } catch (NumberFormatException e) {
-                String cleaned = msg.replaceAll("[^0-9.]", "");
-                if (cleaned.isEmpty()) {
-                    player.sendMessage("§c无效价格: " + msg + "，请输入纯数字。");
-                    pendingPriceInput.put(player.getUniqueId(), handItem);
-                    return;
-                }
-                try {
-                    price = Double.parseDouble(cleaned);
-                } catch (NumberFormatException ignored) {
-                    player.sendMessage("§c无效价格: " + msg + "，请输入纯数字。");
-                    pendingPriceInput.put(player.getUniqueId(), handItem);
-                    return;
-                }
-            }
-
-            if (!Double.isFinite(price) || price <= 0 || price > 1_000_000_000_000d) {
-                player.sendMessage("§c价格必须大于0。");
-                pendingPriceInput.put(player.getUniqueId(), handItem);
-                return;
-            }
-
-            // Create the listing (capture final copies for lambda)
-            final ItemStack finalItem = handItem;
-            final double finalPrice = price;
             Bukkit.getScheduler().runTask(plugin, () -> {
-                plugin.marketManager().listItemForSale(player, finalItem, finalItem.getAmount(), finalPrice);
+                ItemStack handItem = pendingPriceInput.remove(playerId);
+                Player player = Bukkit.getPlayer(playerId);
+                if (handItem == null || player == null) return;
+                if (msg.equalsIgnoreCase("cancel")) {
+                    player.sendMessage("§c已取消上架。");
+                    new MarketMenu(plugin).open(player);
+                    return;
+                }
+
+                double price;
+                try {
+                    price = Double.parseDouble(msg);
+                } catch (NumberFormatException e) {
+                    String cleaned = msg.replaceAll("[^0-9.]", "");
+                    if (cleaned.isEmpty()) {
+                        player.sendMessage("§c无效价格: " + msg + "，请输入纯数字。");
+                        pendingPriceInput.put(playerId, handItem);
+                        return;
+                    }
+                    try {
+                        price = Double.parseDouble(cleaned);
+                    } catch (NumberFormatException ignored) {
+                        player.sendMessage("§c无效价格: " + msg + "，请输入纯数字。");
+                        pendingPriceInput.put(playerId, handItem);
+                        return;
+                    }
+                }
+
+                if (!Double.isFinite(price) || price <= 0 || price > 1_000_000_000_000d) {
+                    player.sendMessage("§c价格必须大于0。");
+                    pendingPriceInput.put(playerId, handItem);
+                    return;
+                }
+
+                plugin.marketManager().listItemForSale(player, handItem, handItem.getAmount(), price);
             });
         }
     }

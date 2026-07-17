@@ -303,13 +303,14 @@ public final class CompensationGui implements InventoryHolder {
         public ChatListener(KsEco plugin) { this.plugin = plugin; }
 
         @EventHandler public void onChat(AsyncPlayerChatEvent event) {
-            PendingInput pending = PENDING_INPUT.remove(event.getPlayer().getUniqueId());
-            if (pending == null) return;
+            UUID playerId = event.getPlayer().getUniqueId();
+            if (!PENDING_INPUT.containsKey(playerId)) return;
             event.setCancelled(true);
             String text = event.getMessage().trim();
-            Player player = event.getPlayer();
             Bukkit.getScheduler().runTask(plugin, () -> {
-                if (!player.isOnline()) return;
+                PendingInput pending = PENDING_INPUT.remove(playerId);
+                Player player = Bukkit.getPlayer(playerId);
+                if (pending == null || player == null) return;
                 if (text.equalsIgnoreCase("cancel")) { player.sendMessage(ChatColor.YELLOW + "已取消输入"); pending.gui.load(player); return; }
                 if (pending.field.equals("name")) {
                     plugin.compensationManager().updateName(pending.planId, text, result -> Listener.finish(pending.gui, player, result));

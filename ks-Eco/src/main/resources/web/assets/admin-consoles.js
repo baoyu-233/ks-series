@@ -99,6 +99,13 @@ async function openEntMgr(entId){
   ['editEnterpriseId','permEntId','divEntId','inviteEntId','procEntId','inventoryEntId'].forEach(function(id){var el=document.getElementById(id);if(el)el.value=entId;});
   var ne=document.getElementById('editEnterpriseName');if(ne)ne.value=e.name||'';
   var de=document.getElementById('editEnterpriseDescription');if(de)de.value=e.description||'';
+  var ty=document.getElementById('editEnterpriseType');if(ty&&e.type)ty.value=e.type;
+  var rg=document.getElementById('editEnterpriseRegion');if(rg)rg.value=e.region||'';
+  var ind=document.getElementById('editEnterpriseIndustry');if(ind)ind.value=e.industry||'OTHER';
+  var ow=document.getElementById('editEnterpriseOwners');if(ow)ow.value=e.owner_uuids||'';
+  var cap=document.getElementById('editEnterpriseCapital');if(cap)cap.value=Number(e.registered_capital||0);
+  var bal=document.getElementById('editEnterpriseBalance');if(bal)bal.value=Number(e.corporate_balance||0);
+  var dr=document.getElementById('editEnterpriseDividendRate');if(dr)dr.value=Number(e.dividend_rate||0);
   var lv=document.getElementById('editEnterpriseLevel');if(lv)lv.value=e.level||1;
   var st=document.getElementById('editEnterpriseStatus');if(st&&e.status)st.value=e.status;
   document.getElementById('entDetailInfo').innerHTML=
@@ -119,4 +126,9 @@ function switchRankSub(sub,ev){
   document.querySelectorAll('#tab-macro .inline-tab').forEach(function(t){t.classList.remove('active');});
   var el=document.getElementById('rank-sub-'+sub);if(el)el.classList.add('active');
   if(ev&&ev.target)ev.target.classList.add('active');
+  var titles={players:'个人财富 Top50 // PLAYERS',enterprises:'企业财富 Top50 // ENTERPRISES',banks:'银行资产 Top50 // BANKS'};
+  var title=document.getElementById('pageTitle');if(title)title.textContent=titles[sub]||'财富排行 // RANKINGS';
+  if(sub==='players'&&typeof loadPlayerRankings==='function')loadPlayerRankings();
+  if(sub==='enterprises'&&typeof loadEntRankings==='function')loadEntRankings();
+  if(sub==='banks'&&typeof loadBankRankings==='function')loadBankRankings();
 }

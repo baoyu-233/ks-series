@@ -20,6 +20,7 @@ import org.kseco.KsEco;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,9 +33,11 @@ public final class EnterpriseGui implements InventoryHolder {
 
     private final KsEco plugin;
     private Inventory inventory;
-    private int view = 0; // 0=my, 1=browseAll, 2=create, 3=manage, 4=member-detail, 5=financing, 6=dividend-history
+    private int view = 0; // 0=my, 1=browseAll, 2=create, 3=manage, 4=member-detail, 5=financing, 6=dividend-history, 7=join-review
     private int page = 0;
     private String selectedEntId = null;
+    private UUID viewerUuid = null;
+    private boolean dangerousActionConfirmed = false;
     private final List<Map<String, Object>> items = new ArrayList<>();
     private static final int ROWS = 6;
     private static final int PAGE_SIZE = 36;
@@ -73,6 +76,7 @@ public final class EnterpriseGui implements InventoryHolder {
 
     private void loadData(Player player) {
         items.clear();
+        viewerUuid = player.getUniqueId();
         String uuid = player.getUniqueId().toString().replace("'", "''");
 
         try (Connection conn = plugin.ksCore().dataStore().getConnection();
@@ -156,16 +160,38 @@ public final class EnterpriseGui implements InventoryHolder {
                 case 6 -> {
                     // 分红记录（只读）
                     if (selectedEntId != null) {
-                        try (ResultSet rs = st.executeQuery("SELECT * FROM ks_ent_dividends WHERE enterprise_id='"
-                                + selectedEntId.replace("'", "''") + "' ORDER BY declared_at DESC LIMIT 45")) {
+                        try (ResultSet rs = st.executeQuery("SELECT d.*,COUNT(p.id) AS payout_count,COALESCE(SUM(p.net_amount),0) AS paid_total FROM ks_ent_dividends d LEFT JOIN ks_ent_dividend_payouts p ON p.dividend_id=d.id WHERE d.enterprise_id='"
+                                + selectedEntId.replace("'", "''") + "' GROUP BY d.id ORDER BY d.declared_at DESC LIMIT 45")) {
                             while (rs.next()) {
                                 Map<String, Object> row = new LinkedHashMap<>();
                                 row.put("id", rs.getString("id"));
                                 row.put("amount", rs.getDouble("amount"));
-                                try { row.put("tax", rs.getDouble("tax")); } catch (Exception ignored) {}
+                                try { row.put("tax_rate", rs.getDouble("tax_rate")); } catch (Exception ignored) {}
+                                try { row.put("tax_paid", rs.getDouble("tax_paid")); } catch (Exception ignored) {}
+                                row.put("net_amount", rs.getDouble("amount") - ((Number) row.getOrDefault("tax_paid", 0.0)).doubleValue());
+                                row.put("payout_count", rs.getInt("payout_count"));
+                                row.put("paid_total", rs.getDouble("paid_total"));
                                 row.put("declared_at", rs.getLong("declared_at"));
                                 try { row.put("status", rs.getString("status")); } catch (Exception ignored) {}
                                 items.add(row);
+                            }
+                        }
+                    }
+                }
+                case 7 -> {
+                    if (selectedEntId != null) {
+                        try (var ps = conn.prepareStatement(
+                                "SELECT id,applicant_uuid,applicant_name,created_at FROM ks_ent_join_requests WHERE enterprise_id=? AND status='PENDING' ORDER BY created_at ASC LIMIT 90")) {
+                            ps.setString(1, selectedEntId);
+                            try (ResultSet rs = ps.executeQuery()) {
+                                while (rs.next()) {
+                                    Map<String, Object> row = new LinkedHashMap<>();
+                                    row.put("id", rs.getString("id"));
+                                    row.put("applicant_uuid", rs.getString("applicant_uuid"));
+                                    row.put("applicant_name", rs.getString("applicant_name"));
+                                    row.put("created_at", rs.getLong("created_at"));
+                                    items.add(row);
+                                }
                             }
                         }
                     }
@@ -195,7 +221,7 @@ public final class EnterpriseGui implements InventoryHolder {
     }
 
     private void build() {
-        String[] viewNames = {"我的企业", "浏览企业", "创建企业", "企业管理", "成员权限", "企业融资", "分红记录"};
+        String[] viewNames = {"我的企业", "浏览企业", "创建企业", "企业管理", "成员权限", "企业融资", "分红记录", "加入审批"};
         inventory = Bukkit.createInventory(this, ROWS * 9,
                 Component.text("§8企业 — " + viewNames[view] + " 第" + (page + 1) + "页"));
 
@@ -284,14 +310,24 @@ public final class EnterpriseGui implements InventoryHolder {
         // Invite button
         inventory.setItem(47, navButton(Material.WRITABLE_BOOK, "§d🤝 邀请成员",
                 "§7点击后在聊天栏输入玩家名"));
-        inventory.setItem(48, navButton(Material.LAVA_BUCKET, "§c💀 解散企业",
-                "§7点击解散此企业",
-                "§c§l此操作不可撤销！"));
         inventory.setItem(42, navButton(Material.BOOK, "§b📜 分红记录",
                 "§7查看该企业历次分红宣派记录"));
         inventory.setItem(43, navButton(Material.GOLDEN_HORSE_ARMOR, "§6🏦 企业融资",
                 "§7查看融资贷款 / 点击 ACTIVE 贷款还款",
                 "§7新贷款申请（含抵押物选择）请在网页端提交"));
+        inventory.setItem(51, navButton(Material.FILLED_MAP, "§e加入申请审批",
+                "§7查看申请加入本企业的玩家", "§a左键批准 §7| §c右键拒绝"));
+        boolean owner = isSelectedOwner();
+        if (owner) {
+            inventory.setItem(48, navButton(dangerousActionConfirmed ? Material.TNT : Material.LAVA_BUCKET,
+                    dangerousActionConfirmed ? "§4§l再次点击确认解散" : "§c💀 解散企业",
+                    dangerousActionConfirmed ? "§c将清算公户并停止企业，操作不可撤销" : "§7仅单一所有者且无未结贷款时可解散",
+                    "§c§l需要连续确认两次"));
+        } else {
+            inventory.setItem(48, navButton(dangerousActionConfirmed ? Material.TNT : Material.OAK_DOOR,
+                    dangerousActionConfirmed ? "§c§l再次点击确认退出" : "§e退出企业",
+                    "§7主动退出后岗位与个人授权会清除", "§c§l需要连续确认两次"));
+        }
         if (page > 0) inventory.setItem(50, navButton(Material.ARROW, "§a◀ 上一页成员"));
         if ((page + 1) * MANAGE_MEMBER_PAGE_SIZE < members.size())
             inventory.setItem(52, navButton(Material.ARROW, "§a▶ 下一页成员"));
@@ -303,6 +339,7 @@ public final class EnterpriseGui implements InventoryHolder {
             case 4 -> buildEntPermToggleItem(item);
             case 5 -> buildEfLoanItem(item);
             case 6 -> buildDividendItem(item);
+            case 7 -> buildJoinRequestItem(item);
             default -> new ItemStack(Material.BARRIER);
         };
     }
@@ -404,13 +441,37 @@ public final class EnterpriseGui implements InventoryHolder {
         double amount = d.get("amount") instanceof Number n ? n.doubleValue() : 0;
         meta.displayName(Component.text("§a💎 分红 " + plugin.vaultHook().format(amount)));
         List<Component> lore = new ArrayList<>();
-        Object tax = d.get("tax");
-        if (tax instanceof Number n) lore.add(Component.text("税额: " + plugin.vaultHook().format(n.doubleValue()), NamedTextColor.GRAY));
+        Object taxRate = d.get("tax_rate");
+        if (taxRate instanceof Number n) lore.add(Component.text("税率: " + String.format(Locale.ROOT, "%.2f%%", n.doubleValue() * 100), NamedTextColor.GRAY));
+        Object tax = d.get("tax_paid");
+        if (tax instanceof Number n) lore.add(Component.text("税额: §c" + plugin.vaultHook().format(n.doubleValue()), NamedTextColor.GRAY));
+        Object net = d.get("net_amount");
+        if (net instanceof Number n) lore.add(Component.text("税后发放: §a" + plugin.vaultHook().format(n.doubleValue()), NamedTextColor.GRAY));
+        Object payoutCount = d.get("payout_count");
+        if (payoutCount instanceof Number n) lore.add(Component.text("收款记录: " + n.intValue() + " 笔", NamedTextColor.GRAY));
         Object at = d.get("declared_at");
         if (at instanceof Number n && n.longValue() > 0)
             lore.add(Component.text("时间: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(new java.util.Date(n.longValue() * 1000)), NamedTextColor.GRAY));
         Object status = d.get("status");
         if (status != null) lore.add(Component.text("状态: " + statusLabel(status), NamedTextColor.DARK_GRAY));
+        meta.lore(lore);
+        stack.setItemMeta(meta);
+        return stack;
+    }
+
+    private ItemStack buildJoinRequestItem(Map<String, Object> request) {
+        ItemStack stack = new ItemStack(Material.PLAYER_HEAD);
+        ItemMeta meta = stack.getItemMeta();
+        if (meta == null) return stack;
+        String name = String.valueOf(request.getOrDefault("applicant_name", request.get("applicant_uuid")));
+        meta.displayName(Component.text("§e加入申请 · " + name));
+        List<Component> lore = new ArrayList<>();
+        lore.add(Component.text("UUID: " + request.get("applicant_uuid"), NamedTextColor.DARK_GRAY));
+        Object createdAt = request.get("created_at");
+        if (createdAt instanceof Number n) lore.add(Component.text("申请时间: "
+                + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(new java.util.Date(n.longValue() * 1000)), NamedTextColor.GRAY));
+        lore.add(Component.empty());
+        lore.add(Component.text("§a§l左键批准 §7| §c§l右键拒绝", NamedTextColor.YELLOW));
         meta.lore(lore);
         stack.setItemMeta(meta);
         return stack;
@@ -531,27 +592,50 @@ public final class EnterpriseGui implements InventoryHolder {
     }
 
     private void doJoinEnterprise(Player player, String entId) {
-        try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
-            try (var check = conn.prepareStatement("SELECT status FROM ks_ent_enterprises WHERE id=?")) {
-                check.setString(1, entId);
-                try (ResultSet rs = check.executeQuery()) {
-                    if (!rs.next() || !"ACTIVE".equalsIgnoreCase(rs.getString("status"))) {
-                        player.sendMessage("§c该企业不存在或已停止运营。");
-                        return;
-                    }
-                }
-            }
-            try (var ps = conn.prepareStatement(
-                    "INSERT OR IGNORE INTO ks_ent_members (enterprise_id, player_uuid, player_name, role) VALUES (?,?,?,'EMPLOYEE')")) {
-                ps.setString(1, entId);
-                ps.setString(2, player.getUniqueId().toString());
-                ps.setString(3, player.getName());
-                if (ps.executeUpdate() > 0) player.sendMessage("§a已加入企业！");
-                else player.sendMessage("§e你已经是该企业成员。");
-            }
-        } catch (Exception e) {
-            player.sendMessage("§c加入失败: " + e.getMessage());
+        Object raw = plugin.callExtraManager("ks-eco-enterprise", "enterpriseManager", "requestJoin",
+                new Class<?>[]{String.class, UUID.class, String.class}, entId, player.getUniqueId(), player.getName());
+        if (raw instanceof Map<?, ?> result) {
+            boolean success = Boolean.TRUE.equals(result.get("success"));
+            Object message = result.get("message");
+            player.sendMessage((success ? "§a" : "§c") + (message == null ? (success ? "加入申请已提交。" : "申请失败。") : message));
+        } else {
+            player.sendMessage("§c企业模块不可用，无法提交申请。");
         }
+    }
+
+    private boolean isSelectedOwner() {
+        if (viewerUuid == null || items.isEmpty() || !"info".equals(items.get(0).get("type"))) return false;
+        String owners = String.valueOf(items.get(0).getOrDefault("owner_uuids", ""));
+        return Arrays.stream(owners.split(",")).map(String::trim).anyMatch(viewerUuid.toString()::equalsIgnoreCase);
+    }
+
+    private void doLeaveEnterprise(Player player, String entId) {
+        Object raw = plugin.callExtraManager("ks-eco-enterprise", "enterpriseManager", "leave",
+                new Class<?>[]{String.class, UUID.class}, entId, player.getUniqueId());
+        if (raw instanceof Map<?, ?> result) {
+            boolean success = Boolean.TRUE.equals(result.get("success"));
+            Object message = result.get("message");
+            player.sendMessage((success ? "§a" : "§c") + (message == null ? (success ? "你已退出企业。" : "退出失败。") : message));
+            if (success) {
+                selectedEntId = null;
+                view = 0;
+                dangerousActionConfirmed = false;
+                loadData(player);
+                build();
+                player.openInventory(getInventory());
+            }
+        } else player.sendMessage("§c企业模块不可用，无法退出。");
+    }
+
+    private void doReviewJoinRequest(Player player, String requestId, boolean approve) {
+        Object raw = plugin.callExtraManager("ks-eco-enterprise", "enterpriseManager", "reviewJoinRequest",
+                new Class<?>[]{String.class, UUID.class, String.class, boolean.class},
+                selectedEntId, player.getUniqueId(), requestId, approve);
+        if (raw instanceof Map<?, ?> result) {
+            boolean success = Boolean.TRUE.equals(result.get("success"));
+            Object message = result.get("message");
+            player.sendMessage((success ? "§a" : "§c") + (message == null ? (success ? "申请已处理。" : "审批失败。") : message));
+        } else player.sendMessage("§c企业模块不可用，无法审批。");
     }
 
     /** MANAGE_MEMBERS / MANAGE_PERMISSIONS 等企业权限校验（admin 豁免），写操作前必查。 */
@@ -566,18 +650,56 @@ public final class EnterpriseGui implements InventoryHolder {
         if (!hasEntPermission(player, entId, org.kseco.EnterprisePermissionService.MANAGE_MEMBERS)) {
             player.sendMessage("§c你没有该企业的成员管理权限。"); return;
         }
-        try (Connection conn = plugin.ksCore().dataStore().getConnection();
-             Statement st = conn.createStatement()) {
-            // 禁止移除所有者
-            try (Statement st0 = conn.createStatement();
-                 ResultSet rs = st0.executeQuery("SELECT owner_uuids FROM ks_ent_enterprises WHERE id='" + entId.replace("'", "''") + "'")) {
-                if (rs.next() && String.valueOf(rs.getString("owner_uuids")).contains(targetUuid)) {
-                    player.sendMessage("§c不能移除企业所有者。"); return;
+        try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
+            if (conn == null) throw new SQLException("数据库未连接");
+            conn.setAutoCommit(false);
+            try {
+                try (var owner = conn.prepareStatement("SELECT owner_uuids FROM ks_ent_enterprises WHERE id=?")) {
+                    owner.setString(1, entId);
+                    try (ResultSet rs = owner.executeQuery()) {
+                        if (rs.next() && Arrays.stream(String.valueOf(rs.getString("owner_uuids")).split(","))
+                                .map(String::trim).anyMatch(targetUuid::equalsIgnoreCase)) {
+                            conn.rollback();
+                            player.sendMessage("§c不能移除企业所有者。");
+                            return;
+                        }
+                    }
                 }
+                try (var member = conn.prepareStatement(
+                        "DELETE FROM ks_ent_members WHERE enterprise_id=? AND player_uuid=?")) {
+                    member.setString(1, entId);
+                    member.setString(2, targetUuid);
+                    if (member.executeUpdate() != 1) throw new SQLException("目标已不是企业成员");
+                }
+                try (var permissions = conn.prepareStatement(
+                        "DELETE FROM ks_ent_permissions WHERE enterprise_id=? AND player_uuid=?")) {
+                    permissions.setString(1, entId);
+                    permissions.setString(2, targetUuid);
+                    permissions.executeUpdate();
+                }
+                try (var request = conn.prepareStatement(
+                        "UPDATE ks_ent_join_requests SET status='CANCELLED',reviewed_by=?,reviewed_at=? "
+                                + "WHERE enterprise_id=? AND applicant_uuid=? AND status='APPROVED'")) {
+                    request.setString(1, player.getUniqueId().toString());
+                    request.setLong(2, System.currentTimeMillis() / 1000);
+                    request.setString(3, entId);
+                    request.setString(4, targetUuid);
+                    request.executeUpdate();
+                }
+                try (var count = conn.prepareStatement(
+                        "UPDATE ks_ent_enterprises SET employee_count=(SELECT COUNT(*) FROM ks_ent_members WHERE enterprise_id=?) WHERE id=?")) {
+                    count.setString(1, entId);
+                    count.setString(2, entId);
+                    count.executeUpdate();
+                }
+                conn.commit();
+            } catch (Exception e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                try { conn.setAutoCommit(true); } catch (SQLException ignored) {}
             }
-            st.executeUpdate("DELETE FROM ks_ent_members WHERE enterprise_id='"
-                    + entId.replace("'", "''") + "' AND player_uuid='" + targetUuid.replace("'", "''") + "'");
-            player.sendMessage("§a成员已移除。");
+            player.sendMessage("§a成员已移除，旧加入审批已关闭。");
             loadData(player);
             build();
             player.openInventory(getInventory());
@@ -873,8 +995,32 @@ public final class EnterpriseGui implements InventoryHolder {
                     return;
                 }
                 if (slot == 48) {
-                    // Dissolve
-                    if (gui.selectedEntId != null) gui.doDissolveEnterprise(player, gui.selectedEntId);
+                    if (gui.selectedEntId == null) return;
+                    if (!gui.dangerousActionConfirmed) {
+                        gui.dangerousActionConfirmed = true;
+                        gui.build();
+                        player.openInventory(gui.getInventory());
+                        player.sendMessage(gui.isSelectedOwner()
+                                ? "§c请再次点击解散按钮确认。多所有者企业或存在未结贷款时不会执行。"
+                                : "§e请再次点击退出按钮确认。退出后岗位和个人授权会被清除。");
+                    } else if (gui.isSelectedOwner()) {
+                        gui.doDissolveEnterprise(player, gui.selectedEntId);
+                    } else {
+                        gui.doLeaveEnterprise(player, gui.selectedEntId);
+                    }
+                    return;
+                }
+                if (slot == 51) {
+                    if (gui.selectedEntId == null || !gui.hasEntPermission(player, gui.selectedEntId,
+                            org.kseco.EnterprisePermissionService.MANAGE_MEMBERS)) {
+                        player.sendMessage("§c你没有该企业的成员管理权限。");
+                        return;
+                    }
+                    gui.view = 7;
+                    gui.page = 0;
+                    gui.loadData(player);
+                    gui.build();
+                    player.openInventory(gui.getInventory());
                     return;
                 }
                 if (slot == 49) {
@@ -932,7 +1078,7 @@ public final class EnterpriseGui implements InventoryHolder {
             }
 
             // Member-detail / financing / dividend views
-            if (gui.view >= 4 && gui.view <= 6) {
+            if (gui.view >= 4 && gui.view <= 7) {
                 if (slot == 47 && gui.view == 4 && gui.selectedEntId != null && gui.selectedMemberUuid != null) {
                     player.closeInventory();
                     pendingEnt.put(player.getUniqueId(), new PendingSetSalary(gui.selectedEntId, gui.selectedMemberUuid, gui.selectedMemberName));
@@ -981,6 +1127,12 @@ public final class EnterpriseGui implements InventoryHolder {
                                 }
                             }
                             case 6 -> { /* 分红记录只读 */ }
+                            case 7 -> {
+                                gui.doReviewJoinRequest(player, String.valueOf(item.get("id")), !event.isRightClick());
+                                gui.loadData(player);
+                                gui.build();
+                                player.openInventory(gui.getInventory());
+                            }
                         }
                     }
                 }
@@ -1050,19 +1202,21 @@ public final class EnterpriseGui implements InventoryHolder {
 
         @EventHandler
         public void onChat(AsyncPlayerChatEvent event) {
-            Player player = event.getPlayer();
-            Object pendingObj = pendingEnt.remove(player.getUniqueId());
+            UUID playerId = event.getPlayer().getUniqueId();
+            Object pendingObj = pendingEnt.remove(playerId);
             if (pendingObj == null) return;
 
             event.setCancelled(true);
             String msg = event.getMessage().trim();
-            if (msg.equalsIgnoreCase("cancel")) {
-                player.sendMessage("§c已取消。");
-                Bukkit.getScheduler().runTask(plugin, () -> new EnterpriseGui(plugin).open(player));
-                return;
-            }
-
             Bukkit.getScheduler().runTask(plugin, () -> {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player == null) return;
+                if (msg.equalsIgnoreCase("cancel")) {
+                    player.sendMessage("§c已取消。");
+                    new EnterpriseGui(plugin).open(player);
+                    return;
+                }
+
                 EnterpriseGui gui = new EnterpriseGui(plugin);
 
                 if (pendingObj instanceof PendingEntInvite inv) {

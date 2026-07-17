@@ -200,12 +200,15 @@ public final class TransferGui implements InventoryHolder {
 
         @EventHandler
         public void onChat(AsyncPlayerChatEvent event) {
-            Player player = event.getPlayer();
-            InputType type = PENDING_INPUT.remove(player.getUniqueId());
+            UUID playerId = event.getPlayer().getUniqueId();
+            InputType type = PENDING_INPUT.remove(playerId);
             if (type == null) return;
             event.setCancelled(true);
             String input = event.getMessage().trim();
-            Bukkit.getScheduler().runTask(plugin, () -> handleInput(player, type, input));
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player != null) handleInput(player, type, input);
+            });
         }
 
         private void handleInput(Player player, InputType type, String input) {

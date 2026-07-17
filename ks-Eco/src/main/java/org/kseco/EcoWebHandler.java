@@ -1182,6 +1182,7 @@ public final class EcoWebHandler implements HttpHandler {
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("activeListings", plugin.listingManager().activeListingCount());
         stats.put("storedItems", plugin.storageManager().totalStoredItems());
+        stats.put("officialWarehouseItems", plugin.officialWarehouseManager().loadPage(0, 1).total());
         stats.put("vaultAvailable", plugin.vaultHook().isAvailable());
         stats.put("officialBuyEnabled", plugin.ecoConfig().isOfficialBuyEnabled());
 
@@ -2919,8 +2920,8 @@ public final class EcoWebHandler implements HttpHandler {
         KsAuthManager.Session session = requireAuth(exchange);
         if (session == null) return;
         List<Map<String, Object>> list = new ArrayList<>();
-        queryRows(list, "SELECT id,name,COALESCE(description,'') AS description,type,registered_capital,current_assets," +
-                "employee_count,level,region,status,created_at FROM ks_ent_enterprises ORDER BY created_at DESC LIMIT 100", null);
+        queryRows(list, "SELECT id,name,COALESCE(description,'') AS description,type,owner_uuids,registered_capital,current_assets," +
+                "employee_count,level,region,industry,dividend_rate,status,created_at FROM ks_ent_enterprises ORDER BY created_at DESC LIMIT 100", null);
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn != null) {
                 for (Map<String, Object> enterprise : list) {
@@ -4064,15 +4065,31 @@ public final class EcoWebHandler implements HttpHandler {
                 KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"分红金额超过企业当前资产 (" + String.format("%.2f", currentAssets) + ")\"}");
                 return;
             }
-            String[] ownerUuids = ownerStr.split(",");
+            List<UUID> ownerUuids = new ArrayList<>();
+            for (String ownerValue : ownerStr.split(",")) {
+                String normalizedOwner = ownerValue.trim();
+                if (normalizedOwner.isEmpty()) continue;
+                try { ownerUuids.add(UUID.fromString(normalizedOwner)); }
+                catch (IllegalArgumentException invalidOwner) {
+                    KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"企业所有者数据无效\"}");
+                    return;
+                }
+            }
+            if (ownerUuids.isEmpty()) {
+                KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"企业没有有效所有者\"}");
+                return;
+            }
             double taxRate = 0.10; // 默认分红税率 10%
             try {
                 var rs2 = conn.createStatement().executeQuery("SELECT rate FROM ks_tax_rates WHERE category='DIVIDEND_TAX'");
                 if (rs2.next()) taxRate = rs2.getDouble("rate");
             } catch (java.sql.SQLException ignored) {}
+            if (!Double.isFinite(taxRate)) taxRate = 0.10;
+            if (taxRate > 1.0 && taxRate <= 100.0) taxRate /= 100.0;
+            taxRate = Math.max(0.0, Math.min(1.0, taxRate));
             double taxPaid = amount * taxRate;
             double netAmount = amount - taxPaid;
-            double perOwner = netAmount / ownerUuids.length;
+            double perOwner = netAmount / ownerUuids.size();
             // 从企业公户扣除分红（使用当前连接避免 SQLITE_BUSY）
             long divNow = System.currentTimeMillis() / 1000;
             var rsBal = conn.createStatement().executeQuery(
@@ -4094,8 +4111,7 @@ public final class EcoWebHandler implements HttpHandler {
             // 分配给所有者。HTTP 请求线程不能直接调用 Vault；任一笔失败时撤销已付款项并退回公户。
             List<UUID> paidOwners = new ArrayList<>();
             try {
-                for (String uuidStr : ownerUuids) {
-                    UUID owner = UUID.fromString(uuidStr.trim());
+                for (UUID owner : ownerUuids) {
                     if (!depositWallet(owner, perOwner)) throw new IOException("Dividend wallet payout failed");
                     paidOwners.add(owner);
                 }
@@ -4113,6 +4129,25 @@ public final class EcoWebHandler implements HttpHandler {
             conn.createStatement().executeUpdate(
                 "INSERT INTO ks_ent_dividends (id, enterprise_id, amount, declared_at, tax_rate, tax_paid, status) VALUES ('" +
                 divId + "', '" + enterpriseId.replace("'", "''") + "', " + amount + ", " + now + ", " + taxRate + ", " + taxPaid + ", 'PAID')");
+            try (var payout = conn.prepareStatement(
+                    "INSERT INTO ks_ent_dividend_payouts (id,dividend_id,enterprise_id,recipient_uuid,share_percent,gross_amount,tax_amount,net_amount,paid_at) VALUES (?,?,?,?,?,?,?,?,?)")) {
+                double sharePercent = 100.0 / ownerUuids.size();
+                double grossPerOwner = amount / ownerUuids.size();
+                double taxPerOwner = taxPaid / ownerUuids.size();
+                for (UUID owner : ownerUuids) {
+                    payout.setString(1, UUID.randomUUID().toString());
+                    payout.setString(2, divId);
+                    payout.setString(3, enterpriseId);
+                    payout.setString(4, owner.toString());
+                    payout.setDouble(5, sharePercent);
+                    payout.setDouble(6, grossPerOwner);
+                    payout.setDouble(7, taxPerOwner);
+                    payout.setDouble(8, perOwner);
+                    payout.setLong(9, now);
+                    payout.addBatch();
+                }
+                payout.executeBatch();
+            }
             // 记录分红税收
             try {
                 conn.createStatement().executeUpdate(
@@ -4989,10 +5024,23 @@ public final class EcoWebHandler implements HttpHandler {
         if (poolId == null || poolId.isEmpty()) {
             KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"缺少 poolId\"}"); return;
         }
-        KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of(
-                "poolId", poolId,
-                "loot", plugin.blindBoxManager().listLoot(poolId)
-        )));
+        CompletableFuture<List<Map<String, Object>>> future = new CompletableFuture<>();
+        plugin.blindBoxManager().loadLootViewsAsync(poolId, false, future::complete,
+                error -> future.completeExceptionally(new IllegalStateException(error)));
+        try {
+            List<Map<String, Object>> loot = future.get(30, TimeUnit.SECONDS);
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of(
+                    "poolId", poolId,
+                    "loot", loot
+            )));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            KsPluginBridge.sendJson(exchange, 503, "{\"error\":\"战利品列表请求被中断\"}");
+        } catch (ExecutionException e) {
+            KsPluginBridge.sendJson(exchange, 503, "{\"error\":\"数据库队列繁忙，请稍后重试\"}");
+        } catch (TimeoutException e) {
+            KsPluginBridge.sendJson(exchange, 504, "{\"error\":\"加载战利品列表超时\"}");
+        }
     }
 
     /** 玩家单抽 */
@@ -7119,30 +7167,103 @@ public final class EcoWebHandler implements HttpHandler {
         String enterpriseId = req == null ? null : String.valueOf(req.get("enterpriseId"));
         String name = req == null || req.get("name") == null ? "" : req.get("name").toString().trim();
         String description = req == null || req.get("description") == null ? "" : req.get("description").toString().trim();
+        String type = req == null || req.get("type") == null ? "PRIVATE" : req.get("type").toString().trim().toUpperCase(Locale.ROOT);
+        String region = req == null || req.get("region") == null ? "" : req.get("region").toString().trim();
+        String industry = req == null || req.get("industry") == null ? "OTHER" : req.get("industry").toString().trim().toUpperCase(Locale.ROOT);
+        String ownerInput = req == null || req.get("ownerUuids") == null ? "" : req.get("ownerUuids").toString().trim();
         String status = req == null || req.get("status") == null ? "ACTIVE" : req.get("status").toString().trim().toUpperCase(Locale.ROOT);
+        double registeredCapital = toDouble(req == null ? null : req.get("registeredCapital"), Double.NaN);
+        double corporateBalance = toDouble(req == null ? null : req.get("corporateBalance"), Double.NaN);
+        double dividendRate = toDouble(req == null ? null : req.get("dividendRate"), Double.NaN);
         int level = (int) toDouble(req == null ? null : req.get("level"), 1);
-        if (enterpriseId == null || enterpriseId.isBlank() || name.length() < 2 || name.length() > 32 || description.length() > 240) {
+        if (enterpriseId == null || enterpriseId.isBlank() || name.length() < 2 || name.length() > 32
+                || description.length() > 240 || region.length() > 64) {
             KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"企业ID、名称或描述长度无效\"}"); return;
         }
-        if (!Set.of("ACTIVE", "SUSPENDED", "FROZEN", "DISSOLVED").contains(status)) {
+        if (!Set.of("ACTIVE", "SUSPENDED", "FROZEN").contains(status)
+                || !Set.of("PRIVATE", "STATE", "STATE_OWNED").contains(type)
+                || !Set.of("OTHER", "INDUSTRY", "AGRICULTURE", "REAL_ESTATE").contains(industry)) {
             KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"企业状态无效\"}"); return;
+        }
+        if (!Double.isFinite(registeredCapital) || registeredCapital < 0 || registeredCapital > 1_000_000_000_000d
+                || !Double.isFinite(corporateBalance) || corporateBalance < 0 || corporateBalance > 1_000_000_000_000d
+                || !Double.isFinite(dividendRate) || dividendRate < 0 || dividendRate > 100) {
+            KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"资本、公户余额或分红比例无效\"}"); return;
+        }
+        LinkedHashSet<String> owners = new LinkedHashSet<>();
+        for (String value : ownerInput.split(",")) {
+            String owner = value.trim();
+            if (owner.isEmpty()) continue;
+            if ("SYSTEM".equalsIgnoreCase(owner) && Set.of("STATE", "STATE_OWNED").contains(type)) owners.add("SYSTEM");
+            else {
+                try { owners.add(UUID.fromString(owner).toString()); }
+                catch (IllegalArgumentException e) { KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"所有者必须是有效 UUID；国有企业可使用 SYSTEM\"}"); return; }
+            }
+        }
+        if (owners.isEmpty() || owners.size() > (int) getEconomicSetting("enterprise_max_owners", 4)) {
+            KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"所有者数量无效\"}"); return;
         }
         if (level < 1 || level > plugin.enterpriseLevelManager().getMaxLevel()) {
             KsPluginBridge.sendJson(exchange, 400, gson.toJson(Map.of("error", "企业等级必须在 1-" + plugin.enterpriseLevelManager().getMaxLevel() + " 之间"))); return;
         }
-        try (var conn = plugin.ksCore().dataStore().getConnection();
-             var ps = conn.prepareStatement("UPDATE ks_ent_enterprises SET name=?, description=?, status=? WHERE id=?")) {
+        try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) { KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"数据库未连接\"}"); return; }
-            ps.setString(1, name); ps.setString(2, description); ps.setString(3, status); ps.setString(4, enterpriseId);
-            if (ps.executeUpdate() != 1) { KsPluginBridge.sendJson(exchange, 404, "{\"error\":\"企业不存在\"}"); return; }
+            conn.setAutoCommit(false);
+            try {
+                double oldBalance = 0;
+                String bankId = "CORP-BANK";
+                try (var account = conn.prepareStatement("SELECT bank_id,balance FROM ks_ent_corporate_accounts WHERE enterprise_id=?")) {
+                    account.setString(1, enterpriseId);
+                    try (var rs = account.executeQuery()) {
+                        if (rs.next()) { bankId = rs.getString("bank_id"); oldBalance = rs.getDouble("balance"); }
+                    }
+                }
+                try (var ps = conn.prepareStatement("UPDATE ks_ent_enterprises SET name=?,description=?,type=?,owner_uuids=?,registered_capital=?,current_assets=?,region=?,industry=?,dividend_rate=?,status=? WHERE id=?")) {
+                    ps.setString(1, name); ps.setString(2, description); ps.setString(3, type);
+                    ps.setString(4, String.join(",", owners)); ps.setDouble(5, registeredCapital);
+                    ps.setDouble(6, corporateBalance); ps.setString(7, region); ps.setString(8, industry);
+                    ps.setDouble(9, dividendRate); ps.setString(10, status); ps.setString(11, enterpriseId);
+                    if (ps.executeUpdate() != 1) throw new java.sql.SQLException("企业不存在");
+                }
+                long now = System.currentTimeMillis() / 1000;
+                try (var account = conn.prepareStatement("INSERT INTO ks_ent_corporate_accounts (enterprise_id,bank_id,balance,updated_at) VALUES (?,?,?,?) ON CONFLICT(enterprise_id) DO UPDATE SET balance=excluded.balance,updated_at=excluded.updated_at")) {
+                    account.setString(1, enterpriseId); account.setString(2, bankId == null || bankId.isBlank() ? "CORP-BANK" : bankId);
+                    account.setDouble(3, corporateBalance); account.setLong(4, now); account.executeUpdate();
+                }
+                try (var bank = conn.prepareStatement("UPDATE ks_bank_banks SET total_assets=MAX(total_assets+?,0) WHERE id=?")) {
+                    bank.setDouble(1, corporateBalance - oldBalance); bank.setString(2, bankId == null || bankId.isBlank() ? "CORP-BANK" : bankId); bank.executeUpdate();
+                }
+                try (var demote = conn.prepareStatement("UPDATE ks_ent_members SET role='EMPLOYEE' WHERE enterprise_id=? AND role='OWNER'")) {
+                    demote.setString(1, enterpriseId); demote.executeUpdate();
+                }
+                try (var member = conn.prepareStatement("INSERT INTO ks_ent_members (enterprise_id,player_uuid,player_name,role,salary,joined_at) VALUES (?,?,?,'OWNER',0,?) ON CONFLICT(enterprise_id,player_uuid) DO UPDATE SET role='OWNER'")) {
+                    for (String owner : owners) {
+                        if ("SYSTEM".equals(owner)) continue;
+                        member.setString(1, enterpriseId); member.setString(2, owner); member.setString(3, owner); member.setLong(4, now); member.addBatch();
+                    }
+                    member.executeBatch();
+                }
+                try (var clearShares = conn.prepareStatement("DELETE FROM ks_ent_dividend_shares WHERE enterprise_id=?")) {
+                    clearShares.setString(1, enterpriseId); clearShares.executeUpdate();
+                }
+                updateEnterpriseMemberCount(conn, enterpriseId);
+                conn.commit();
+            } catch (Exception e) {
+                conn.rollback();
+                throw new java.sql.SQLException("企业资料事务失败", e);
+            } finally {
+                try { conn.setAutoCommit(true); } catch (java.sql.SQLException ignored) {}
+            }
         } catch (java.sql.SQLException e) {
-            KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"保存企业信息失败\"}"); return;
+            KsPluginBridge.sendJson(exchange, 500, gson.toJson(Map.of("error", "保存企业信息失败: " + e.getMessage()))); return;
         }
         if (!plugin.enterpriseLevelManager().setLevel(enterpriseId, level, session.playerUuid.toString(), session.playerName)) {
             KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"保存企业等级失败\"}"); return;
         }
         auditLog("ENTERPRISE_ADMIN_EDIT", session.playerUuid.toString(), session.playerName, "enterprise", enterpriseId,
-                "名称=" + name + " | 描述=" + description + " | 状态=" + status + " | 等级=" + level);
+                "名称=" + name + " | 类型=" + type + " | 所有者=" + owners.size() + " | 注册资本=" + registeredCapital
+                        + " | 公户=" + corporateBalance + " | 地区=" + region + " | 行业=" + industry
+                        + " | 分红比例=" + dividendRate + "% | 状态=" + status + " | 等级=" + level);
         KsPluginBridge.sendJson(exchange, 200, "{\"message\":\"企业资料已保存\"}");
     }
 

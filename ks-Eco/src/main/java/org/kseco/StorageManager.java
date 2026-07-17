@@ -34,7 +34,7 @@ public final class StorageManager {
 
     private void scheduleFlush() {
         if (!flushScheduled.compareAndSet(false, true)) return;
-        plugin.asyncWorkPool().execute(() -> {
+        plugin.asyncWorkPool().executeDatabase(() -> {
             boolean drained = false;
             try {
                 drained = flushQueuedStores();
