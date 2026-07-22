@@ -36,6 +36,7 @@ jobs:
           set -euo pipefail
           modules=(
             ks-core
+            ks-InstanceWorld
             ks-Eco
             ks-Eco-bank
             ks-Eco-enterprise

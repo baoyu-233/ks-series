@@ -1,0 +1,23 @@
+database:
+  file: instance-world.db
+
+worker:
+  threads: 2
+
+markers:
+  blocks-per-tick: 50000
+
+defaults:
+  world: ks-dungeon-world
+  grid-spacing: 5000
+  max-grids: 64
+  paste-y: 64
+  arena-radius: 256
+  prepare-timeout-seconds: 120
+
+# One-time, read-only compatibility import. The source database and old table
+# are never changed or deleted. Imported rows are made FREE in this module's DB.
+legacy-grid-import:
+  enabled: true
+  sqlite-path: plugins/ks-core/data.db
+  table: ks_dungeon_grids
