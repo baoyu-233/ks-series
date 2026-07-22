@@ -7,6 +7,12 @@ import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.kseco.database.PortableSqlMutation;
+import org.kseco.crossserver.assets.AssetSource;
+import org.kseco.crossserver.assets.FederatedAssetService;
+import org.kseco.crossserver.assets.FederatedAssetSettings;
+import org.kseco.crossserver.assets.FederatedCapability;
+import org.kseco.crossserver.assets.FederatedSnapshot;
+import org.kseco.crossserver.assets.FederatedSnapshotCodec;
 import org.kseco.extra.BankAccessProvider;
 import org.kscore.KsAuthManager;
 import org.kscore.KsPluginBridge;
@@ -601,6 +607,16 @@ public final class EcoWebHandler implements HttpHandler {
             // =====
             } else if (subPath.equals("/api/extra-modules")) {
                 handleExtraModulesList(exchange);
+            } else if (subPath.equals("/api/federated/snapshot-sources") && "GET".equalsIgnoreCase(method)) {
+                handleFederatedSnapshotSources(exchange, query);
+            } else if (subPath.equals("/api/federated/snapshot") && "GET".equalsIgnoreCase(method)) {
+                handleFederatedSnapshotRead(exchange, query);
+            } else if (subPath.equals("/api/federated/assets") && "GET".equalsIgnoreCase(method)) {
+                handleFederatedAssets(exchange, query, false);
+            } else if (subPath.equals("/api/federated/assets/aggregate") && "GET".equalsIgnoreCase(method)) {
+                handleFederatedAssets(exchange, query, true);
+            } else if (subPath.equals("/api/admin/federated-assets/settings")) {
+                handleFederatedSettings(exchange);
             // ===== Real Estate APIs =====
             } else if (subPath.equals("/api/realestate/zones")) {
                 handleReZonesList(exchange, query);
@@ -1223,6 +1239,153 @@ public final class EcoWebHandler implements HttpHandler {
         <h1>ks-Eco 玩家面板</h1><p style="color:#ff9800;">⚠ 资源文件未加载，使用简化版。请重新构建插件。</p>
         </body></html>
         """;
+    }
+
+    private void handleFederatedSnapshotSources(HttpExchange exchange, String query) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, String> params = KsPluginBridge.parseQuery(query);
+        try {
+            FederatedSnapshot.Kind kind = federatedKind(params.get("kind"));
+            if (kind == FederatedSnapshot.Kind.ASSET && !session.isAdmin) {
+                KsPluginBridge.sendJson(exchange, 403, "{\"error\":\"资产明细快照需要管理员权限\"}");
+                return;
+            }
+            boolean includeStale = booleanQuery(params, "includeStale", false);
+            boolean includeOffline = booleanQuery(params, "includeOffline", false);
+            var heads = awaitFederated(plugin.listFederatedSnapshotHeads(kind, System.currentTimeMillis(),
+                    includeStale, includeOffline));
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("kind", kind.id(), "sources", heads)));
+        } catch (IllegalArgumentException failure) {
+            KsPluginBridge.sendJson(exchange, 400, gson.toJson(Map.of("error", failure.getMessage())));
+        } catch (Exception failure) {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "跨服快照暂不可用")));
+        }
+    }
+
+    private void handleFederatedSnapshotRead(HttpExchange exchange, String query) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, String> params = KsPluginBridge.parseQuery(query);
+        try {
+            FederatedSnapshot.Kind kind = federatedKind(params.get("kind"));
+            if (kind == FederatedSnapshot.Kind.ASSET && !session.isAdmin) {
+                KsPluginBridge.sendJson(exchange, 403, "{\"error\":\"资产明细快照需要管理员权限\"}");
+                return;
+            }
+            AssetSource source = new AssetSource(requiredQuery(params, "server"), requiredQuery(params, "world"),
+                    requiredQuery(params, "dimension"));
+            boolean includeStale = booleanQuery(params, "includeStale", false);
+            boolean includeOffline = booleanQuery(params, "includeOffline", false);
+            var result = awaitFederated(plugin.readFederatedSnapshot(kind, source, System.currentTimeMillis(),
+                    includeStale, includeOffline));
+            if (result.isEmpty()) {
+                KsPluginBridge.sendJson(exchange, 404, "{\"error\":\"快照不存在、已过期或被策略拒绝\"}");
+                return;
+            }
+            FederatedSnapshot.ReadResult read = result.get();
+            byte[] payload = FederatedSnapshotCodec.decode(read.bundle(),
+                    plugin.federatedAssetSettings().maxSnapshotBytes());
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("metadata", read.bundle().metadata());
+            response.put("stale", read.stale());
+            response.put("offline", read.offline());
+            response.put("nodeLastSeenAt", read.nodeLastSeenAt());
+            response.put("assets", read.bundle().assets());
+            if (read.bundle().metadata().mediaType().contains("json")) {
+                response.put("payload", gson.fromJson(new String(payload, StandardCharsets.UTF_8), Object.class));
+                response.put("payloadEncoding", "json");
+            } else {
+                response.put("payload", Base64.getEncoder().encodeToString(payload));
+                response.put("payloadEncoding", "base64");
+            }
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(response));
+        } catch (IllegalArgumentException failure) {
+            KsPluginBridge.sendJson(exchange, 400, gson.toJson(Map.of("error", failure.getMessage())));
+        } catch (Exception failure) {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "跨服快照暂不可用")));
+        }
+    }
+
+    private void handleFederatedAssets(HttpExchange exchange, String query, boolean aggregate) throws IOException {
+        if (aggregate ? requireAuth(exchange) == null : requireAdminAuth(exchange) == null) return;
+        Map<String, String> params = KsPluginBridge.parseQuery(query);
+        try {
+            FederatedAssetService.Query request = new FederatedAssetService.Query(
+                    FederatedCapability.ASSET_AGGREGATE,
+                    params.get("server"), params.get("world"), params.get("dimension"),
+                    params.get("assetType"), params.get("owner"),
+                    booleanQuery(params, "includeStale", false), booleanQuery(params, "includeOffline", false));
+            Object result = aggregate
+                    ? awaitFederated(plugin.aggregateFederatedAssets(request, System.currentTimeMillis()))
+                    : awaitFederated(plugin.queryFederatedAssets(request, System.currentTimeMillis()));
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of(aggregate ? "aggregate" : "assets", result)));
+        } catch (IllegalArgumentException failure) {
+            KsPluginBridge.sendJson(exchange, 400, gson.toJson(Map.of("error", failure.getMessage())));
+        } catch (Exception failure) {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "跨服资产查询暂不可用")));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleFederatedSettings(HttpExchange exchange) throws IOException {
+        if (requireAdminAuth(exchange) == null) return;
+        if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of(
+                    "status", plugin.federatedAssetStatus(),
+                    "settings", plugin.federatedAssetConfiguration())));
+            return;
+        }
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            KsPluginBridge.sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+            return;
+        }
+        try {
+            Map<String, Object> candidate = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+            if (candidate == null) throw new IllegalArgumentException("请求体必须是完整 federated-assets 对象");
+            FederatedAssetSettings.fromMap(candidate);
+            long generation = callOnServerThread(() -> plugin.applyFederatedAssetSettings(candidate, true));
+            auditLog("FEDERATED_ASSET_POLICY_UPDATE", "ADMIN", "ADMIN", "federated-assets", "policy",
+                    "generation=" + generation);
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("success", true,
+                    "generation", generation, "status", plugin.federatedAssetStatus())));
+        } catch (IllegalArgumentException failure) {
+            KsPluginBridge.sendJson(exchange, 400, gson.toJson(Map.of("error", failure.getMessage())));
+        } catch (IOException failure) {
+            KsPluginBridge.sendJson(exchange, 409, gson.toJson(Map.of("error", "策略未应用；请检查共享库和重启边界")));
+        }
+    }
+
+    private static FederatedSnapshot.Kind federatedKind(String raw) {
+        if (raw == null || raw.isBlank()) throw new IllegalArgumentException("kind 必须是 MAP、PROPERTY 或 ASSET");
+        try {
+            return FederatedSnapshot.Kind.valueOf(raw.strip().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException failure) {
+            throw new IllegalArgumentException("kind 必须是 MAP、PROPERTY 或 ASSET");
+        }
+    }
+
+    private static String requiredQuery(Map<String, String> params, String key) {
+        String value = params.get(key);
+        if (value == null || value.isBlank()) throw new IllegalArgumentException("缺少参数: " + key);
+        return value;
+    }
+
+    private static boolean booleanQuery(Map<String, String> params, String key, boolean fallback) {
+        String value = params.get(key);
+        if (value == null) return fallback;
+        if ("true".equalsIgnoreCase(value)) return true;
+        if ("false".equalsIgnoreCase(value)) return false;
+        throw new IllegalArgumentException(key + " 必须是 true 或 false");
+    }
+
+    private static <T> T awaitFederated(CompletableFuture<T> future) throws Exception {
+        try {
+            return future.get(10, TimeUnit.SECONDS);
+        } catch (TimeoutException failure) {
+            future.cancel(true);
+            throw failure;
+        }
     }
 
     private void handleMarketStats(HttpExchange exchange) throws IOException {

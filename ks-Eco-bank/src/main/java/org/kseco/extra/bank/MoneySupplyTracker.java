@@ -3,9 +3,17 @@ package org.kseco.extra.bank;
 import org.kseco.KsEco;
 import org.kseco.EconomyStatsFilter;
 import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
 
 import java.sql.*;
+import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.DoubleAdder;
 
 /**
  * 货币供应量追踪器。
@@ -17,6 +25,7 @@ import java.util.*;
  * 定时快照并存储，用于央行决策参考。
  */
 public final class MoneySupplyTracker {
+    private static final Duration BALANCE_TIMEOUT = Duration.ofSeconds(10);
 
     private final KsEco eco;
 
@@ -41,6 +50,9 @@ public final class MoneySupplyTracker {
      * 计算当前货币供应量并存储快照。
      */
     public MoneySupply snapshot() {
+        if (!eco.scheduler().isGlobalThread() || eco.vaultHook().directBuiltinActive()) {
+            throw new IllegalStateException("Synchronous money-supply capture requires the global thread and external Vault");
+        }
         double m0 = estimateM0();
         double m1Deposits = getTotalDemandDeposits();
         double m2Deposits = getTotalTimeDeposits();
@@ -49,19 +61,76 @@ public final class MoneySupplyTracker {
     }
 
     /**
-     * Capture Bukkit/Vault state on the server thread, then persist the pure
-     * database portion on ks-Eco's worker pool.
+     * Capture the player directory globally, read each external Vault balance on
+     * its entity owner, then persist the pure database portion on ks-Eco's pool.
      */
     public void snapshotAsync() {
-        if (!Bukkit.isPrimaryThread()) {
-            throw new IllegalStateException("Money supply capture must run on the server thread");
+        if (!eco.scheduler().isGlobalThread()) {
+            eco.scheduler().runGlobal(this::snapshotAsync);
+            return;
         }
-        double m0 = estimateM0();
-        eco.asyncWorkPool().executeDatabase(() -> {
-            double m1Deposits = getTotalDemandDeposits();
-            double m2Deposits = getTotalTimeDeposits();
-            persistSnapshot(m0, m1Deposits, m2Deposits);
-        });
+        List<Player> players = List.copyOf(Bukkit.getOnlinePlayers());
+        if (eco.vaultHook().directBuiltinActive()) {
+            if (players.isEmpty()) {
+                eco.asyncWorkPool().executeDatabase(() -> persistAsyncSnapshot(0.0d));
+                return;
+            }
+            ConcurrentLinkedQueue<PlayerSnapshot> snapshots = new ConcurrentLinkedQueue<>();
+            AtomicInteger remaining = new AtomicInteger(players.size());
+            for (Player player : players) {
+                AtomicBoolean playerCompleted = new AtomicBoolean();
+                Runnable complete = () -> {
+                    if (!playerCompleted.compareAndSet(false, true)) return;
+                    if (remaining.decrementAndGet() == 0) {
+                        List<PlayerSnapshot> immutable = List.copyOf(snapshots);
+                        eco.asyncWorkPool().executeDatabase(() -> persistAsyncSnapshot(
+                                immutable.stream().filter(snapshot -> !snapshot.excluded())
+                                        .mapToDouble(snapshot -> eco.vaultHook().getBalanceDirect(snapshot.uuid())).sum()));
+                    }
+                };
+                boolean scheduled = eco.scheduler().runEntity(player, () -> {
+                    try {
+                        snapshots.add(new PlayerSnapshot(player.getUniqueId(), player.getName(),
+                                EconomyStatsFilter.shouldExcludePlayer(eco, player)));
+                    } finally {
+                        complete.run();
+                    }
+                }, complete);
+                if (!scheduled) complete.run();
+            }
+            return;
+        }
+        if (players.isEmpty()) {
+            eco.asyncWorkPool().executeDatabase(() -> persistAsyncSnapshot(0.0d));
+            return;
+        }
+        DoubleAdder total = new DoubleAdder();
+        AtomicInteger remaining = new AtomicInteger(players.size());
+        for (Player player : players) {
+            AtomicBoolean playerCompleted = new AtomicBoolean();
+            Runnable complete = () -> {
+                if (!playerCompleted.compareAndSet(false, true)) return;
+                if (remaining.decrementAndGet() == 0) {
+                    eco.asyncWorkPool().executeDatabase(() -> persistAsyncSnapshot(total.sum()));
+                }
+            };
+            boolean scheduled = eco.scheduler().runEntity(player, () -> {
+                try {
+                    if (!EconomyStatsFilter.shouldExcludePlayer(eco, player)) {
+                        total.add(eco.vaultHook().getBalance(player));
+                    }
+                } finally {
+                    complete.run();
+                }
+            }, complete);
+            if (!scheduled) complete.run();
+        }
+    }
+
+    private void persistAsyncSnapshot(double m0) {
+        double m1Deposits = getTotalDemandDeposits();
+        double m2Deposits = getTotalTimeDeposits();
+        persistSnapshot(m0, m1Deposits, m2Deposits);
     }
 
     private MoneySupply persistSnapshot(double m0, double m1Deposits, double m2Deposits) {
@@ -107,9 +176,17 @@ public final class MoneySupplyTracker {
     private double estimateM0() {
         // 简化：遍历在线玩家的余额总和 + 离线玩家估算
         double total = 0;
-        for (var player : org.bukkit.Bukkit.getOnlinePlayers()) {
-            if (EconomyStatsFilter.shouldExcludePlayer(eco, player)) continue;
-            total += eco.vaultHook().getBalance(player);
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            try {
+                total += eco.scheduler().callEntity(player, () ->
+                        EconomyStatsFilter.shouldExcludePlayer(eco, player)
+                                ? 0.0d : eco.vaultHook().getBalance(player), BALANCE_TIMEOUT);
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (ExecutionException | TimeoutException | RuntimeException failure) {
+                eco.getLogger().warning("[货币供应] 玩家余额快照失败: " + player.getUniqueId());
+            }
         }
         return total;
     }
@@ -143,4 +220,5 @@ public final class MoneySupplyTracker {
     }
 
     public record MoneySupply(double m0, double m1, double m2) {}
+    private record PlayerSnapshot(UUID uuid, String name, boolean excluded) {}
 }

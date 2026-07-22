@@ -1,8 +1,7 @@
 package org.kseco.extra.tax;
 
-import org.bukkit.Bukkit;
-import org.bukkit.scheduler.BukkitTask;
 import org.kseco.KsEco;
+import org.kseco.scheduler.EcoScheduler;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -30,7 +29,7 @@ public final class TaxRateManager {
     private volatile Map<String, Double> rates = defaultRates();
     private volatile Map<String, Map<String, Double>> industryRates = defaultIndustryRates();
     private volatile List<TaxBracket> brackets = List.of();
-    private BukkitTask refreshTask;
+    private EcoScheduler.TaskHandle refreshTask;
 
     public TaxRateManager(KsEco eco) {
         this.eco = eco;
@@ -41,8 +40,7 @@ public final class TaxRateManager {
         industryRates = defaultIndustryRates();
         brackets = List.of();
         queueRefresh();
-        refreshTask = Bukkit.getScheduler().runTaskTimer(
-                eco,
+        refreshTask = eco.scheduler().runGlobalTimer(
                 this::queueRefresh,
                 RATE_REFRESH_TICKS,
                 RATE_REFRESH_TICKS);
@@ -210,14 +208,10 @@ public final class TaxRateManager {
         double normalizedRate = TaxValuePolicy.normalizeRate(rate, 0.0d);
         Runnable persist = () -> persistRateUpdate(
                 normalizedCategory, normalizedIndustry, normalizedRate);
-        if (Bukkit.isPrimaryThread()) {
-            try {
-                eco.asyncWorkPool().executeDatabase(persist);
-            } catch (RejectedExecutionException exception) {
-                eco.getLogger().warning("[TaxRate] Database queue rejected a rate update");
-            }
-        } else {
-            persist.run();
+        try {
+            eco.asyncWorkPool().executeDatabase(persist);
+        } catch (RejectedExecutionException exception) {
+            eco.getLogger().warning("[TaxRate] Database queue rejected a rate update");
         }
     }
 

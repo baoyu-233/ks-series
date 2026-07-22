@@ -2,6 +2,15 @@
 
 > [English](verification-log.en.md) | 中文
 
+## 2026-07-23 三端全功能与跨服资产验收
+
+- 23/23 Maven 模块成功，391 项测试 0 failure/error/skipped；外部 Web JavaScript 22/22、严格源 YAML 341/341、插件入口 17/17、本地资源引用 25/25。
+- Leaves/Folia 各 29 项 HTTP 合同返回预期状态：27 个 200、未认证管理员接口 401、缺少必填 `bankId` 400。Paper 按角色关闭 Web；三端状态、reload 和 list 命令均成功。
+- MariaDB、BungeeCord、Leaves、Paper、Folia、MCSM/daemon 与双 Web 共 9 个端口监听。Extra 数量为 Leaves 6、Paper 4、Folia 6。
+- 跨服 MAP bundle 实测 3 图块且非 stale/offline；PROPERTY 聚合实测 4 套、总展示价 375,000,000 最小单位。跨服 transfer 保持关闭。
+- Folia 无 FAWE/WorldEdit、MythicMobs，不能把 Extra 加载等同于 schematic/Boss 全流程通过；三端均无真实在线玩家，资金/背包/GUI/崩溃窗口仍待真人验收。
+- 完整矩阵、部署哈希、备份和限制见 `../KS-ECO-FULL-FUNCTION-TEST-2026-07-23.md`。
+
 ## 2026-07-16：限时销售与玩家盲盒线程分离
 
 - `mvn test`：通过，但项目没有 Java 测试源码。

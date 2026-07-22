@@ -5,3 +5,4 @@ api-version: '1.21'
 description: Shared instance grid, void world, schematic and cleanup runtime for ks-Series.
 authors: [baoyu, codex]
 softdepend: [FastAsyncWorldEdit, WorldEdit]
+folia-supported: ${folia.supported}

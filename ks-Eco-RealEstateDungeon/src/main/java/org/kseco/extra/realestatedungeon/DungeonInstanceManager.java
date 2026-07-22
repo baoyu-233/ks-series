@@ -24,6 +24,8 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 副本实例生命周期管理。
@@ -55,7 +57,7 @@ public final class DungeonInstanceManager {
     private final ConcurrentHashMap<String, String> worldInstanceIds = new ConcurrentHashMap<>();
     /** 实例 → 全部通关目标 UUID；只有集合中所有目标均死亡才允许完成。 */
     private final ConcurrentHashMap<String, Set<UUID>> instanceBosses = new ConcurrentHashMap<>();
-    private org.bukkit.scheduler.BukkitTask monitorTask;
+    private org.kseco.scheduler.EcoScheduler.TaskHandle monitorTask;
 
     private record TemplateWrite(String id, String name, String difficulty, double ticketPrice,
                                  int minPlayers, int maxPlayers, int timeLimitMinutes, int monsterLevel,
@@ -448,8 +450,16 @@ public final class DungeonInstanceManager {
                                                    List<DungeonTicketSettlementStore.Participant> participants,
                                                    List<UUID> members) {
         CompletableFuture<String> result = new CompletableFuture<>();
-        if (!Bukkit.isPrimaryThread()) {
-            result.completeExceptionally(new IllegalStateException("Dungeon admission must start on the server thread"));
+        Player payer = Bukkit.getPlayer(payerUuid);
+        if (payer != null && !eco.scheduler().isEntityThread(payer)) {
+            eco.scheduler().runPlayer(payerUuid, ignored -> beginCreate(templateId, payerUuid, participants, members)
+                    .whenComplete((value, failure) -> completeForward(result, value, failure)),
+                    () -> result.complete(null));
+            return result;
+        }
+        if (payer == null && !eco.scheduler().isGlobalThread()) {
+            eco.scheduler().runGlobal(() -> beginCreate(templateId, payerUuid, participants, members)
+                    .whenComplete((value, failure) -> completeForward(result, value, failure)));
             return result;
         }
         if (templateId == null || templateId.isBlank() || members.isEmpty() || !reservePlayers(members)) {
@@ -489,7 +499,8 @@ public final class DungeonInstanceManager {
                     finishCreateFailure(members, result, failure);
                     return;
                 }
-                runOnServerThread(() -> chargeTicket(settlement, template, timeLimit, participants, members, result));
+                runForPlayer(settlement.payerUuid(),
+                        () -> chargeTicket(settlement, template, timeLimit, participants, members, result));
             }, () -> finishCreateFailure(members, result,
                     new RejectedExecutionException("Database queue rejected ticket reservation")));
         return result;
@@ -499,6 +510,15 @@ public final class DungeonInstanceManager {
                               Map<String, Object> template, int timeLimit,
                               List<DungeonTicketSettlementStore.Participant> participants,
                               List<UUID> members, CompletableFuture<String> result) {
+        if (settlement.amount() > 0 && eco.vaultHook().directBuiltinActive()) {
+            executeTicketSql(() -> {
+                boolean charged = eco.vaultHook().hasDirect(settlement.payerUuid(), settlement.amount())
+                        && eco.vaultHook().withdrawDirect(settlement.payerUuid(), "", settlement.amount());
+                afterTicketCharge(settlement, template, timeLimit, participants, members, result, charged);
+            }, () -> finishCreateFailure(members, result,
+                    new RejectedExecutionException("Database queue rejected built-in wallet charge")));
+            return;
+        }
         boolean charged;
         try {
             if (settlement.amount() <= 0) {
@@ -514,6 +534,14 @@ public final class DungeonInstanceManager {
             result.completeExceptionally(uncertain);
             return;
         }
+        afterTicketCharge(settlement, template, timeLimit, participants, members, result, charged);
+    }
+
+    private void afterTicketCharge(DungeonTicketSettlementStore.Settlement settlement,
+                                   Map<String, Object> template, int timeLimit,
+                                   List<DungeonTicketSettlementStore.Participant> participants,
+                                   List<UUID> members, CompletableFuture<String> result,
+                                   boolean charged) {
         if (!charged) {
             executeTicketSql(() -> {
                 try (var connection = eco.ksCore().dataStore().getConnection()) {
@@ -604,11 +632,12 @@ public final class DungeonInstanceManager {
                 logEvent(instanceId, "MAP_PASTED", "", "schem=" + template.get("schematic") + " mobs=" + mobs);
                 Location loc = ready.spawn().toLocation(ready.world());
                 for (UUID member : members) {
-                    Player player = Bukkit.getPlayer(member);
-                    if (player != null && player.isOnline()) {
-                        player.teleport(loc);
-                        player.sendMessage("§6[副本] §a你已进入副本 " + instanceId);
-                    }
+                    eco.scheduler().runPlayer(member, player -> {
+                        player.teleportAsync(loc).thenAccept(teleported -> eco.scheduler().runPlayer(member,
+                                current -> current.sendMessage(teleported
+                                        ? "§6[副本] §a你已进入副本 " + instanceId
+                                        : "§6[副本] §c副本传送失败，请稍后重试。"), () -> { }));
+                    }, () -> { });
                 }
             });
         }, () -> {
@@ -766,7 +795,19 @@ public final class DungeonInstanceManager {
                 runOnServerThread(() -> completion.accept(false));
                 return;
             }
-            runOnServerThread(() -> {
+            if (eco.vaultHook().directBuiltinActive()) {
+                boolean refunded;
+                try {
+                    refunded = amount <= 0 || eco.vaultHook().depositDirect(payerUuid, "", amount);
+                } catch (Throwable uncertain) {
+                    markTicketReview(instanceId, "Built-in wallet refund outcome unknown: " + uncertain.getMessage());
+                    completion.accept(false);
+                    return;
+                }
+                finishTicketRefund(instanceId, refunded, completion);
+                return;
+            }
+            runForPlayer(payerUuid, () -> {
                 boolean refunded;
                 try {
                     refunded = amount <= 0 || (eco.vaultHook().isAvailable()
@@ -776,36 +817,39 @@ public final class DungeonInstanceManager {
                     completion.accept(false);
                     return;
                 }
-                executeTicketSql(() -> {
-                    boolean persisted;
-                    try (var connection = eco.ksCore().dataStore().getConnection()) {
-                        if (connection == null) {
-                            persisted = false;
-                        } else if (refunded) {
-                            persisted = DungeonTicketSettlementStore.markRefunded(
-                                    connection, instanceId, nowSeconds());
-                        } else {
-                            persisted = DungeonTicketSettlementStore.returnRefundReady(connection, instanceId,
-                                    "Vault rejected ticket refund", nowSeconds());
-                        }
-                    }
-                    boolean completed = refunded && persisted;
-                    runOnServerThread(() -> completion.accept(completed));
-                }, () -> {
-                    markTicketReview(instanceId, "Database queue rejected refund finalization");
-                    completion.accept(false);
-                });
+                finishTicketRefund(instanceId, refunded, completion);
             });
         }, () -> completion.accept(false));
+    }
+
+    private void finishTicketRefund(String instanceId, boolean refunded,
+                                    java.util.function.Consumer<Boolean> completion) {
+        executeTicketSql(() -> {
+            boolean persisted;
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection == null) {
+                    persisted = false;
+                } else if (refunded) {
+                    persisted = DungeonTicketSettlementStore.markRefunded(connection, instanceId, nowSeconds());
+                } else {
+                    persisted = DungeonTicketSettlementStore.returnRefundReady(connection, instanceId,
+                            "Vault rejected ticket refund", nowSeconds());
+                }
+            }
+            boolean completed = refunded && persisted;
+            runOnServerThread(() -> completion.accept(completed));
+        }, () -> {
+            markTicketReview(instanceId, "Database queue rejected refund finalization");
+            completion.accept(false);
+        });
     }
 
     private void notifyPreparationFailure(List<UUID> members, String message, boolean refunded) {
         String settlement = refunded ? "门票已退还" : "门票退款待核对";
         for (UUID member : members) {
-            Player player = Bukkit.getPlayer(member);
-            if (player != null && player.isOnline()) {
-                player.sendMessage("§6[副本] §c地图准备失败，" + settlement + ": " + message);
-            }
+            eco.scheduler().runPlayer(member,
+                    player -> player.sendMessage("§6[副本] §c地图准备失败，" + settlement + ": " + message),
+                    () -> { });
         }
     }
 
@@ -889,13 +933,13 @@ public final class DungeonInstanceManager {
             logEvent(recovery.instanceId(), "RECOVERED", "",
                     "world=" + recovery.worldInstanceId() + " participants=" + recovery.participants().size());
             for (var participant : recovery.participants().entrySet()) {
-                Player online = Bukkit.getPlayer(participant.getKey());
-                if (online == null || !online.isOnline()) continue;
-                if ("ALIVE".equals(participant.getValue())) {
-                    returnPlayerToInstance(recovery.instanceId(), online);
-                } else if ("DEAD".equals(participant.getValue())) {
-                    online.sendMessage("§6[副本] §c副本已恢复，你仍处于阵亡状态；使用 /dungeon revive 回场。");
-                }
+                eco.scheduler().runPlayer(participant.getKey(), online -> {
+                    if ("ALIVE".equals(participant.getValue())) {
+                        returnPlayerToInstanceAsync(recovery.instanceId(), online);
+                    } else if ("DEAD".equals(participant.getValue())) {
+                        online.sendMessage("§6[副本] §c副本已恢复，你仍处于阵亡状态；使用 /dungeon revive 回场。");
+                    }
+                }, () -> { });
             }
             resumePendingRevives(recovery.instanceId());
         }));
@@ -909,15 +953,37 @@ public final class DungeonInstanceManager {
         double halfX = (prepared.bounds().maxX() - prepared.bounds().minX()) / 2.0 + 2;
         double halfY = (prepared.bounds().maxY() - prepared.bounds().minY()) / 2.0 + 2;
         double halfZ = (prepared.bounds().maxZ() - prepared.bounds().minZ()) / 2.0 + 2;
-        for (var entity : prepared.world().getNearbyEntities(center, halfX, halfY, halfZ)) {
-            if (entity instanceof LivingEntity && !(entity instanceof Player)) entity.remove();
-        }
+        removeEncounterEntities(prepared);
         instanceBosses.remove(instanceId);
         Map<String, Object> template = getTemplate(prepared.templateKey());
         int level = template == null || template.get("monsterLevel") == null
                 ? 10 : ((Number) template.get("monsterLevel")).intValue();
         int mobs = spawnDungeonMarkers(instanceId, prepared, level, configManager.snapshot().mapSpawnMobs);
         eco.getLogger().info("[副本系统] 已恢复副本 " + instanceId + " 并重建遭遇，刷怪 " + mobs + " 个。");
+    }
+
+    private void removeEncounterEntities(PreparedInstance prepared) {
+        int chunkX1 = Math.floorDiv(prepared.bounds().minX(), 16);
+        int chunkX2 = Math.floorDiv(prepared.bounds().maxX(), 16);
+        int chunkZ1 = Math.floorDiv(prepared.bounds().minZ(), 16);
+        int chunkZ2 = Math.floorDiv(prepared.bounds().maxZ(), 16);
+        for (int cx = chunkX1; cx <= chunkX2; cx++) for (int cz = chunkZ1; cz <= chunkZ2; cz++) {
+            int minX = Math.max(prepared.bounds().minX(), cx << 4);
+            int maxX = Math.min(prepared.bounds().maxX(), (cx << 4) + 15);
+            int minZ = Math.max(prepared.bounds().minZ(), cz << 4);
+            int maxZ = Math.min(prepared.bounds().maxZ(), (cz << 4) + 15);
+            Location owner = new Location(prepared.world(), minX, prepared.bounds().minY(), minZ);
+            eco.scheduler().runRegion(owner, () -> {
+                Location center = new Location(prepared.world(), (minX + maxX) / 2.0 + 0.5,
+                        (prepared.bounds().minY() + prepared.bounds().maxY()) / 2.0 + 0.5,
+                        (minZ + maxZ) / 2.0 + 0.5);
+                double halfY = (prepared.bounds().maxY() - prepared.bounds().minY()) / 2.0 + 2;
+                for (var entity : prepared.world().getNearbyEntities(center,
+                        (maxX - minX) / 2.0 + 1.0, halfY, (maxZ - minZ) / 2.0 + 1.0)) {
+                    if (entity instanceof LivingEntity && !(entity instanceof Player)) entity.remove();
+                }
+            });
+        }
     }
 
     private void abandonUnrecoverable(String instanceId, String reason) {
@@ -975,20 +1041,21 @@ public final class DungeonInstanceManager {
     }
 
     private void tryCompletePendingRevive(DungeonReviveStore.Revival revival) {
-        Player player = Bukkit.getPlayer(revival.playerUuid());
         if (!revival.instanceId().equals(getPlayerActiveInstance(revival.playerUuid()))) return;
-        if (player == null || !player.isOnline() || !preparedWorlds.containsKey(revival.instanceId())) return;
-        if (returnPlayerToInstance(revival.instanceId(), player)) {
-            submitReviveSql(connection -> DungeonReviveStore.completeReturn(connection, revival, nowSeconds()))
-                    .whenComplete((completed, failure) -> runOnServerThread(() -> {
-                        if (failure == null && Boolean.TRUE.equals(completed)) {
-                            player.sendMessage("§a[副本] §f已恢复上次未完成的付费复活回场。");
-                        } else {
-                            eco.getLogger().severe("[副本系统] 已回场但复活完成状态未落库，保留 PAID_PENDING 供恢复: "
-                                    + revival.id());
-                        }
-                    }));
-        }
+        if (!preparedWorlds.containsKey(revival.instanceId())) return;
+        eco.scheduler().runPlayer(revival.playerUuid(), player ->
+                returnPlayerToInstanceAsync(revival.instanceId(), player).thenAccept(returned -> {
+                    if (!returned) return;
+                    submitReviveSql(connection -> DungeonReviveStore.completeReturn(connection, revival, nowSeconds()))
+                            .whenComplete((completed, failure) -> eco.scheduler().runPlayer(revival.playerUuid(), current -> {
+                                if (failure == null && Boolean.TRUE.equals(completed)) {
+                                    current.sendMessage("§a[副本] §f已恢复上次未完成的付费复活回场。");
+                                } else {
+                                    eco.getLogger().severe("[副本系统] 已回场但复活完成状态未落库，保留 PAID_PENDING 供恢复: "
+                                            + revival.id());
+                                }
+                            }, () -> { }));
+                }), () -> { });
     }
 
     void requestReviveRefund(DungeonReviveStore.Revival revival, String expectedStatus, String reason) {
@@ -1092,8 +1159,17 @@ public final class DungeonInstanceManager {
     }
 
     void runOnServerThread(Runnable action) {
-        if (Bukkit.isPrimaryThread()) action.run();
-        else Bukkit.getScheduler().runTask(eco, action);
+        if (eco.scheduler().isGlobalThread()) action.run();
+        else eco.scheduler().runGlobal(action);
+    }
+
+    private void runForPlayer(UUID playerUuid, Runnable action) {
+        eco.scheduler().runEntityOrGlobal(playerUuid, action);
+    }
+
+    private static <T> void completeForward(CompletableFuture<T> target, T value, Throwable failure) {
+        if (failure == null) target.complete(value);
+        else target.completeExceptionally(unwrap(failure));
     }
 
     <T> CompletableFuture<T> submitReviveSql(ReviveSqlTask<T> task) {
@@ -1183,17 +1259,20 @@ public final class DungeonInstanceManager {
                 } catch (NumberFormatException ignored) { }
             }
             boolean completionTarget = boss || MythicSpawner.isCompletionController(mobName);
-            UUID spawnedUuid = MythicSpawner.spawn(eco, mobName,
-                    marker.point().toLocation(prepared.world()), level);
-            if (spawnedUuid != null) {
-                spawned++;
-                if (completionTarget) {
+            Location spawnLocation = marker.point().toLocation(prepared.world());
+            String scheduledMob = mobName;
+            int scheduledLevel = level;
+            eco.scheduler().runRegion(spawnLocation, () -> {
+                UUID spawnedUuid = MythicSpawner.spawn(eco, scheduledMob, spawnLocation, scheduledLevel);
+                if (spawnedUuid != null && completionTarget) {
                     instanceBosses.computeIfAbsent(instanceId, ignored -> ConcurrentHashMap.newKeySet())
                             .add(spawnedUuid);
+                } else if (spawnedUuid == null && completionTarget) {
+                    eco.getLogger().warning("[副本系统] 通关检测目标刷怪失败: "
+                            + scheduledMob + " instance=" + instanceId);
                 }
-            } else if (completionTarget) {
-                eco.getLogger().warning("[副本系统] 通关检测目标刷怪失败: " + mobName + " instance=" + instanceId);
-            }
+            });
+            spawned++;
         }
         return spawned;
     }
@@ -1218,14 +1297,15 @@ public final class DungeonInstanceManager {
                     playerToInstance.remove(playerUuid.toString());
                     logEvent(instanceId, "LEAVE", playerUuid.toString(), "");
                     // 传送回主世界（默认 overworld）
-                    Player player = Bukkit.getPlayer(playerUuid);
-                    if (player != null && player.isOnline()) {
-                        World mainWorld = Bukkit.getWorld("world");
+                    World mainWorld = Bukkit.getWorld("world");
+                    eco.scheduler().runPlayer(playerUuid, player -> {
                         if (mainWorld != null) {
-                            player.teleport(mainWorld.getSpawnLocation());
-                            player.sendMessage("§6[副本] §a你已离开副本 " + instanceId);
+                            player.teleportAsync(mainWorld.getSpawnLocation()).thenAccept(teleported ->
+                                    eco.scheduler().runPlayer(playerUuid, current -> current.sendMessage(teleported
+                                            ? "§6[副本] §a你已离开副本 " + instanceId
+                                            : "§6[副本] §c离场传送失败，请联系管理员。"), () -> { }));
                         }
-                    }
+                    }, () -> { });
                     int remaining = 0;
                     try (var count = conn.prepareStatement(
                             "SELECT COUNT(*) FROM ks_dungeon_participants WHERE instance_id=? AND status<>'LEFT'")) {
@@ -1311,11 +1391,15 @@ public final class DungeonInstanceManager {
             World mainWorld = Bukkit.getWorld("world");
             for (String uuidStr : plan.remainingParticipants()) {
                 try {
-                    Player player = Bukkit.getPlayer(UUID.fromString(uuidStr));
-                    if (player != null && player.isOnline()) {
-                        if (mainWorld != null) player.teleport(mainWorld.getSpawnLocation());
-                        if (kickMessage != null) player.sendMessage(kickMessage);
-                    }
+                    UUID participant = UUID.fromString(uuidStr);
+                    eco.scheduler().runPlayer(participant, player -> {
+                        if (mainWorld != null) {
+                            player.teleportAsync(mainWorld.getSpawnLocation()).thenRun(() ->
+                                    eco.scheduler().runPlayer(participant, current -> {
+                                        if (kickMessage != null) current.sendMessage(kickMessage);
+                                    }, () -> { }));
+                        } else if (kickMessage != null) player.sendMessage(kickMessage);
+                    }, () -> { });
                 } catch (IllegalArgumentException ignored) {
                     // Ignore malformed legacy participant rows.
                 }
@@ -1334,8 +1418,7 @@ public final class DungeonInstanceManager {
                 eco.getLogger().warning("[副本系统] 无法请求释放副本世界 " + instanceId + ": " + failure.getMessage());
             }
         };
-        if (Bukkit.isPrimaryThread()) evacuateAndRelease.run();
-        else Bukkit.getScheduler().runTask(eco, evacuateAndRelease);
+        runOnServerThread(evacuateAndRelease);
         return true;
     }
 
@@ -1346,9 +1429,10 @@ public final class DungeonInstanceManager {
     /** 启动周期监控任务（每 100 ticks/约 5 秒一次）。重复调用安全（已在跑则忽略）。 */
     public void startMonitor() {
         if (monitorTask != null) return;
-        monitorTask = Bukkit.getScheduler().runTaskTimer(eco, () -> {
+        monitorTask = eco.scheduler().runGlobalTimer(() -> {
             checkBossDeaths();
-            checkExpiredInstances();
+            executeTicketSql(this::checkExpiredInstances,
+                    () -> eco.getLogger().warning("[副本系统] 超时检查数据库队列繁忙"));
         }, 100L, 100L);
     }
 
@@ -1365,12 +1449,30 @@ public final class DungeonInstanceManager {
         for (var entry : new ArrayList<>(instanceBosses.entrySet())) {
             String instanceId = entry.getKey();
             Set<UUID> bosses = entry.getValue();
-            if (allRegisteredBossesDead(bosses, MythicSpawner::isAlive)
-                    && instanceBosses.remove(instanceId, bosses)) {
-                eco.getLogger().info("[副本系统] 副本 " + instanceId + " 的全部 boss 已死亡，自动判定通关。");
-                if (!completeInstance(instanceId)) instanceBosses.putIfAbsent(instanceId, bosses);
+            if (bosses == null || bosses.isEmpty()) continue;
+            AtomicInteger pending = new AtomicInteger(bosses.size());
+            AtomicBoolean anyAlive = new AtomicBoolean(false);
+            for (UUID bossUuid : List.copyOf(bosses)) {
+                var entity = Bukkit.getEntity(bossUuid);
+                if (entity == null) {
+                    finishBossCheck(instanceId, bosses, pending, anyAlive);
+                    continue;
+                }
+                eco.scheduler().runEntity(entity, () -> {
+                    if (MythicSpawner.isAlive(bossUuid)) anyAlive.set(true);
+                    finishBossCheck(instanceId, bosses, pending, anyAlive);
+                }, () -> finishBossCheck(instanceId, bosses, pending, anyAlive));
             }
         }
+    }
+
+    private void finishBossCheck(String instanceId, Set<UUID> bosses, AtomicInteger pending,
+                                 AtomicBoolean anyAlive) {
+        if (pending.decrementAndGet() != 0 || anyAlive.get() || !instanceBosses.remove(instanceId, bosses)) return;
+        eco.getLogger().info("[副本系统] 副本 " + instanceId + " 的全部 boss 已死亡，自动判定通关。");
+        executeTicketSql(() -> {
+            if (!completeInstance(instanceId)) instanceBosses.putIfAbsent(instanceId, bosses);
+        }, () -> instanceBosses.putIfAbsent(instanceId, bosses));
     }
 
     static boolean allRegisteredBossesDead(Set<UUID> bosses,
@@ -1583,27 +1685,25 @@ public final class DungeonInstanceManager {
             return;
         }
 
-        List<ClaimedReward> immutableClaims = List.copyOf(claimed);
-        runOnServerThread(() -> deliverClaimedRewards(instanceId, plan, immutableClaims));
+        deliverClaimedRewards(instanceId, plan, List.copyOf(claimed));
     }
 
     private void deliverClaimedRewards(String instanceId, DungeonLifecycleStore.EndPlan plan,
                                        List<ClaimedReward> claimed) {
-        List<RewardDeliveryResult> results = new ArrayList<>(claimed.size());
+        List<CompletableFuture<RewardDeliveryResult>> deliveries = new ArrayList<>(claimed.size());
         for (ClaimedReward reward : claimed) {
-            DungeonRpgBridge.Delivery delivery;
-            try {
-                delivery = rpgBridge.deliverReward(instanceId, plan.templateId(),
-                        reward.playerUuid(), reward.definition());
-            } catch (Throwable uncertain) {
-                delivery = new DungeonRpgBridge.Delivery(DungeonRpgBridge.DeliveryOutcome.REVIEW_REQUIRED,
-                        reward.definition().rewardKey() + " outcome_unknown=" + messageOf(uncertain));
-            }
-            results.add(new RewardDeliveryResult(reward.playerUuid(), reward.definition(), delivery));
+            deliveries.add(rpgBridge.deliverRewardAsync(instanceId, plan.templateId(),
+                            reward.playerUuid(), reward.definition())
+                    .handle((delivery, failure) -> new RewardDeliveryResult(
+                            reward.playerUuid(), reward.definition(), failure == null ? delivery
+                            : new DungeonRpgBridge.Delivery(DungeonRpgBridge.DeliveryOutcome.REVIEW_REQUIRED,
+                            reward.definition().rewardKey() + " outcome_unknown=" + messageOf(failure)))));
         }
-        List<RewardDeliveryResult> immutableResults = List.copyOf(results);
-        executeRewardSql(() -> persistRewardDeliveries(instanceId, plan, immutableResults),
-                () -> eco.getLogger().severe("[副本系统] 奖励结果无法落库，PENDING 需人工核对: " + instanceId));
+        CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).whenComplete((ignored, failure) -> {
+            List<RewardDeliveryResult> results = deliveries.stream().map(CompletableFuture::join).toList();
+            executeRewardSql(() -> persistRewardDeliveries(instanceId, plan, results),
+                    () -> eco.getLogger().severe("[副本系统] 奖励结果无法落库，PENDING 需人工核对: " + instanceId));
+        });
     }
 
     private void persistRewardDeliveries(String instanceId, DungeonLifecycleStore.EndPlan plan,
@@ -1646,8 +1746,7 @@ public final class DungeonInstanceManager {
         }
 
         if (retry) {
-            runOnServerThread(() -> Bukkit.getScheduler().runTaskLater(eco,
-                    () -> scheduleCompletionRewards(instanceId, plan), 20L));
+            eco.scheduler().runGlobalLater(() -> scheduleCompletionRewards(instanceId, plan), 20L);
         }
     }
 
@@ -1665,12 +1764,10 @@ public final class DungeonInstanceManager {
     }
 
     private void notifyRewardCompletion(List<UUID> participants) {
-        runOnServerThread(() -> {
-            for (UUID participant : participants) {
-                Player player = Bukkit.getPlayer(participant);
-                if (player != null && player.isOnline()) player.sendMessage("§6[副本] §a通关奖励已发放。");
-            }
-        });
+        for (UUID participant : participants) {
+            eco.scheduler().runPlayer(participant,
+                    player -> player.sendMessage("§6[副本] §a通关奖励已发放。"), () -> { });
+        }
     }
 
     private static void insertRewardLog(Connection connection, String instanceId, UUID playerUuid,
@@ -1731,21 +1828,36 @@ public final class DungeonInstanceManager {
 
     private record RewardDeliveryResult(UUID playerUuid, DungeonRpgBridge.RewardGrant definition,
                                         DungeonRpgBridge.Delivery delivery) { }
-    public boolean returnPlayerToInstance(String instanceId, Player player) {
-        if (!Bukkit.isPrimaryThread() || player == null || !player.isOnline()) return false;
+    public CompletableFuture<Boolean> returnPlayerToInstanceAsync(String instanceId, Player player) {
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+        if (player == null || !player.isOnline() || !eco.scheduler().isEntityThread(player)) {
+            result.complete(false);
+            return result;
+        }
         PreparedInstance prepared = preparedWorlds.get(instanceId);
-        if (prepared == null || prepared.world() == null || prepared.spawn() == null) return false;
+        if (prepared == null || prepared.world() == null || prepared.spawn() == null) {
+            result.complete(false);
+            return result;
+        }
         Location destination = prepared.spawn().toLocation(prepared.world());
-        if (!player.teleport(destination)) return false;
-        player.setGameMode(GameMode.SURVIVAL);
-        var maxHealth = player.getAttribute(Attribute.MAX_HEALTH);
-        if (maxHealth != null) player.setHealth(Math.max(1.0, maxHealth.getValue()));
-        player.setFoodLevel(20);
-        player.setSaturation(5.0f);
-        player.setFireTicks(0);
-        player.setFallDistance(0);
-        player.setNoDamageTicks(40);
-        return true;
+        UUID playerUuid = player.getUniqueId();
+        player.teleportAsync(destination).whenComplete((teleported, failure) ->
+                eco.scheduler().runPlayer(playerUuid, current -> {
+                    if (failure != null || !Boolean.TRUE.equals(teleported)) {
+                        result.complete(false);
+                        return;
+                    }
+                    current.setGameMode(GameMode.SURVIVAL);
+                    var maxHealth = current.getAttribute(Attribute.MAX_HEALTH);
+                    if (maxHealth != null) current.setHealth(Math.max(1.0, maxHealth.getValue()));
+                    current.setFoodLevel(20);
+                    current.setSaturation(5.0f);
+                    current.setFireTicks(0);
+                    current.setFallDistance(0);
+                    current.setNoDamageTicks(40);
+                    result.complete(true);
+                }, () -> result.complete(false)));
+        return result;
     }
 
     public boolean isInstanceReady(String instanceId) {
@@ -1760,11 +1872,11 @@ public final class DungeonInstanceManager {
         if (instanceId == null) return;
         submitReviveSql(connection -> DungeonReviveStore.candidate(
                 connection, instanceId, player.getUniqueId())).whenComplete((candidate, failure) ->
-                runOnServerThread(() -> {
+                eco.scheduler().runPlayer(player.getUniqueId(), () -> {
                     if (failure != null || candidate == null
                             || !STATUS_ACTIVE.equals(candidate.instanceStatus()) || !player.isOnline()) return;
                     if ("ALIVE".equals(candidate.participantStatus())) {
-                        returnPlayerToInstance(instanceId, player);
+                        returnPlayerToInstanceAsync(instanceId, player);
                     } else if ("DEAD".equals(candidate.participantStatus())) {
                         player.sendMessage("§6[副本] §c你仍处于阵亡状态；使用 /dungeon revive 付费回场。");
                     } else if ("REVIVE_PENDING".equals(candidate.participantStatus())) {

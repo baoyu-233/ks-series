@@ -74,7 +74,9 @@ public final class DungeonCommand implements CommandExecutor {
         String err = partyManager.invite(uuid, target.getUniqueId());
         if (err != null) { player.sendMessage("§c" + err); return true; }
         player.sendMessage("§a已邀请 §f" + target.getName() + " §a加入副本队伍（2 分钟内有效）");
-        target.sendMessage("§6[副本] §f" + player.getName() + " §a邀请你组队，输入 §e/dungeon accept §a接受");
+        String inviterName = player.getName();
+        eco.scheduler().runPlayer(target.getUniqueId(), invited -> invited.sendMessage(
+                "§6[副本] §f" + inviterName + " §a邀请你组队，输入 §e/dungeon accept §a接受"), () -> { });
         return true;
     }
 
@@ -84,7 +86,9 @@ public final class DungeonCommand implements CommandExecutor {
         Player lp = Bukkit.getPlayer(leader);
         int size = partyManager.membersOf(leader).size();
         player.sendMessage("§a你已加入 §f" + (lp != null ? lp.getName() : leader) + " §a的副本队伍（当前 " + size + " 人）");
-        if (lp != null) lp.sendMessage("§6[副本] §f" + player.getName() + " §a已加入队伍（当前 " + size + " 人）");
+        String memberName = player.getName();
+        if (lp != null) eco.scheduler().runPlayer(leader, leaderPlayer -> leaderPlayer.sendMessage(
+                "§6[副本] §f" + memberName + " §a已加入队伍（当前 " + size + " 人）"), () -> { });
         return true;
     }
 
@@ -133,10 +137,9 @@ public final class DungeonCommand implements CommandExecutor {
         UUID partyLeader = leader;
         instanceManager.createInstanceForPartyAsync(templateId, uuid, player.getName(), online)
                 .whenComplete((instanceId, failure) -> {
-                    Player currentPlayer = Bukkit.getPlayer(uuid);
                     if (failure != null || instanceId == null) {
-                        if (currentPlayer != null) currentPlayer.sendMessage(
-                                "§c开本失败（余额不足/成员已有副本/模板或数据库异常）");
+                        eco.scheduler().runPlayer(uuid, currentPlayer -> currentPlayer.sendMessage(
+                                "§c开本失败（余额不足/成员已有副本/模板或数据库异常）"), () -> { });
                         return;
                     }
                     if (partyLeader != null) partyManager.disband(partyLeader);
@@ -162,7 +165,7 @@ public final class DungeonCommand implements CommandExecutor {
         if (active == null) { player.sendMessage("§c你不在任何副本中"); return true; }
         player.sendMessage("§7正在确认付费复活，请勿重复提交……");
         deathHandler.reviveAsync(active, uuid).whenComplete((result, failure) ->
-                instanceManager.runOnServerThread(() -> sendReviveResult(player, result, failure)));
+                eco.scheduler().runPlayer(uuid, current -> sendReviveResult(current, result, failure), () -> { }));
         return true;
     }
 

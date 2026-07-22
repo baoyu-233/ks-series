@@ -59,6 +59,18 @@ public final class CanvasService {
     }
 
     private static void requireServerThread() {
-        if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("WorldEdit interaction must run on the server thread");
+        if (!Bukkit.isGlobalTickThread() && !foliaRuntime()) {
+            throw new IllegalStateException("WorldEdit interaction must run on the server thread");
+        }
+    }
+
+    private static boolean foliaRuntime() {
+        try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer", false,
+                    CanvasService.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException ignored) {
+            return false;
+        }
     }
 }

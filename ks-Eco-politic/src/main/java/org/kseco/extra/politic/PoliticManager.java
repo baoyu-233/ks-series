@@ -2,11 +2,15 @@ package org.kseco.extra.politic;
 
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
+import org.bukkit.entity.Player;
 import org.kseco.KsEco;
 import org.kseco.database.PortableSqlMutation;
 
 import java.sql.*;
+import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 
 /**
  * 政治职务管理器。
@@ -15,6 +19,7 @@ import java.util.*;
  * 以及职务间的互斥约束检查与级联补位。
  */
 public final class PoliticManager {
+    private static final Duration BUKKIT_TIMEOUT = Duration.ofSeconds(10);
 
     private final KsEco eco;
 
@@ -387,8 +392,7 @@ public final class PoliticManager {
             return AssignResult.fail("骑士阶级不能担任保民官（先离职骑士身份）");
 
         // 检查是否是 admin
-        OfflinePlayer op = Bukkit.getOfflinePlayer(playerUuid);
-        if (op.getPlayer() != null && op.getPlayer().hasPermission("kseco.admin"))
+        if (isOnlineAdmin(playerUuid))
             return AssignResult.fail("管理员不能担任保民官");
 
         int termHours = getConfigInt("term_duration_hours", DEF_TERM_HOURS);
@@ -430,8 +434,7 @@ public final class PoliticManager {
 
     public boolean isTribuneCandidateEligible(UUID playerUuid) {
         if (isSenator(playerUuid) || isConsul(playerUuid) || isEquestrian(playerUuid)) return false;
-        OfflinePlayer op = Bukkit.getOfflinePlayer(playerUuid);
-        if (op.getPlayer() != null && op.getPlayer().hasPermission("kseco.admin")) return false;
+        if (isOnlineAdmin(playerUuid)) return false;
         return true;
     }
 
@@ -718,13 +721,12 @@ public final class PoliticManager {
         List<ChangeRecord> results = new ArrayList<>();
         int seatsToFill = max - current;
 
-        for (OfflinePlayer op : Bukkit.getOfflinePlayers()) {
-            String uid = op.getUniqueId().toString();
+        for (PlayerIdentity candidate : offlinePlayerSnapshot()) {
+            String uid = candidate.uuid().toString();
             if (excluded.contains(uid)) continue;
-            // 排除 admin
-            if (op.getPlayer() != null && op.getPlayer().hasPermission("kseco.admin")) continue;
+            if (candidate.admin()) continue;
 
-            Office o = insertOffice(op.getUniqueId(), safePlayerName(uid), "TRIBUNE", null, termEnds, "AUTO_PROMOTE");
+            Office o = insertOffice(candidate.uuid(), candidate.name(), "TRIBUNE", null, termEnds, "AUTO_PROMOTE");
             if (o != null) {
                 results.add(new ChangeRecord(uid, "TRIBUNE", "PROMOTED", null));
                 seatsToFill--;
@@ -740,11 +742,51 @@ public final class PoliticManager {
 
     private String safePlayerName(String uuid) {
         try {
-            OfflinePlayer op = Bukkit.getOfflinePlayer(UUID.fromString(uuid));
-            if (op.getName() != null) return op.getName();
+            return eco.scheduler().callGlobal(() -> {
+                OfflinePlayer player = Bukkit.getOfflinePlayer(UUID.fromString(uuid));
+                return player.getName() == null ? uuid : player.getName();
+            }, BUKKIT_TIMEOUT);
         } catch (Exception ignored) {}
         return uuid;
     }
+
+    private boolean isOnlineAdmin(UUID playerUuid) {
+        try {
+            Player online = eco.scheduler().callGlobal(() -> Bukkit.getPlayer(playerUuid), BUKKIT_TIMEOUT);
+            return online != null && online.isOnline()
+                    && eco.scheduler().callEntity(online,
+                    () -> online.hasPermission("kseco.admin"), BUKKIT_TIMEOUT);
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            return true;
+        } catch (ExecutionException | TimeoutException | RuntimeException failure) {
+            eco.getLogger().warning("[政治系统] 管理员资格检查失败: " + playerUuid);
+            return true;
+        }
+    }
+
+    private List<PlayerIdentity> offlinePlayerSnapshot() {
+        try {
+            List<OfflineIdentity> identities = eco.scheduler().callGlobal(() -> Arrays.stream(Bukkit.getOfflinePlayers())
+                    .map(player -> new OfflineIdentity(player.getUniqueId(),
+                            player.getName() == null ? player.getUniqueId().toString() : player.getName()))
+                    .toList(), BUKKIT_TIMEOUT);
+            List<PlayerIdentity> result = new ArrayList<>(identities.size());
+            for (OfflineIdentity identity : identities) {
+                result.add(new PlayerIdentity(identity.uuid(), identity.name(), isOnlineAdmin(identity.uuid())));
+            }
+            return List.copyOf(result);
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            return List.of();
+        } catch (ExecutionException | TimeoutException | RuntimeException failure) {
+            eco.getLogger().warning("[政治系统] 离线玩家快照失败: " + failure.getMessage());
+            return List.of();
+        }
+    }
+
+    private record OfflineIdentity(UUID uuid, String name) { }
+    private record PlayerIdentity(UUID uuid, String name, boolean admin) { }
 
     void cleanupExpired() {
         long now = System.currentTimeMillis() / 1000;

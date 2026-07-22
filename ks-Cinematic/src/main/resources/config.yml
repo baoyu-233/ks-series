@@ -1,0 +1,4 @@
+defaults:
+  story-world: ks-dungeon-world
+  grid-spacing: 5000
+  max-concurrent: 2

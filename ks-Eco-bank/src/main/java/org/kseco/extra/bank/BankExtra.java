@@ -2,6 +2,7 @@ package org.kseco.extra.bank;
 
 import org.kseco.KsEco;
 import org.kseco.extra.KsEcoExtraModule;
+import org.kseco.scheduler.EcoScheduler;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.time.Duration;
@@ -29,7 +30,7 @@ public final class BankExtra implements KsEcoExtraModule {
     private BankGameplayManager gameplayManager;
     private BankEquityManager equityManager;
     private BankResolutionManager resolutionManager;
-    private org.bukkit.scheduler.BukkitTask interestTask;
+    private EcoScheduler.TaskHandle interestTask;
     private final AtomicBoolean maintenanceRunning = new AtomicBoolean(false);
     private final AtomicBoolean enabled = new AtomicBoolean(false);
 
@@ -70,7 +71,7 @@ public final class BankExtra implements KsEcoExtraModule {
         // 利息结算 + 逾期标记 + 央行到期贷款自动回收：启动 1 分钟后首跑，之后每 30 分钟一次。
         // 结算按账户时间戳锚点推进（周期天数见 ks_bank_cb_config.interest_period_days），
         // 任务跑得勤不会重复发息，停服跨周期会在下次运行补齐。
-        interestTask = org.bukkit.Bukkit.getScheduler().runTaskTimer(eco, () -> {
+        interestTask = eco.scheduler().runGlobalTimer(() -> {
             if (!enabled.get() || !maintenanceRunning.compareAndSet(false, true)) return;
             try {
                 eco.asyncWorkPool().executeDatabase(() -> {
@@ -89,8 +90,7 @@ public final class BankExtra implements KsEcoExtraModule {
                     } finally {
                         maintenanceRunning.set(false);
                         if (maintenanceOwner && enabled.get()) {
-                            org.bukkit.Bukkit.getScheduler().runTask(eco,
-                                    enterpriseFinanceManager::retryAuctionRefunds);
+                            enterpriseFinanceManager.retryAuctionRefunds();
                         }
                     }
                 });

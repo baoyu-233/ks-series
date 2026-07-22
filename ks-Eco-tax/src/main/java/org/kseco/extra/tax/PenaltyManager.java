@@ -19,10 +19,12 @@ import java.util.concurrent.RejectedExecutionException;
 public final class PenaltyManager {
 
     private final KsEco eco;
+    private final TaxWalletGateway wallet;
     private final Map<String, Double> penaltyRates = new LinkedHashMap<>();
 
     public PenaltyManager(KsEco eco) {
         this.eco = eco;
+        this.wallet = new TaxWalletGateway(eco);
     }
 
     public void init() {
@@ -51,9 +53,6 @@ public final class PenaltyManager {
      */
     public Penalty issue(UUID targetUuid, String targetName, String penaltyType,
                           double baseAmount, String reason) {
-        if (!org.bukkit.Bukkit.isPrimaryThread()) {
-            throw new IllegalStateException("Penalty collection must run on the server thread");
-        }
         String normalizedType = penaltyType == null
                 ? ""
                 : penaltyType.trim().toUpperCase(Locale.ROOT);
@@ -94,8 +93,7 @@ public final class PenaltyManager {
         }
 
         // 自动扣款
-        var player = org.bukkit.Bukkit.getOfflinePlayer(targetUuid);
-        if (eco.vaultHook().has(player, amount) && eco.vaultHook().withdraw(player, amount)) {
+        if (wallet.has(targetUuid, targetName, amount) && wallet.withdraw(targetUuid, targetName, amount)) {
             // 标记为已缴
             try (Connection conn = eco.ksCore().dataStore().getConnection()) {
                 if (conn != null) {
@@ -108,7 +106,7 @@ public final class PenaltyManager {
                     }
                 }
             } catch (SQLException | RuntimeException paymentFailure) {
-                if (eco.vaultHook().deposit(player, amount)) {
+                if (wallet.deposit(targetUuid, targetName, amount)) {
                     eco.getLogger().warning("[Penalty] Refunded payment after status update failed: " + id);
                 } else {
                     eco.getLogger().severe("[Penalty] Payment status update and refund both failed: " + id);

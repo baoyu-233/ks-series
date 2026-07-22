@@ -47,8 +47,7 @@ public final class PoliticCommand implements CommandExecutor {
                     player.sendMessage("§e用法: /politic appeal <提案ID>");
                     return true;
                 }
-                ProposalManager.AppealResult result = proposalManager.appealForProposal(
-                        args[1], player.getUniqueId(), player.getName());
+                ProposalManager.AppealResult result = proposalManager.appealForProposal(args[1], player);
                 if (result.success()) player.sendMessage("§a" + result.message());
                 else player.sendMessage("§c发起呼吁失败: " + result.error());
                 return true;

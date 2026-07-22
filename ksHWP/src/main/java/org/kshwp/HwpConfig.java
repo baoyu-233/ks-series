@@ -41,6 +41,11 @@ public final class HwpConfig {
 
     private String route;
 
+    // --- 跨服地图投影（可选依赖 ks-Eco） ---
+    private boolean federatedMapPublishEnabled;
+    private int federatedMapPublishMinIntervalSeconds;
+    private int federatedMapPublishMaxPayloadBytes;
+
     public HwpConfig(JavaPlugin plugin) {
         this.plugin = plugin;
         reload();
@@ -106,6 +111,13 @@ public final class HwpConfig {
         }
 
         route = cfg.getString("web.route", "/kSHWP");
+
+        var federated = cfg.getConfigurationSection("cross-server.map-publish");
+        federatedMapPublishEnabled = federated != null && federated.getBoolean("enabled", false);
+        federatedMapPublishMinIntervalSeconds = Math.max(1,
+                federated == null ? 15 : federated.getInt("min-interval-seconds", 15));
+        federatedMapPublishMaxPayloadBytes = Math.max(65_536, Math.min(8 * 1_048_576,
+                federated == null ? 1_048_576 : federated.getInt("max-payload-bytes", 1_048_576)));
     }
 
     // ---- Getters ----
@@ -134,4 +146,7 @@ public final class HwpConfig {
     public int getMaxPerPlayer() { return maxPerPlayer; }
     public int getMaxTextLength() { return maxTextLength; }
     public String getRoute() { return route; }
+    public boolean isFederatedMapPublishEnabled() { return federatedMapPublishEnabled; }
+    public int getFederatedMapPublishMinIntervalSeconds() { return federatedMapPublishMinIntervalSeconds; }
+    public int getFederatedMapPublishMaxPayloadBytes() { return federatedMapPublishMaxPayloadBytes; }
 }

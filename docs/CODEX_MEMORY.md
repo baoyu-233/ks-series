@@ -2,7 +2,7 @@
 
 > [English](CODEX_MEMORY.en.md) | 中文
 
-Last updated: 2026-07-22 Asia/Hong_Kong
+Last updated: 2026-07-23 Asia/Hong_Kong
 
 Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
 
@@ -37,8 +37,8 @@ Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
 - Global skill `ks-series-plugin-backup` is installed under `~/.codex/skills` and enforces this backup contract
   for future ks-Series deployment or rollback requests in all Codex conversations.
 - The GUI skill's asset checker passed all 22 current ks-Eco Web JavaScript files.
-- The public GitHub repository is `https://github.com/baoyu-233/ks-series`. The prepared publishing
-  checkout is `E:\ks_series`; it contains the 21 ks plugin modules, project docs, scripts and a local
+- The public GitHub repository is `https://github.com/baoyu-233/ks-series`. The prepared clean publishing
+  checkout contains all 23 ks plugin modules, project docs, scripts and a local
  `.gitignore`, while test-server data, backups, runtime databases, tokens, build caches and `mcsm-panel`
  are excluded. The first published commit is `3531a7d` on `main`.
 - The public repository uses the standard Mozilla Public License 2.0 (`MPL-2.0`).
@@ -50,19 +50,12 @@ Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
 
 ## Current Deployment
 
-- Core JAR: `test_1_21/plugins/ks-Eco-1.1.0.jar`
-- SHA-256: `5AE04AEFF9B356F01D56286EC55C22E6B5D83ECC3AB01873E3F0BC90D2681FA4`
-- Root backup ID: `ks-Eco-20260721T060541396Z-911dfdcdcb11`
-- Root backup: `backup/ks-Eco/ks-Eco-20260721T060541396Z-911dfdcdcb11.jar`
-- Enterprise Extra: `test_1_21/plugins/ks-Eco/extra/ks-Eco-enterprise-1.1.0.jar`
-- Enterprise SHA-256: `3949DA5BC1C90F752274B9802761A725F74E633147DB5207310702306E3CFD66`
-- Enterprise root backup ID: `ks-Eco-enterprise-20260717T155652733Z-e14aca5dfab3`
-- Enterprise root backup: `backup/ks-Eco-enterprise/ks-Eco-enterprise-20260717T155652733Z-e14aca5dfab3.jar`
-- RealEstate Extra: `test_1_21/plugins/ks-Eco/extra/ks-Eco-RealEstate-1.1.0.jar`
-- RealEstate SHA-256: `0EAC1DE4D186FB106026DE4F3C9D4D18869003FAF5E534F09114756203B4C6BE`
-- RealEstate root backup ID: `ks-Eco-RealEstate-20260721T050948609Z-7c121e381779`
-- RealEstate root backup: `backup/ks-Eco-RealEstate/ks-Eco-RealEstate-20260721T050948609Z-7c121e381779.jar`
-- 当前 Eco/RealEstate 制品与部署目标哈希一致；Paper 已于 2026-07-21 重启并完成玩家/管理地产网页验收。
+- 2026-07-23 的 MCSM 网络包含 MariaDB、BungeeCord、Leaves、Paper 与 Folia；最终监听 MCSM/daemon/DB/proxy、三后端和双 Web 共 9 个端口。
+- Leaves `test_1_21`：ks-Eco `5C0329AED37289FE3095EE5B9FB8937F470CBDC113CCE8814181E71E54252152`，InstanceWorld `6090C4D86B9EF84A22992F51CAE733A3545261A7D86C9E18BEFDAACC657B2D86`，RealEstate `48D1A3A9B48C96DDC82FBE5D0AA05EAD5C2FDDA7579828D37282DC559BC163C3`，ksHWP `C2F57989077E0740BCFC8519D2EA1A801FF5A048A97B000A485B74DEB9B19ECB`。
+- Paper RPG：ks-Eco `05521748E23D51E161A5B7476C78811E173C836C76C8C199E56B7DAD1C476D13`，InstanceWorld `016557FE88925F287AC27BAE24D4AF1983E2AC86D2D2E2B10535DD7F2243E1ED`；按角色加载 4 个 Extra。
+- Folia：标准部署文件名内装 Folia profile 制品，ks-Eco `0771D0F0A60D7CDA0953B091B04992588B25A041A94B352DC764FFA4712F51F0`，InstanceWorld `587E3DD642A8E99A68AEEF939E6EC6751F8C52B8FB562C17A044EA9393F49ABB`；6 个 Extra 加载，旧重复 `*-folia.jar` 已建立根备份索引后删除。
+- 所有替换使用 `scripts/deploy-plugin.ps1`；最新 HWP 备份 ID 为 `ksHWP-20260722T174014362Z-f3ad99d81a26`，重复 Folia JAR 的封存备份 ID 为 `ks-Eco-20260722T175103570Z-f84af9e6a630` 与 `ks-InstanceWorld-20260722T175109434Z-1496da3bdc0e`。
+- 最终验证：23/23 模块、391 项测试；Leaves/Folia 各 29 项 HTTP 合同；MAP 3 图块，PROPERTY 4 套。详见 `docs/KS-ECO-FULL-FUNCTION-TEST-2026-07-23.md`。
 - BotGuard JAR: `test_1_21/plugins/ks-BotGuard-1.0.0.jar`
 - BotGuard SHA-256: `BF8C46730C6BDAB1A647A91455613A13D7065FCBC98C46BF2F74F00D0E83AB03`
 - BotGuard backup: `ks-BotGuard-1.0.0.jar.bak.20260715203056`
@@ -856,3 +849,12 @@ Read this file and `docs/CODEBASE_MAP.md` before working on ks-Series.
 - 三端实机日志都显示 MariaDB 数据源、唯一节点 ID `survival/rpg/folia`、ks-Eco 启用、跨服运行时启动和 `Done`。保持 `DIAMOND=100.0` 的烟测事件令 transport 发布序号从 2 变为 3，三个 consumer cursor 全部推进到 3；六个关键端口（DB、代理、三后端、Leaves Web）均监听。
 - 最终部署：Leaves ks-core `8E6E9D2520B18A000CDAD3E90C2AE2AC1783E1FDE407B083009EAFDC758783AA`，备份 `ks-core-20260722T152119832Z-111595c1fe21`；Paper ks-core `51E4B9B693F4DA949EA6CDB839E118BDB39A37C402EE54248B6DC9DC6C09321A`，备份 `ks-core-20260722T152136341Z-5cdf30933164`；Folia ks-core `107ACEE242E7603352CFA73BF898909E8A660402625008AC73DB92F1D9FD35E4`，备份 `ks-core-folia-20260722T152157459Z-5d45d5a0854b`。Leaves ks-Eco `CEF6F25CA36EA13E6AA6EC7E89BB92CD4FB24D9EE2E426E316829614B9B5DF82`，备份 `ks-Eco-20260722T152215308Z-dda7e24c7fff`；Paper ks-Eco `B77C96EC9B93CE2FFC0713130B65CA893A8D87E60DB3FD359EB9E9B1DDB67000`，备份 `ks-Eco-20260722T152231572Z-63987c4f83f1`；Folia ks-Eco 首次部署 `2283AFFE81480D117CC6CCCB8169A9DEFD1061247713E419F7037C197C18144B`，无被替换旧 JAR。所有制品/目标/备份索引哈希已复核。
 - 非阻断残余：MariaDB 驱动会为部分幂等补列打印 duplicate-column warning；Leaves/Paper 还保留 PlaceholderAPI 网络、MMOItems/MMOCore 示例内容和 MCPets 外部库警告。Folia 启动边界没有 ks-Series ERROR 或区域线程异常。当前离线 Bungee 配置不是公网认证方案，未执行多机断网、延迟、压力、外部 Vault 崩溃或不可逆银行桥接清算。
+
+## 2026-07-23 跨服地图、房产与资产只读投影
+
+- `crossserver/assets/` 已接入 `KsEco` 生命周期：共享表初始化、节点心跳、发布和查询全部进入有界 database lane；关闭时取消心跳。Extra 只能提交已经冻结的本地 `PreparedSnapshot`，远端读取不会加载或访问 Bukkit `World`。
+- `federated-assets` 默认关闭且默认拒绝。MAP、PROPERTY、ASSET 和 TRANSFER 分别配置 server/world/dimension allow/deny，deny 永远优先；房产资产同时要求 asset-aggregate 与 property-trade 两项授权。策略、TTL、过期/离线窗口、分片和解压硬上限使用严格未知键检查、完整验证和原子热切换；连接池、节点 ID 与 transport 仍为重启项。
+- 新增认证只读 API：`/api/federated/snapshot-sources`、`/api/federated/snapshot`、`/api/federated/assets`、`/api/federated/assets/aggregate`；管理员通过 `/api/admin/federated-assets/settings` 查看或持久更新完整策略。ks-Eco 全量 196 项测试通过；5 个资产测试类合计 13 项在默认与 Folia profile 均通过。
+- `ks-Eco-RealEstate` 按 node/world/dimension 聚合全部 READY 房屋并使用单调 revision；可空 READY 信封必须用保留 null 的防御性冻结，不能使用 `Map.copyOf`。实机 PROPERTY 来源包含 4 套资产，总展示价 375,000,000 最小单位。
+- `ksHWP` 以反射窄桥发布有界 `ks-hwp-map-tile-bundle/v1`；内存/磁盘缓存命中也必须重新进入发布器，才能在重启后恢复 bundle。实机请求三个不同图块后读取到 3 个、非 stale、非 offline。
+- 最终三端已部署并重启：Leaves/Folia 各 29 项 Web 合同返回预期状态，Extra 数量 6/4/6；Folia 的 InstanceWorld root 注册线程误判已修复，重复 `*-folia.jar` 已建立备份索引后清除。完整证据与限制见 `docs/KS-ECO-FULL-FUNCTION-TEST-2026-07-23.md`。

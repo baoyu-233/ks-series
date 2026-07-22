@@ -269,10 +269,21 @@ public final class MapRenderer {
         cacheAccessTime.put(key, System.currentTimeMillis());
 
         CachedTile memory = tileCache.get(key);
-        if (memory != null) return CompletableFuture.completedFuture(memory.base64Png);
+        if (memory != null) {
+            // 发布器的内存 bundle 会在重启后清空；命中本地图块缓存时也要重新喂给
+            // 跨服桥，才能按玩家实际浏览逐步恢复完整城区，而不是永久只剩首块。
+            plugin.federatedMapPublisher().publishTile(worldName, cx, cz, snappedZoom, memory.base64Png);
+            return CompletableFuture.completedFuture(memory.base64Png);
+        }
 
         return renderInFlight.computeIfAbsent(key, ignored ->
                 buildTileFuture(worldName, cx, cz, snappedZoom)
+                        .thenApply(result -> {
+                            if (result != null) {
+                                plugin.federatedMapPublisher().publishTile(worldName, cx, cz, snappedZoom, result);
+                            }
+                            return result;
+                        })
                         .exceptionally(error -> {
                             plugin.logError("renderTileAsync", "Tile render failed",
                                     "world=" + worldName + " zoom=" + snappedZoom

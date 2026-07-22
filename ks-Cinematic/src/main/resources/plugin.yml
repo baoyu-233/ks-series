@@ -1,0 +1,17 @@
+name: ks-Cinematic
+version: 0.1.0
+main: org.kseries.cinematic.KsCinematic
+api-version: '1.21'
+description: ks-Series 私有可配置剧情演出
+authors: [baoyu, codex]
+depend: [ks-InstanceWorld]
+softdepend: [MMOItems]
+commands:
+  cinematic:
+    description: 管理私有演出内容
+    aliases: [kscinematic]
+permissions:
+  kscinematic.use:
+    default: true
+  kscinematic.admin:
+    default: op

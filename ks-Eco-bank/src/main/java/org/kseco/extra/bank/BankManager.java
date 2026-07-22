@@ -2,12 +2,16 @@ package org.kseco.extra.bank;
 
 import org.kseco.KsEco;
 import org.kseco.extra.BankAccessProvider;
+import org.bukkit.Bukkit;
+import org.bukkit.OfflinePlayer;
+import org.bukkit.entity.Player;
 
 import java.sql.*;
+import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.function.Supplier;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 
 /**
  * 银行管理器。
@@ -25,6 +29,7 @@ public final class BankManager {
     static final String APPROVAL_REQUEST_SELECT =
             "SELECT bank_id,borrower_uuid,principal,term_days,quoted_rate,product_type,repayment_type,purpose "
                     + "FROM ks_bank_loan_requests WHERE id=? AND status='PENDING'";
+    private static final Duration SERVER_THREAD_TIMEOUT = Duration.ofSeconds(10);
 
     private final KsEco eco;
 
@@ -1475,14 +1480,19 @@ public final class BankManager {
         }
     }
     private boolean debitWallet(UUID playerUuid, double amount) {
-        return onServerThread(() -> {
-            var player = org.bukkit.Bukkit.getOfflinePlayer(playerUuid);
-            return eco.vaultHook().has(player, amount) && eco.vaultHook().withdraw(player, amount);
-        }, false);
+        if (eco.vaultHook().directBuiltinActive()) {
+            return eco.vaultHook().hasDirect(playerUuid, amount)
+                    && eco.vaultHook().withdrawDirect(playerUuid, playerUuid.toString(), amount);
+        }
+        return callWallet(playerUuid,
+                player -> eco.vaultHook().has(player, amount) && eco.vaultHook().withdraw(player, amount), false);
     }
 
     private boolean creditWallet(UUID playerUuid, double amount) {
-        return onServerThread(() -> eco.vaultHook().deposit(org.bukkit.Bukkit.getOfflinePlayer(playerUuid), amount), false);
+        if (eco.vaultHook().directBuiltinActive()) {
+            return eco.vaultHook().depositDirect(playerUuid, playerUuid.toString(), amount);
+        }
+        return callWallet(playerUuid, player -> eco.vaultHook().deposit(player, amount), false);
     }
 
     private void refundWallet(UUID playerUuid, double amount, String context) {
@@ -1493,10 +1503,10 @@ public final class BankManager {
     }
 
     private Map<UUID, String> snapshotPlayerNames(List<UUID> playerUuids) {
-        return onServerThread(() -> {
+        return callGlobal(() -> {
             Map<UUID, String> names = new LinkedHashMap<>();
             for (UUID uuid : playerUuids) {
-                String name = org.bukkit.Bukkit.getOfflinePlayer(uuid).getName();
+                String name = Bukkit.getOfflinePlayer(uuid).getName();
                 names.put(uuid, name == null ? uuid.toString() : name);
             }
             return Map.copyOf(names);
@@ -1514,43 +1524,37 @@ public final class BankManager {
     }
 
     private void notifyPlayer(UUID playerUuid, String message) {
-        Runnable task = () -> {
-            var player = org.bukkit.Bukkit.getPlayer(playerUuid);
-            if (player != null) player.sendMessage(message);
-        };
-        if (org.bukkit.Bukkit.isPrimaryThread()) task.run();
-        else {
-            try { org.bukkit.Bukkit.getScheduler().runTask(eco, task); }
-            catch (RuntimeException ignored) {}
+        try { eco.scheduler().runPlayer(playerUuid, player -> player.sendMessage(message), () -> { }); }
+        catch (RuntimeException ignored) { }
+    }
+
+    private <T> T callWallet(UUID playerUuid, Function<OfflinePlayer, T> operation, T fallback) {
+        try {
+            Player online = eco.scheduler().callGlobal(() -> Bukkit.getPlayer(playerUuid), SERVER_THREAD_TIMEOUT);
+            if (online != null && online.isOnline()) {
+                return eco.scheduler().callEntity(online, () -> operation.apply(online), SERVER_THREAD_TIMEOUT);
+            }
+            return eco.scheduler().callGlobal(
+                    () -> operation.apply(Bukkit.getOfflinePlayer(playerUuid)), SERVER_THREAD_TIMEOUT);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            eco.getLogger().warning("[Bank] Wallet call was interrupted");
+            return fallback;
+        } catch (ExecutionException | TimeoutException | RuntimeException e) {
+            eco.getLogger().warning("[Bank] Wallet call failed: " + e.getMessage());
+            return fallback;
         }
     }
 
-    private <T> T onServerThread(Supplier<T> operation, T fallback) {
-        if (org.bukkit.Bukkit.isPrimaryThread()) {
-            try { return operation.get(); }
-            catch (RuntimeException e) { return fallback; }
-        }
-        CompletableFuture<T> future = new CompletableFuture<>();
+    private <T> T callGlobal(java.util.concurrent.Callable<T> operation, T fallback) {
         try {
-            org.bukkit.Bukkit.getScheduler().runTask(eco, () -> {
-                try { future.complete(operation.get()); }
-                catch (Throwable error) { future.completeExceptionally(error); }
-            });
-        } catch (RuntimeException e) {
-            eco.getLogger().warning("[Bank] Server-thread economy call failed: " + e.getMessage());
+            return eco.scheduler().callGlobal(operation, SERVER_THREAD_TIMEOUT);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             return fallback;
-        }
-        boolean interrupted = false;
-        try {
-            while (true) {
-                try { return future.get(); }
-                catch (InterruptedException e) { interrupted = true; }
-            }
-        } catch (ExecutionException e) {
-            eco.getLogger().warning("[Bank] Server-thread economy call failed: " + e.getCause());
+        } catch (ExecutionException | TimeoutException | RuntimeException e) {
+            eco.getLogger().warning("[Bank] Global scheduler call failed: " + e.getMessage());
             return fallback;
-        } finally {
-            if (interrupted) Thread.currentThread().interrupt();
         }
     }
 
@@ -1559,14 +1563,16 @@ public final class BankManager {
      */
     public boolean repayLoan(String loanId, UUID borrowerUuid, double amount) {
         if (!Double.isFinite(amount) || amount <= 0) return false;
-        var player = org.bukkit.Bukkit.getOfflinePlayer(borrowerUuid);
         LoanRepaymentSettlementStore.Settlement settlement;
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return false;
             settlement = LoanRepaymentSettlementStore.prepare(
                     conn, loanId, borrowerUuid, amount, System.currentTimeMillis() / 1000);
             if (settlement == null) return false;
-            if (!onServerThread(() -> eco.vaultHook().has(player, settlement.amount()), false)) {
+            boolean hasFunds = eco.vaultHook().directBuiltinActive()
+                    ? eco.vaultHook().hasDirect(borrowerUuid, settlement.amount())
+                    : callWallet(borrowerUuid, player -> eco.vaultHook().has(player, settlement.amount()), false);
+            if (!hasFunds) {
                 LoanRepaymentSettlementStore.cancelReady(conn, settlement,
                         "wallet balance check rejected repayment", System.currentTimeMillis() / 1000);
                 return false;
@@ -1578,7 +1584,9 @@ public final class BankManager {
             return false;
         }
 
-        boolean charged = onServerThread(() -> eco.vaultHook().withdraw(player, settlement.amount()), false);
+        boolean charged = eco.vaultHook().directBuiltinActive()
+                ? eco.vaultHook().withdrawDirect(borrowerUuid, borrowerUuid.toString(), settlement.amount())
+                : callWallet(borrowerUuid, player -> eco.vaultHook().withdraw(player, settlement.amount()), false);
         if (!charged) {
             markLoanRepaymentReview(settlement.id(), LoanRepaymentSettlementStore.CHARGE_CLAIMED,
                     "Vault withdrawal was rejected or its outcome could not be confirmed");
@@ -1793,75 +1801,6 @@ public final class BankManager {
         if (current == null) throw new SQLException("settlement disappeared");
         return new BankAccessProvider.SettlementResolution(
                 current.status(), current.reviewStage(), message);
-    }
-
-    @Deprecated
-    private boolean repayLoanLegacy(String loanId, UUID borrowerUuid, double amount) {
-        if (!Double.isFinite(amount) || amount <= 0) return false;
-        var player = org.bukkit.Bukkit.getOfflinePlayer(borrowerUuid);
-        double chargedAmount = 0.0;
-        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return false;
-            conn.setAutoCommit(false);
-            // 获取贷款信息
-            double remaining;
-            String bankId;
-            String currStatus;
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT bank_id, remaining, status FROM ks_bank_loans WHERE id=? AND borrower_uuid=? AND status IN ('ACTIVE','OVERDUE')")) {
-                ps.setString(1, loanId);
-                ps.setString(2, borrowerUuid.toString());
-                ResultSet rs = ps.executeQuery();
-                if (!rs.next()) return false;
-                bankId = rs.getString("bank_id");
-                remaining = rs.getDouble("remaining");
-                currStatus = rs.getString("status");
-            }
-
-            double pay = Math.min(amount, remaining);
-            if (!eco.vaultHook().has(player, pay)) return false;
-            if (!eco.vaultHook().withdraw(player, pay)) return false;
-            chargedAmount = pay;
-
-            // 更新贷款（部分还款保留原状态：逾期贷款还清前仍是 OVERDUE）
-            double newRemaining = remaining - pay;
-            String status = newRemaining <= 0.01 ? "PAID" : currStatus;
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "UPDATE ks_bank_loans SET remaining=?, status=?, " +
-                    "paid_at=CASE WHEN ?='PAID' THEN ? ELSE paid_at END " +
-                    "WHERE id=? AND borrower_uuid=? AND remaining>=? AND status IN ('ACTIVE','OVERDUE')")) {
-                ps.setDouble(1, newRemaining);
-                ps.setString(2, status);
-                ps.setString(3, status);
-                ps.setLong(4, System.currentTimeMillis() / 1000);
-                ps.setString(5, loanId);
-                ps.setString(6, borrowerUuid.toString());
-                ps.setDouble(7, pay);
-                if (ps.executeUpdate() != 1) {
-                    conn.rollback();
-                    eco.vaultHook().deposit(player, pay);
-                    return false;
-                }
-            }
-
-            // 还款金额回到银行
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "UPDATE ks_bank_banks SET total_assets=total_assets+? WHERE id=? AND status='ACTIVE'")) {
-                ps.setDouble(1, pay);
-                ps.setString(2, bankId);
-                if (ps.executeUpdate() != 1) {
-                    conn.rollback();
-                    eco.vaultHook().deposit(player, pay);
-                    return false;
-                }
-            }
-
-            conn.commit();
-            return true;
-        } catch (SQLException e) {
-            eco.getLogger().warning("[银行] 还款失败: " + e.getMessage());
-            return false;
-        }
     }
 
     // ---- 贷款申请（玩家自助申请 + 银行审批） ----

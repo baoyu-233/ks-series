@@ -1,5 +1,11 @@
 # ks-Eco-bank 修改日志
 
+## 2026-07-23
+
+- 声明 `folia-supported=true`，周期维护、玩家通知、货币供应快照和外部 Vault 调用改用 ks-Eco `EcoScheduler`。
+- Folia 内置钱包改用 UUID 直连数据库接口；货币供应快照在玩家实体 owner 读取权限/身份后才交给数据库 lane，移除旧 Bukkit scheduler、`isPrimaryThread()` 和遗留同步还款实现。
+- 新增 Folia metadata 合同测试；模块 52 项测试通过。未部署，未启动服务器。
+
 ## 2026-07-22
 
 - 增加真实抵押贷款、固定报价、还款计划、展期、信用与风险分层。

@@ -211,11 +211,24 @@ public final class VaultHook {
         return externalVault || directBuiltin;
     }
 
-    boolean directBuiltinActive() {
+    /** True when Folia uses the JDBC-backed built-in wallet instead of an external Vault provider. */
+    public boolean directBuiltinActive() {
         return !available && directBuiltin() != null;
     }
 
-    boolean withdrawDirect(UUID playerUuid, String playerName, double amount) {
+    /** Database-lane only: reads the Folia built-in wallet without touching Bukkit or Vault. */
+    public double getBalanceDirect(UUID playerUuid) {
+        BuiltinEconomy direct = directBuiltin();
+        return direct == null ? 0.0d : direct.getBalance(playerUuid);
+    }
+
+    /** Database-lane only: checks the Folia built-in wallet without touching Bukkit or Vault. */
+    public boolean hasDirect(UUID playerUuid, double amount) {
+        return validAmount(amount, true) && getBalanceDirect(playerUuid) >= amount;
+    }
+
+    /** Database-lane only: mutates the Folia built-in wallet without touching Bukkit or Vault. */
+    public boolean withdrawDirect(UUID playerUuid, String playerName, double amount) {
         BuiltinEconomy direct = directBuiltin();
         if (direct == null || !validAmount(amount, true)) return false;
         boolean success = direct.withdraw(playerUuid, playerName, amount);
@@ -225,7 +238,8 @@ public final class VaultHook {
         return success;
     }
 
-    boolean depositDirect(UUID playerUuid, String playerName, double amount) {
+    /** Database-lane only: mutates the Folia built-in wallet without touching Bukkit or Vault. */
+    public boolean depositDirect(UUID playerUuid, String playerName, double amount) {
         BuiltinEconomy direct = directBuiltin();
         if (direct == null || !validAmount(amount, true)) return false;
         boolean success = amount == 0.0d || direct.deposit(playerUuid, playerName, amount);

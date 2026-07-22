@@ -36,6 +36,64 @@ cross-server:
   price-refresh-lease-seconds: 180
 
 # ------------------------------------------------------------------
+# federated-assets — 跨端地图、房产与资产只读投影（可热加载）
+# 默认关闭且所有能力默认拒绝。启用后仍必须由运行时接线在数据库 lane 初始化/发布；
+# 本段不改变 database.server-id、连接池或 cross-server transport 的重启边界。
+# 判定顺序：能力 disabled -> 拒绝；任一 server/world/dimension deny 命中 -> 拒绝；
+# 否则 server/world/dimension 三个 allow 必须全部命中（"*" 表示该轴任意值）。
+# transfer 会对来源和目标各执行一次完整判定。deny 永远高于 allow。
+# ------------------------------------------------------------------
+federated-assets:
+  enabled: false
+  snapshot-ttl-seconds: 300
+  stale-after-seconds: 300
+  offline-after-seconds: 120
+  fragment-bytes: 262144
+  # 解压后的单份快照硬上限；热加载，防止共享库中的异常压缩数据耗尽内存。
+  max-snapshot-bytes: 8388608
+  policies:
+    map-view:
+      enabled: false
+      allow:
+        servers: []
+        worlds: []
+        dimensions: []
+      deny:
+        servers: []
+        worlds: [world_private] # 示例：即使 allow 使用 "*"，该世界也始终不可跨端查看
+        dimensions: []
+    property-trade:
+      enabled: false
+      allow:
+        servers: []
+        worlds: []
+        dimensions: []
+      deny:
+        servers: []
+        worlds: [world_private]
+        dimensions: []
+    asset-aggregate:
+      enabled: false
+      allow:
+        servers: []
+        worlds: []
+        dimensions: []
+      deny:
+        servers: []
+        worlds: [world_private]
+        dimensions: []
+    transfer:
+      enabled: false
+      allow:
+        servers: []
+        worlds: []
+        dimensions: []
+      deny:
+        servers: []
+        worlds: [world_private]
+        dimensions: []
+
+# ------------------------------------------------------------------
 # market — 市场系统配置
 # ------------------------------------------------------------------
 market:
@@ -852,6 +910,8 @@ transfer:
 
 # Server-authoritative pricing and bounds for plots purchased inside dungeon instances.
 realestate:
+  # 本地售楼沙盘 READY 后发布 PROPERTY 快照；仍受 federated-assets.property-trade 世界策略约束。
+  federated-property-snapshots-enabled: false
   instance-plot-price-per-block: 100.0
   instance-plot-min-price: 1000.0
   instance-plot-max-area: 65536

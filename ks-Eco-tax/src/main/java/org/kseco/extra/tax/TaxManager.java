@@ -19,6 +19,7 @@ public final class TaxManager {
 
     private final KsEco eco;
     private final TaxRateManager taxRateManager;
+    private final TaxWalletGateway wallet;
 
     // 税收统计
     private double totalCollected = 0.0;
@@ -28,6 +29,7 @@ public final class TaxManager {
     public TaxManager(KsEco eco, TaxRateManager taxRateManager) {
         this.eco = eco;
         this.taxRateManager = taxRateManager;
+        this.wallet = new TaxWalletGateway(eco);
     }
 
     public void init() {
@@ -69,9 +71,6 @@ public final class TaxManager {
      * @return 实际征收的税额
      */
     public double collect(UUID payerUuid, String payerName, String category, double baseAmount, String description) {
-        if (!org.bukkit.Bukkit.isPrimaryThread()) {
-            throw new IllegalStateException("Tax collection must run on the server thread");
-        }
         if (payerUuid == null || category == null || category.isBlank()
                 || !TaxValuePolicy.isValidPositiveAmount(baseAmount)) {
             eco.getLogger().warning("[Tax] Rejected invalid collection request");
@@ -85,17 +84,16 @@ public final class TaxManager {
         if (tax <= 0.0d) return 0.0d;
 
         // 从玩家扣税
-        var player = org.bukkit.Bukkit.getOfflinePlayer(payerUuid);
-        if (!eco.vaultHook().has(player, tax)) {
+        if (!wallet.has(payerUuid, payerName, tax)) {
             // 税额不足 → 记录欠税（信用记录影响）
             eco.getLogger().warning("[税法] 玩家 " + payerName + " 税额不足: " + tax + " (" + category + ")");
-            double balance = eco.vaultHook().getBalance(player);
+            double balance = wallet.balance(payerUuid, payerName);
             tax = TaxValuePolicy.isValidPositiveAmount(balance)
                     ? Math.min(tax, balance)
                     : 0.0d;
         }
 
-        if (tax <= 0.0d || !eco.vaultHook().withdraw(player, tax)) {
+        if (tax <= 0.0d || !wallet.withdraw(payerUuid, payerName, tax)) {
             eco.getLogger().warning("[Tax] Vault withdrawal failed for " + payerUuid
                     + " amount=" + tax + " category=" + normalizedCategory);
             return 0.0d;
@@ -113,7 +111,7 @@ public final class TaxManager {
                 System.currentTimeMillis() / 1000L);
         adjustStats(normalizedCategory, tax);
         if (!queueTaxRecord(record)) {
-            if (eco.vaultHook().deposit(player, tax)) {
+            if (wallet.deposit(payerUuid, payerName, tax)) {
                 adjustStats(normalizedCategory, -tax);
                 return 0.0d;
             }
@@ -134,9 +132,9 @@ public final class TaxManager {
                             + ": " + exception.getMessage());
                 }
                 try {
-                    org.bukkit.Bukkit.getScheduler().runTask(eco, () -> refundFailedAudit(record));
+                    refundFailedAudit(record);
                 } catch (RuntimeException exception) {
-                    eco.getLogger().severe("[Tax] Failed to schedule refund for unaudited tax "
+                    eco.getLogger().severe("[Tax] Failed to refund unaudited tax "
                             + record.id() + ": " + exception.getMessage());
                 }
             });
@@ -197,8 +195,7 @@ public final class TaxManager {
     }
 
     private void refundFailedAudit(TaxRecord record) {
-        var player = org.bukkit.Bukkit.getOfflinePlayer(record.payerUuid());
-        if (eco.vaultHook().deposit(player, record.tax())) {
+        if (wallet.deposit(record.payerUuid(), record.payerName(), record.tax())) {
             adjustStats(record.category(), -record.tax());
             eco.getLogger().warning("[Tax] Refunded unaudited tax " + record.id()
                     + " amount=" + record.tax());

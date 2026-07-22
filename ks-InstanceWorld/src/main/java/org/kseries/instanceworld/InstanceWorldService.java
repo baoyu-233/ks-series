@@ -7,7 +7,7 @@ import org.bukkit.WorldCreator;
 import org.bukkit.WorldType;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
-import org.bukkit.scheduler.BukkitTask;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.kseries.instanceworld.api.GridSnapshot;
 import org.kseries.instanceworld.api.InstanceBounds;
 import org.kseries.instanceworld.api.InstanceGridSpec;
@@ -22,10 +22,10 @@ import org.kseries.instanceworld.api.InstanceWorldApi;
 import org.kseries.instanceworld.api.PreparedInstance;
 import org.kseries.instanceworld.api.ReleaseCause;
 import org.kseries.instanceworld.api.ReleaseResult;
-import org.kseries.instanceworld.internal.CanvasService;
 import org.kseries.instanceworld.internal.InstanceStore;
 import org.kseries.instanceworld.internal.MarkerScanner;
-import org.kseries.instanceworld.internal.SchematicRepository;
+import org.kseries.instanceworld.internal.OptionalSchematicRuntime;
+import org.kseries.instanceworld.internal.SchematicRuntime;
 
 import java.nio.file.Path;
 import java.time.Duration;
@@ -44,8 +44,7 @@ final class InstanceWorldService implements InstanceWorldApi {
     private final KsInstanceWorld plugin;
     private final ExecutorService workers;
     private final InstanceStore store;
-    private final SchematicRepository schematics = new SchematicRepository();
-    private final CanvasService canvas = new CanvasService();
+    private final SchematicRuntime schematics;
     private final MarkerScanner markerScanner;
     private final Path serverRoot;
     private final int defaultMaxGrids;
@@ -55,7 +54,7 @@ final class InstanceWorldService implements InstanceWorldApi {
     private final Map<String, InstanceSnapshot> snapshots = new ConcurrentHashMap<>();
     private final Map<String, InstanceStore.RecoverableInstance> recoverableInstances = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<ReleaseResult>> releases = new ConcurrentHashMap<>();
-    private final Map<String, BukkitTask> timeoutTasks = new ConcurrentHashMap<>();
+    private final Map<String, ScheduledTask> timeoutTasks = new ConcurrentHashMap<>();
     private final Map<String, Integer> poolCaps = new ConcurrentHashMap<>();
     private volatile List<GridSnapshot> gridCache = List.of();
     private volatile boolean shuttingDown;
@@ -63,6 +62,7 @@ final class InstanceWorldService implements InstanceWorldApi {
     InstanceWorldService(KsInstanceWorld plugin, ExecutorService workers) {
         this.plugin = plugin;
         this.workers = workers;
+        this.schematics = OptionalSchematicRuntime.load(plugin.getClass().getClassLoader());
         Path database = plugin.getDataFolder().toPath().resolve(
                 plugin.getConfig().getString("database.file", "instance-world.db"));
         this.store = new InstanceStore(database, plugin.getLogger());
@@ -107,13 +107,11 @@ final class InstanceWorldService implements InstanceWorldApi {
 
     @Override
     public void registerSchematicRoot(String namespace, Path root) {
-        requireServerThread();
         schematics.register(namespace, root);
     }
 
     @Override
     public void unregisterSchematicRoot(String namespace) {
-        requireServerThread();
         schematics.unregister(namespace);
     }
 
@@ -126,7 +124,7 @@ final class InstanceWorldService implements InstanceWorldApi {
             result.completeExceptionally(new IllegalStateException("ks-InstanceWorld is shutting down"));
             return new InstancePreparation(instanceId, result);
         }
-        if (!canvas.available()) {
+        if (!schematics.available()) {
             result.completeExceptionally(new IllegalStateException("FastAsyncWorldEdit or WorldEdit is required"));
             return new InstancePreparation(instanceId, result);
         }
@@ -179,8 +177,9 @@ final class InstanceWorldService implements InstanceWorldApi {
                 updateSnapshot(context, InstanceState.PREPARING, null, null, null, "");
                 refreshGridsAsync();
                 long timeoutTicks = Math.max(1L, request.timeout().toMillis() / 50L);
-                timeoutTasks.put(context.instanceId, Bukkit.getScheduler().runTaskLater(plugin,
-                        () -> failPreparation(context, new IllegalStateException("Instance preparation timed out")), timeoutTicks));
+                timeoutTasks.put(context.instanceId, Bukkit.getGlobalRegionScheduler().runDelayed(plugin,
+                        ignoredTask -> failPreparation(context,
+                                new IllegalStateException("Instance preparation timed out")), timeoutTicks));
                 loadSchematic(context);
                 });
             });
@@ -309,10 +308,46 @@ final class InstanceWorldService implements InstanceWorldApi {
                 return;
             }
             if (context.cancelled.get()) return;
+            if (foliaRuntime()) {
+                if (!Bukkit.getPluginManager().isPluginEnabled("FastAsyncWorldEdit")) {
+                    failPreparation(context, new IllegalStateException(
+                            "Folia schematic preparation requires FastAsyncWorldEdit; WorldEdit-only mode is disabled"));
+                    return;
+                }
+                World world = loadWorld(context.lease.worldName());
+                if (world == null) {
+                    failPreparation(context, new IllegalStateException(
+                            "Could not load instance world " + context.lease.worldName()));
+                    return;
+                }
+                CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return schematics.clearAndPaste(world, loaded.clipboard(), context.lease.centerX(),
+                                context.request.pasteY(), context.lease.centerZ(), context.request.arenaRadius());
+                    } catch (Throwable pasteFailure) {
+                        throw new CompletionException(pasteFailure);
+                    }
+                }, workers).whenComplete((bounds, pasteFailure) -> {
+                    if (pasteFailure != null) {
+                        runMain(() -> failPreparation(context, unwrap(pasteFailure)));
+                        return;
+                    }
+                    context.bounds = bounds;
+                    runRegion(world, context.lease.centerX(), context.request.pasteY(), context.lease.centerZ(), () -> {
+                        context.pasteCenter = resolvePasteCenter(world, context.bounds);
+                        markerScanner.scan(world, context.bounds, context.cancelled::get)
+                                .whenComplete((markers, scanFailure) -> runMain(() -> {
+                                    if (scanFailure != null) failPreparation(context, unwrap(scanFailure));
+                                    else persistReady(context, markers);
+                                }));
+                    });
+                });
+                return;
+            }
             try {
                 World world = loadWorld(context.lease.worldName());
                 if (world == null) throw new IllegalStateException("Could not load instance world " + context.lease.worldName());
-                context.bounds = canvas.clearAndPaste(world, loaded.clipboard(), context.lease.centerX(),
+                context.bounds = schematics.clearAndPaste(world, loaded.clipboard(), context.lease.centerX(),
                         context.request.pasteY(), context.lease.centerZ(), context.request.arenaRadius());
                 context.pasteCenter = resolvePasteCenter(world, context.bounds);
                 markerScanner.scan(world, context.bounds, context.cancelled::get)
@@ -373,27 +408,26 @@ final class InstanceWorldService implements InstanceWorldApi {
         context.cancelled.set(true);
         cancelTimeout(context);
         String message = failure == null ? "Instance preparation failed" : safeMessage(failure);
-        try {
-            cleanup(context);
-        } catch (Throwable cleanupFailure) {
-            message += "; cleanup: " + safeMessage(cleanupFailure);
-        }
-        String finalMessage = message;
+        String baseMessage = message;
         String instanceId = context.instanceId;
-        CompletableFuture.runAsync(() -> {
+        cleanupAsync(context).whenComplete((ignoredCleanup, cleanupFailure) -> CompletableFuture.runAsync(() -> {
+            String finalMessage = cleanupFailure == null ? baseMessage
+                    : baseMessage + "; cleanup: " + safeMessage(unwrap(cleanupFailure));
             try {
                 store.finishRelease(instanceId, true, finalMessage);
             } catch (Throwable storageFailure) {
                 throw new CompletionException(storageFailure);
             }
         }, workers).whenComplete((ignored, storageFailure) -> runMain(() -> {
+            String finalMessage = cleanupFailure == null ? baseMessage
+                    : baseMessage + "; cleanup: " + safeMessage(unwrap(cleanupFailure));
             String persistedError = storageFailure == null ? finalMessage : finalMessage + "; storage: " + safeMessage(unwrap(storageFailure));
             updateSnapshot(context, InstanceState.FAILED, context.bounds, context.pasteCenter, context.spawn, persistedError);
             fire(InstanceLifecycleEvent.Phase.PREPARATION_FAILED, snapshots.get(context.instanceId), ReleaseCause.PREPARATION_FAILED);
             context.result.completeExceptionally(failure == null ? new IllegalStateException(finalMessage) : failure);
             contexts.remove(context.instanceId, context);
             refreshGridsAsync();
-        }));
+        })));
     }
 
     @Override
@@ -462,20 +496,15 @@ final class InstanceWorldService implements InstanceWorldApi {
             }
             updateSnapshot(context, InstanceState.RELEASING, context.bounds, context.pasteCenter, context.spawn, "");
             fire(InstanceLifecycleEvent.Phase.RELEASE_STARTED, snapshots.get(instanceId), cause);
-            String cleanupError = "";
-            try {
-                cleanup(context);
-            } catch (Throwable cleanupFailure) {
-                cleanupError = safeMessage(cleanupFailure);
-            }
-            String finalCleanupError = cleanupError;
-            CompletableFuture.runAsync(() -> {
+            cleanupAsync(context).whenComplete((ignoredCleanup, cleanupFailure) -> CompletableFuture.runAsync(() -> {
+                String finalCleanupError = cleanupFailure == null ? "" : safeMessage(unwrap(cleanupFailure));
                 try {
                     store.finishRelease(instanceId, false, finalCleanupError);
                 } catch (Throwable failure) {
                     throw new CompletionException(failure);
                 }
             }, workers).whenComplete((ignored, finishFailure) -> runMain(() -> {
+                String finalCleanupError = cleanupFailure == null ? "" : safeMessage(unwrap(cleanupFailure));
                 if (finishFailure != null) {
                     result.completeExceptionally(unwrap(finishFailure));
                     releases.remove(instanceId, result);
@@ -489,7 +518,7 @@ final class InstanceWorldService implements InstanceWorldApi {
                 result.complete(new ReleaseResult(instanceId, true, false,
                         finalCleanupError.isBlank() ? "Released" : "Released with cleanup warning: " + finalCleanupError));
                 refreshGridsAsync();
-            }));
+            })));
         }));
     }
 
@@ -532,9 +561,9 @@ final class InstanceWorldService implements InstanceWorldApi {
         } catch (Exception failure) {
             cleanupFailure = failure;
         }
-        if (canvas.available()) {
+        if (schematics.available()) {
             try {
-                canvas.clear(world, cleanupBounds.minX(), cleanupBounds.minY(), cleanupBounds.minZ(),
+                schematics.clear(world, cleanupBounds.minX(), cleanupBounds.minY(), cleanupBounds.minZ(),
                         cleanupBounds.maxX(), cleanupBounds.maxY(), cleanupBounds.maxZ());
             } catch (Exception failure) {
                 if (cleanupFailure == null) cleanupFailure = failure;
@@ -542,6 +571,67 @@ final class InstanceWorldService implements InstanceWorldApi {
             }
         }
         if (cleanupFailure != null) throw cleanupFailure;
+    }
+
+    private CompletableFuture<Void> cleanupAsync(Context context) {
+        if (!foliaRuntime()) {
+            try {
+                cleanup(context);
+                return CompletableFuture.completedFuture(null);
+            } catch (Throwable failure) {
+                return failedFuture(failure);
+            }
+        }
+        World world = Bukkit.getWorld(context.lease.worldName());
+        if (world == null) return CompletableFuture.completedFuture(null);
+        InstanceBounds bounds = resolveCleanupBounds(context, world);
+        CompletableFuture<Void> entities = removeEntitiesByRegion(world, bounds);
+        CompletableFuture<Void> blocks;
+        if (!schematics.available()) {
+            blocks = CompletableFuture.completedFuture(null);
+        } else if (!Bukkit.getPluginManager().isPluginEnabled("FastAsyncWorldEdit")) {
+            blocks = failedFuture(new IllegalStateException(
+                    "Folia cleanup requires FastAsyncWorldEdit; WorldEdit-only cleanup is disabled"));
+        } else {
+            blocks = CompletableFuture.runAsync(() -> {
+                try {
+                    schematics.clear(world, bounds.minX(), bounds.minY(), bounds.minZ(),
+                            bounds.maxX(), bounds.maxY(), bounds.maxZ());
+                } catch (Throwable failure) {
+                    throw new CompletionException(failure);
+                }
+            }, workers);
+        }
+        return CompletableFuture.allOf(entities, blocks);
+    }
+
+    private CompletableFuture<Void> removeEntitiesByRegion(World world, InstanceBounds bounds) {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        int chunkX1 = Math.floorDiv(bounds.minX(), 16), chunkX2 = Math.floorDiv(bounds.maxX(), 16);
+        int chunkZ1 = Math.floorDiv(bounds.minZ(), 16), chunkZ2 = Math.floorDiv(bounds.maxZ(), 16);
+        java.util.concurrent.atomic.AtomicInteger remaining = new java.util.concurrent.atomic.AtomicInteger(
+                (chunkX2 - chunkX1 + 1) * (chunkZ2 - chunkZ1 + 1));
+        for (int cx = chunkX1; cx <= chunkX2; cx++) for (int cz = chunkZ1; cz <= chunkZ2; cz++) {
+            int minX = Math.max(bounds.minX(), cx << 4), maxX = Math.min(bounds.maxX(), (cx << 4) + 15);
+            int minZ = Math.max(bounds.minZ(), cz << 4), maxZ = Math.min(bounds.maxZ(), (cz << 4) + 15);
+            runRegion(world, minX, bounds.minY(), minZ, () -> {
+                try {
+                    Location center = new Location(world, (minX + maxX) / 2.0 + 0.5,
+                            (bounds.minY() + bounds.maxY()) / 2.0 + 0.5,
+                            (minZ + maxZ) / 2.0 + 0.5);
+                    for (Entity entity : world.getNearbyEntities(center,
+                            (maxX - minX) / 2.0 + 1.0,
+                            (bounds.maxY() - bounds.minY()) / 2.0 + 1.0,
+                            (maxZ - minZ) / 2.0 + 1.0)) {
+                        if (!(entity instanceof Player)) entity.remove();
+                    }
+                    if (remaining.decrementAndGet() == 0) future.complete(null);
+                } catch (Throwable failure) {
+                    future.completeExceptionally(failure);
+                }
+            });
+        }
+        return future;
     }
 
     private InstanceBounds resolveCleanupBounds(Context context, World world) {
@@ -587,7 +677,11 @@ final class InstanceWorldService implements InstanceWorldApi {
             cancelTimeout(context);
             if (context.lease != null) {
                 try {
-                    cleanup(context);
+                    cleanupAsync(context).exceptionally(failure -> {
+                        plugin.getLogger().warning("Instance cleanup during disable failed for "
+                                + context.instanceId + ": " + safeMessage(unwrap(failure)));
+                        return null;
+                    });
                 } catch (Throwable failure) {
                     plugin.getLogger().warning("Instance cleanup during disable failed for " + context.instanceId + ": " + safeMessage(failure));
                 }
@@ -640,13 +734,21 @@ final class InstanceWorldService implements InstanceWorldApi {
     }
 
     private void cancelTimeout(Context context) {
-        BukkitTask task = timeoutTasks.remove(context.instanceId);
+        ScheduledTask task = timeoutTasks.remove(context.instanceId);
         if (task != null) task.cancel();
     }
 
     private void runMain(Runnable action) {
-        if (Bukkit.isPrimaryThread()) action.run();
-        else if (!shuttingDown && plugin.isEnabled()) Bukkit.getScheduler().runTask(plugin, action);
+        if (Bukkit.isGlobalTickThread()) action.run();
+        else if (!shuttingDown && plugin.isEnabled()) {
+            Bukkit.getGlobalRegionScheduler().execute(plugin, action);
+        }
+    }
+
+    private void runRegion(World world, int x, int y, int z, Runnable action) {
+        Location location = new Location(world, x, y, z);
+        if (Bukkit.isOwnedByCurrentRegion(location)) action.run();
+        else Bukkit.getRegionScheduler().execute(plugin, location, action);
     }
 
     private static <T> CompletableFuture<T> failedFuture(Throwable failure) {
@@ -668,7 +770,18 @@ final class InstanceWorldService implements InstanceWorldApi {
     }
 
     private static void requireServerThread() {
-        if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("InstanceWorldApi must be called on the server thread");
+        if (!Bukkit.isGlobalTickThread()) throw new IllegalStateException(
+                "InstanceWorldApi must be called on the global tick thread");
+    }
+
+    private static boolean foliaRuntime() {
+        try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer", false,
+                    InstanceWorldService.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException ignored) {
+            return false;
+        }
     }
 
     private static final class Context {

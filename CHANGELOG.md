@@ -1,5 +1,16 @@
 # 修改日志
 
+## 2026-07-23
+
+- 跨服只读资产层接通 MAP、PROPERTY 与资产汇总：严格 server/world/dimension 策略、认证 API、心跳、TTL、压缩上限和热加载均进入真实三端运行时。
+- 地产按来源聚合全部 READY 房屋；修复可空信封导致发布失败，实机得到 4 套资产与 375,000,000 最小单位展示价。
+- ksHWP 使用有界多图块 bundle，并修复重启后缓存命中不重新发布的问题；实机确认 3 图块、非过期、节点在线。
+- ks-InstanceWorld 和副本 Extra 完成 Folia 启动线程合同；缺少 WorldEdit/FAWE 时 API 仍启用，schematic 功能单独失败关闭。
+- 银行、企业、政治、税务、地产、副本 6 个经济 Extra 已在 Folia 同时加载；清除并备份旧重复 Folia JAR 后启动日志无插件名歧义。
+- 最终矩阵 23/23 模块、391 项测试、Web JavaScript 22/22、严格 YAML 341/341、插件入口 17/17、本地资源引用 25/25 全部通过。
+- Leaves/Folia 各 29 项 HTTP 合同返回预期状态，三端状态/热加载命令成功，MCSM、daemon、MariaDB、代理、三后端和双 Web 共 9 个端口监听。
+- 所有 JAR 替换均使用根备份脚本；完整证据与限制见 `docs/KS-ECO-FULL-FUNCTION-TEST-2026-07-23.md`。
+
 ## 2026-07-22
 
 - 建成由 MCSM 托管的 MariaDB、BungeeCord、Leaves、Paper、Folia 五实例测试网络。

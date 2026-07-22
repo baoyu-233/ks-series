@@ -26,6 +26,10 @@ public final class SchematicRepository {
         roots.remove(namespace);
     }
 
+    boolean registered(String namespace) {
+        return roots.containsKey(namespace);
+    }
+
     public LoadedSchematic load(String namespace, String name) throws Exception {
         Path root = roots.get(namespace);
         if (root == null) throw new IllegalStateException("No schematic root registered for " + namespace);

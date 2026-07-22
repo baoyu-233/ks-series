@@ -65,6 +65,16 @@ annotations:
   # 备注最大长度（字符）
   max-text-length: 200
 
+# 跨服地图投影：只把已经完成渲染、脱离 Bukkit World 的 PNG 图块交给 ks-Eco。
+# 需要同时安装并启用 ks-Eco 的 cross-server.federated-assets；修改后可 /kshwp reload。
+cross-server:
+  map-publish:
+    enabled: false
+    # 同一图块最短发布间隔；同世界多图块会组成有界 bundle。
+    min-interval-seconds: 15
+    # ksHWP 本地封包上限；还会受到 ks-Eco max-snapshot-bytes 的二次限制。
+    max-payload-bytes: 1048576
+
 web:
   # ks-core 路由路径
   route: "/kSHWP"

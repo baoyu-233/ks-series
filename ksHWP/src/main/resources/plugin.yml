@@ -5,7 +5,7 @@ api-version: '1.21'
 description: ks-Series 硬世界地图 — Web 地图渲染、图层独立化、区域管理、隐藏模式
 authors: [you]
 depend: [ks-core]
-softdepend: [Multiverse-Core]
+softdepend: [Multiverse-Core, ks-Eco]
 
 commands:
   kshwp:

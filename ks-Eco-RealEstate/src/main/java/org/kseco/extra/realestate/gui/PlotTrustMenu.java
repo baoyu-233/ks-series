@@ -82,7 +82,7 @@ public final class PlotTrustMenu implements InventoryHolder {
                 }
                 List<TrustEntry> result = entries;
                 String resultError = error;
-                Bukkit.getScheduler().runTask(eco, () -> applyLoad(playerId, generation, result, resultError));
+                eco.scheduler().runPlayer(playerId, () -> applyLoad(playerId, generation, result, resultError));
             });
         } catch (RejectedExecutionException rejected) {
             renderError("数据库队列繁忙，请稍后重试");
@@ -187,8 +187,7 @@ public final class PlotTrustMenu implements InventoryHolder {
                         ? mgr.revokeTrust(plotId, playerId, entry.trustedUuid())
                         : mgr.grantTrust(plotId, playerId, entry.trustedUuid(), entry.trustedName(),
                                 build, container, interact);
-                Bukkit.getScheduler().runTask(eco, () -> finishMutation(
-                        playerId, entry, revoke, error));
+                eco.scheduler().runPlayer(playerId, () -> finishMutation(playerId, entry, revoke, error));
             });
         } catch (RejectedExecutionException rejected) {
             mutationInFlight = false;
@@ -287,7 +286,7 @@ public final class PlotTrustMenu implements InventoryHolder {
             event.setCancelled(true);
 
             String name = event.getMessage().trim();
-            Bukkit.getScheduler().runTask(eco, () -> resolveAndGrant(playerId, pending.plotId(), name));
+            eco.scheduler().runPlayer(playerId, () -> resolveAndGrant(playerId, pending.plotId(), name));
         }
 
         private void resolveAndGrant(UUID playerId, String plotId, String name) {
@@ -323,8 +322,7 @@ public final class PlotTrustMenu implements InventoryHolder {
             try {
                 eco.asyncWorkPool().executeDatabase(() -> {
                     String error = mgr.grantTrust(plotId, playerId, targetUuid, targetName, true, true, true);
-                    Bukkit.getScheduler().runTask(eco, () -> finishGrant(
-                            playerId, plotId, targetName, error));
+                    eco.scheduler().runPlayer(playerId, () -> finishGrant(playerId, plotId, targetName, error));
                 });
             } catch (RejectedExecutionException rejected) {
                 player.sendMessage("§c数据库队列繁忙，请稍后重试。");

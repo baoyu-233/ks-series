@@ -3,6 +3,7 @@ package org.kseco;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.jetbrains.annotations.NotNull;
@@ -21,6 +22,14 @@ import org.kseco.crossserver.sql.SqlDialect;
 import org.kseco.crossserver.transport.DatabasePollingTransport;
 import org.kseco.crossserver.transport.JdbcDatabaseTransportStore;
 import org.kseco.crossserver.transport.PollBackoffPolicy;
+import org.kseco.crossserver.assets.AssetSource;
+import org.kseco.crossserver.assets.FederatedAssetRepository;
+import org.kseco.crossserver.assets.FederatedAssetService;
+import org.kseco.crossserver.assets.FederatedAssetSettings;
+import org.kseco.crossserver.assets.FederatedAssetSettingsManager;
+import org.kseco.crossserver.assets.FederatedSnapshot;
+import org.kseco.crossserver.assets.FederatedSnapshotPublisher;
+import org.kseco.crossserver.assets.JdbcFederatedAssetRepository;
 import org.kseco.database.CentralBankBootstrap;
 import org.kseco.database.CoreBusinessSchema;
 import org.kseco.database.EcoDatabase;
@@ -58,6 +67,12 @@ import org.kseco.scheduler.EcoScheduler;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.UUID;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
@@ -118,6 +133,14 @@ public final class KsEco extends JavaPlugin {
     private EcoScheduler.TaskHandle volatilityReportTask;
     private CrossServerRuntime crossServerRuntime;
     private JdbcDistributedLeaseLock crossServerLeaseLock;
+    private FederatedAssetSettingsManager federatedAssetSettings;
+    private JdbcFederatedAssetRepository federatedAssetRepository;
+    private FederatedAssetService federatedAssetService;
+    private FederatedSnapshotPublisher federatedSnapshotPublisher;
+    private CompletableFuture<Void> federatedAssetReady = CompletableFuture.failedFuture(
+            new IllegalStateException("Federated asset runtime has not started"));
+    private volatile Throwable federatedAssetFailure;
+    private EcoScheduler.TaskHandle federatedAssetHeartbeatTask;
     private final Object priceRefreshMonitor = new Object();
     private volatile boolean shuttingDown;
     private int activePriceRefreshes;
@@ -169,6 +192,14 @@ public final class KsEco extends JavaPlugin {
         // 初始化配置
         this.ecoConfig = new EcoConfig(this);
         this.featureGate = new FeatureGateManager(this);
+        this.federatedAssetSettings = new FederatedAssetSettingsManager();
+        try {
+            federatedAssetSettings.reload(configurationMap("federated-assets"));
+        } catch (RuntimeException failure) {
+            getLogger().severe("federated-assets 配置无效: " + failure.getMessage());
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
 
         long heartbeatSeconds = Math.max(5L, Math.min(300L,
                 getConfig().getLong("database.heartbeat-interval-seconds", 30L)));
@@ -198,6 +229,13 @@ public final class KsEco extends JavaPlugin {
             Bukkit.getPluginManager().disablePlugin(this);
             return;
         }
+        try {
+            validateFederatedAssetEnvironment(federatedAssetSettings.current());
+        } catch (IllegalStateException failure) {
+            getLogger().severe("federated-assets 启动条件不满足: " + failure.getMessage());
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
         // Business managers, Web recovery and extras assume these shared tables exist.
         // A partial schema is unsafe: fail startup before scheduling work or registering routes.
         if (!runMigrations()) {
@@ -224,6 +262,7 @@ public final class KsEco extends JavaPlugin {
         this.officialMarketSweepManager = new OfficialMarketSweepManager(this);
         this.tradeManager = new TradeManager(this);
         this.asyncWorkPool = new AsyncWorkPool(6, getLogger());
+        initializeFederatedAssetRuntime();
         this.transportManager = new TransportManager(this);
         this.transferManager = new TransferManager(this);
         this.enterpriseLevelManager = new EnterpriseLevelManager(this);
@@ -263,11 +302,7 @@ public final class KsEco extends JavaPlugin {
 
         // 加载 extra 子模块
         this.extraModuleLoader = new ExtraModuleLoader(this);
-        if (isFoliaRuntime()) {
-            getLogger().warning("Folia 模式下已默认禁用尚未完成区域线程适配的 ks-Eco Extra 模块。");
-        } else {
-            extraModuleLoader.loadModules();
-        }
+        extraModuleLoader.loadModules();
 
         // 内置经济系统（Vault 无外部经济插件时自动接管）
         this.builtinEconomy = new BuiltinEconomy(this);
@@ -327,6 +362,10 @@ public final class KsEco extends JavaPlugin {
         if (crossServerCleanupTask != null) {
             crossServerCleanupTask.cancel();
         }
+        if (federatedAssetHeartbeatTask != null) {
+            federatedAssetHeartbeatTask.cancel();
+            federatedAssetHeartbeatTask = null;
+        }
         if (moneySupplySnapshotTask != null) moneySupplySnapshotTask.cancel();
         if (volatilityReportTask != null) volatilityReportTask.cancel();
         if (storageManager != null) {
@@ -370,6 +409,203 @@ public final class KsEco extends JavaPlugin {
                     + exception.getMessage());
         }
     }
+
+    private void initializeFederatedAssetRuntime() {
+        federatedAssetRepository = new JdbcFederatedAssetRepository(ecoDatabase::openConnection);
+        federatedAssetService = new FederatedAssetService(federatedAssetRepository, federatedAssetSettings);
+        federatedSnapshotPublisher = new FederatedSnapshotPublisher(federatedAssetRepository, federatedAssetSettings,
+                asyncWorkPool::executeDatabase, ecoDatabase.instanceId());
+        CompletableFuture<Void> ready = new CompletableFuture<>();
+        federatedAssetReady = ready;
+        try {
+            asyncWorkPool.executeDatabase(() -> {
+                try {
+                    federatedAssetRepository.initialize();
+                    federatedAssetFailure = null;
+                    ready.complete(null);
+                } catch (Throwable failure) {
+                    federatedAssetFailure = failure;
+                    ready.completeExceptionally(failure);
+                    getLogger().warning("跨服资产投影表初始化失败，相关 API 保持关闭: " + failure.getMessage());
+                }
+            });
+        } catch (RejectedExecutionException failure) {
+            federatedAssetFailure = failure;
+            ready.completeExceptionally(failure);
+        }
+        startFederatedAssetHeartbeatTask();
+    }
+
+    private void startFederatedAssetHeartbeatTask() {
+        if (federatedAssetHeartbeatTask != null) federatedAssetHeartbeatTask.cancel();
+        long seconds = Math.max(5L, Math.min(60L,
+                Math.max(1L, federatedAssetSettings.current().offlineAfterMillis() / 3_000L)));
+        federatedAssetHeartbeatTask = scheduler.runAsyncTimer(() -> {
+            if (!federatedAssetSettings.current().enabled() || federatedAssetRepository == null) return;
+            submitFederatedDatabase(() -> {
+                federatedAssetRepository.heartbeat(ecoDatabase.serverId(), ecoDatabase.instanceId(),
+                        System.currentTimeMillis());
+                return null;
+            }).exceptionally(failure -> {
+                federatedAssetFailure = unwrapCompletionFailure(failure);
+                return null;
+            });
+        }, Duration.ofSeconds(1), Duration.ofSeconds(seconds));
+    }
+
+    private void validateFederatedAssetEnvironment(FederatedAssetSettings settings) {
+        if (!settings.enabled()) return;
+        if (!getConfig().getBoolean("cross-server.enabled", false)) {
+            throw new IllegalStateException("启用投影前必须先启用 restart-only 的 cross-server.enabled 并重启");
+        }
+        switch (ecoDatabase.dialect()) {
+            case MYSQL, MARIADB, POSTGRESQL -> { }
+            default -> throw new IllegalStateException("只允许共享 MySQL/MariaDB/PostgreSQL，禁止 SQLite/local fallback");
+        }
+    }
+
+    private Map<String, Object> configurationMap(String path) {
+        ConfigurationSection section = getConfig().getConfigurationSection(path);
+        return section == null ? Map.of() : configurationMap(section);
+    }
+
+    private static Map<String, Object> configurationMap(ConfigurationSection section) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (String key : section.getKeys(false)) {
+            Object value = section.get(key);
+            if (value instanceof ConfigurationSection nested) result.put(key, configurationMap(nested));
+            else if (value instanceof List<?> list) result.put(key, List.copyOf(list));
+            else if (value != null) result.put(key, value);
+        }
+        return Map.copyOf(result);
+    }
+
+    private static void writeConfigurationMap(ConfigurationSection section, Map<String, ?> values) {
+        for (Map.Entry<String, ?> entry : values.entrySet()) {
+            if (entry.getValue() instanceof Map<?, ?> nested) {
+                ConfigurationSection child = section.createSection(entry.getKey());
+                Map<String, Object> mapped = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> nestedEntry : nested.entrySet()) {
+                    if (!(nestedEntry.getKey() instanceof String key)) {
+                        throw new IllegalArgumentException("配置键必须是字符串");
+                    }
+                    mapped.put(key, nestedEntry.getValue());
+                }
+                writeConfigurationMap(child, mapped);
+            } else {
+                section.set(entry.getKey(), entry.getValue());
+            }
+        }
+    }
+
+    /** Validates first, then atomically swaps the active policy. Persistence must run on the global tick lane. */
+    public long applyFederatedAssetSettings(Map<String, ?> candidate, boolean persist) {
+        FederatedAssetSettings parsed = FederatedAssetSettings.fromMap(candidate);
+        validateFederatedAssetEnvironment(parsed);
+        if (parsed.enabled() && !federatedAssetSettings.current().enabled()
+                && (crossServerRuntime == null || !crossServerRuntime.isHealthy())) {
+            throw new IllegalStateException("跨服 transport 尚未运行；请先启用 cross-server.enabled 并完整重启");
+        }
+        if (persist) {
+            if (!scheduler.isGlobalThread()) throw new IllegalStateException("配置持久化必须在 global tick lane");
+            Map<String, Object> previous = configurationMap("federated-assets");
+            getConfig().set("federated-assets", null);
+            writeConfigurationMap(getConfig().createSection("federated-assets"), candidate);
+            try {
+                saveConfig();
+            } catch (RuntimeException failure) {
+                getConfig().set("federated-assets", null);
+                writeConfigurationMap(getConfig().createSection("federated-assets"), previous);
+                throw failure;
+            }
+        }
+        long generation = federatedAssetSettings.reload(candidate);
+        if (scheduler.isGlobalThread()) startFederatedAssetHeartbeatTask();
+        return generation;
+    }
+
+    private <T> CompletableFuture<T> submitFederatedDatabase(Callable<T> action) {
+        CompletableFuture<T> result = new CompletableFuture<>();
+        federatedAssetReady.whenComplete((ignored, startupFailure) -> {
+            if (startupFailure != null) {
+                result.completeExceptionally(unwrapCompletionFailure(startupFailure));
+                return;
+            }
+            try {
+                asyncWorkPool.executeDatabase(() -> {
+                    try {
+                        result.complete(action.call());
+                    } catch (Throwable failure) {
+                        result.completeExceptionally(failure);
+                    }
+                });
+            } catch (RejectedExecutionException failure) {
+                result.completeExceptionally(failure);
+            }
+        });
+        return result;
+    }
+
+    private static Throwable unwrapCompletionFailure(Throwable failure) {
+        return failure instanceof java.util.concurrent.CompletionException && failure.getCause() != null
+                ? failure.getCause() : failure;
+    }
+
+    public CompletableFuture<List<FederatedAssetService.AssetView>> queryFederatedAssets(
+            FederatedAssetService.Query query, long now) {
+        return submitFederatedDatabase(() -> federatedAssetService.query(query, now));
+    }
+
+    public CompletableFuture<FederatedAssetService.Aggregate> aggregateFederatedAssets(
+            FederatedAssetService.Query query, long now) {
+        return submitFederatedDatabase(() -> federatedAssetService.aggregate(query, now));
+    }
+
+    public CompletableFuture<List<FederatedAssetRepository.SnapshotHead>> listFederatedSnapshotHeads(
+            FederatedSnapshot.Kind kind, long now, boolean includeStale, boolean includeOffline) {
+        return submitFederatedDatabase(() -> federatedAssetService.listSnapshotHeads(kind, now,
+                includeStale, includeOffline));
+    }
+
+    public CompletableFuture<Optional<FederatedSnapshot.ReadResult>> readFederatedSnapshot(
+            FederatedSnapshot.Kind kind, AssetSource source, long now, boolean includeStale, boolean includeOffline) {
+        return submitFederatedDatabase(() -> federatedAssetService.readSnapshot(kind, source, now,
+                includeStale, includeOffline));
+    }
+
+    /** Modules publish only immutable local snapshots; the publisher never reads Bukkit World state. */
+    public CompletableFuture<FederatedAssetRepository.PublishResult> publishFederatedSnapshot(
+            FederatedSnapshotPublisher.PreparedSnapshot snapshot) {
+        if (!ecoDatabase.serverId().equals(snapshot.source().nodeId())) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "只能发布当前 database.server-id 生成的本地快照"));
+        }
+        org.kseco.crossserver.assets.FederatedCapability capability = switch (snapshot.kind()) {
+            case MAP -> org.kseco.crossserver.assets.FederatedCapability.MAP_VIEW;
+            case PROPERTY -> org.kseco.crossserver.assets.FederatedCapability.PROPERTY_TRADE;
+            case ASSET -> org.kseco.crossserver.assets.FederatedCapability.ASSET_AGGREGATE;
+        };
+        if (!federatedAssetSettings.current().policy().decide(capability, snapshot.source()).allowed()) {
+            return CompletableFuture.failedFuture(new IllegalStateException("当前世界/维度被跨服投影策略拒绝"));
+        }
+        return federatedAssetReady.thenCompose(ignored -> federatedSnapshotPublisher.publishAsync(snapshot));
+    }
+
+    public Map<String, Object> federatedAssetStatus() {
+        FederatedAssetSettings current = federatedAssetSettings.current();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("enabled", current.enabled());
+        result.put("ready", federatedAssetReady.isDone() && !federatedAssetReady.isCompletedExceptionally());
+        result.put("generation", federatedAssetSettings.generation());
+        result.put("nodeId", ecoDatabase.serverId());
+        result.put("failure", federatedAssetFailure == null ? "" : String.valueOf(federatedAssetFailure.getMessage()));
+        result.put("restartOnly", List.of("database.server-id", "cross-server.enabled", "database connection/pool"));
+        return Map.copyOf(result);
+    }
+
+    public FederatedAssetSettings federatedAssetSettings() { return federatedAssetSettings.current(); }
+
+    public Map<String, ?> federatedAssetConfiguration() { return federatedAssetSettings.currentConfiguration(); }
 
     private boolean startCrossServerRuntime() {
         java.util.concurrent.ScheduledExecutorService scheduler = null;
@@ -983,9 +1219,9 @@ public final class KsEco extends JavaPlugin {
             case "reload":
                 boolean reloadExtras = args.length >= 2 && args[1].equalsIgnoreCase("extras");
                 scheduler.runGlobal(() -> {
-                    reloadRuntime(reloadExtras && !isFoliaRuntime());
+                    reloadRuntime(reloadExtras);
                     sender.sendMessage("§a[ks-Eco] 配置已重载"
-                            + (reloadExtras && !isFoliaRuntime() ? "，Extra 模块已安全重载。" : "。"));
+                            + (reloadExtras ? "，Extra 模块已安全重载。" : "。"));
                 });
                 break;
             case "status":
@@ -1486,9 +1722,19 @@ public final class KsEco extends JavaPlugin {
         if (!scheduler.isGlobalThread()) {
             throw new IllegalStateException("ks-Eco runtime reload must run on the global tick thread");
         }
+        reloadConfig();
+        Map<String, Object> federatedCandidate = configurationMap("federated-assets");
+        FederatedAssetSettings parsedFederated = FederatedAssetSettings.fromMap(federatedCandidate);
+        validateFederatedAssetEnvironment(parsedFederated);
+        if (parsedFederated.enabled() && !federatedAssetSettings.current().enabled()
+                && (crossServerRuntime == null || !crossServerRuntime.isHealthy())) {
+            throw new IllegalStateException("启用 federated-assets 前必须先让 restart-only 跨服 transport 完整启动");
+        }
         ecoConfig = new EcoConfig(this);
         featureGate.reload();
         enterpriseLevelManager.reload();
+        federatedAssetSettings.reload(federatedCandidate);
+        startFederatedAssetHeartbeatTask();
         restartPriceRefreshTask();
         startOfficialMarketSweepTask();
         if (reloadExtras && extraModuleLoader != null) {

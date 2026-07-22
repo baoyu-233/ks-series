@@ -28,10 +28,6 @@ public final class RealEstateExtra implements KsEcoExtraModule {
 
     @Override
     public void onEnable() {
-        realEstateManager.init();
-        landPerkManager.init();
-        landPerkManager.startCropGrowthTask();
-
         Bukkit.getPluginManager().registerEvents(new PlotProtectionListener(eco, realEstateManager), eco);
         Bukkit.getPluginManager().registerEvents(new LandPerkListener(landPerkManager), eco);
         Bukkit.getPluginManager().registerEvents(new PlotListMenu.Listener(eco, realEstateManager), eco);
@@ -55,6 +51,11 @@ public final class RealEstateExtra implements KsEcoExtraModule {
         } catch (Exception e) {
             eco.getLogger().warning("[房地产] 注册 house 命令失败: " + e.getMessage());
         }
+        eco.asyncWorkPool().executeDatabase(() -> {
+            realEstateManager.init();
+            landPerkManager.init();
+            landPerkManager.startCropGrowthTask();
+        });
         eco.getLogger().info("[房地产] 模块已启用");
     }
 
@@ -76,8 +77,9 @@ public final class RealEstateExtra implements KsEcoExtraModule {
             boolean healthy = realEstateManager.refreshAllCachesFromRemote();
             if (landPerkManager != null) landPerkManager.refreshSharedCachesFromRemote();
             if (!healthy && attempt < 5 && eco.isEnabled()) {
-                Bukkit.getScheduler().runTaskLater(eco, () -> refreshRemoteCaches(attempt + 1),
-                        Math.min(20L * 30L, 20L << (attempt - 1)));
+                long delayTicks = Math.min(20L * 30L, 20L << (attempt - 1));
+                eco.scheduler().runAsyncLater(() -> refreshRemoteCaches(attempt + 1),
+                        java.time.Duration.ofMillis(delayTicks * 50L));
             }
         });
     }

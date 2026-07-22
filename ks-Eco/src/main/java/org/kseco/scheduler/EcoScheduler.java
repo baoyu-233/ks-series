@@ -2,6 +2,7 @@ package org.kseco.scheduler;
 
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
@@ -32,6 +33,7 @@ public final class EcoScheduler {
     interface Backend {
         boolean isGlobalThread();
         boolean isEntityThread(Entity entity);
+        boolean isRegionThread(Location location);
         TaskHandle global(Runnable task);
         TaskHandle globalLater(Runnable task, long delayTicks);
         TaskHandle globalTimer(Runnable task, long initialDelayTicks, long periodTicks);
@@ -40,6 +42,8 @@ public final class EcoScheduler {
         TaskHandle asyncTimer(Runnable task, Duration initialDelay, Duration period);
         boolean entity(Entity entity, Runnable task, Runnable retired);
         TaskHandle entityLater(Entity entity, Runnable task, Runnable retired, long delayTicks);
+        TaskHandle region(Location location, Runnable task);
+        TaskHandle regionLater(Location location, Runnable task, long delayTicks);
     }
 
     private final Backend backend;
@@ -58,6 +62,16 @@ public final class EcoScheduler {
 
     public boolean isEntityThread(Entity entity) {
         return entity != null && backend.isEntityThread(entity);
+    }
+
+    public boolean isRegionThread(Location location) {
+        return location != null && location.getWorld() != null && backend.isRegionThread(location);
+    }
+
+    public void requireRegionThread(Location location, String operation) {
+        if (!isRegionThread(location)) {
+            throw new IllegalStateException(operation + " must run on the owning region");
+        }
     }
 
     public void requireEntityThread(Entity entity, String operation) {
@@ -138,6 +152,24 @@ public final class EcoScheduler {
                 positive(delayTicks, "delayTicks"));
     }
 
+    public TaskHandle runRegion(Location location, Runnable task) {
+        Objects.requireNonNull(location, "location");
+        if (location.getWorld() == null) throw new IllegalArgumentException("location must have a world");
+        Objects.requireNonNull(task, "task");
+        if (backend.isRegionThread(location)) {
+            task.run();
+            return () -> { };
+        }
+        return backend.region(location, task);
+    }
+
+    public TaskHandle runRegionLater(Location location, Runnable task, long delayTicks) {
+        Objects.requireNonNull(location, "location");
+        if (location.getWorld() == null) throw new IllegalArgumentException("location must have a world");
+        return backend.regionLater(location, Objects.requireNonNull(task, "task"),
+                positive(delayTicks, "delayTicks"));
+    }
+
     public <T> T callGlobal(Callable<T> action, Duration timeout)
             throws InterruptedException, ExecutionException, TimeoutException {
         Objects.requireNonNull(action, "action");
@@ -211,6 +243,9 @@ public final class EcoScheduler {
 
         @Override public boolean isGlobalThread() { return Bukkit.isGlobalTickThread(); }
         @Override public boolean isEntityThread(Entity entity) { return Bukkit.isOwnedByCurrentRegion(entity); }
+        @Override public boolean isRegionThread(Location location) {
+            return Bukkit.isOwnedByCurrentRegion(location);
+        }
         @Override public TaskHandle global(Runnable task) {
             ScheduledTask scheduled = Bukkit.getGlobalRegionScheduler().run(plugin, ignored -> task.run());
             return scheduled::cancel;
@@ -243,6 +278,16 @@ public final class EcoScheduler {
         }
         @Override public TaskHandle entityLater(Entity entity, Runnable task, Runnable retired, long delayTicks) {
             ScheduledTask scheduled = entity.getScheduler().runDelayed(plugin, ignored -> task.run(), retired, delayTicks);
+            return scheduled::cancel;
+        }
+        @Override public TaskHandle region(Location location, Runnable task) {
+            ScheduledTask scheduled = Bukkit.getRegionScheduler().run(
+                    plugin, location, ignored -> task.run());
+            return scheduled::cancel;
+        }
+        @Override public TaskHandle regionLater(Location location, Runnable task, long delayTicks) {
+            ScheduledTask scheduled = Bukkit.getRegionScheduler().runDelayed(
+                    plugin, location, ignored -> task.run(), delayTicks);
             return scheduled::cancel;
         }
     }

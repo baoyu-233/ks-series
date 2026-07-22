@@ -17,6 +17,7 @@
 | [性能报告](../PERF_REPORT.md) | [Performance report](../PERF_REPORT.en.md) |
 | [ks-Eco 系列玩法白皮书](KS-ECO-GAMEPLAY-WHITEPAPER.md) | 本轮仅维护中文版 |
 | [跨服测试网络与 MCSM 运行边界](../network_1_21/README.md) | 本轮仅维护中文版 |
+| [2026-07-23 ks-Eco 全功能与三端兼容验收](KS-ECO-FULL-FUNCTION-TEST-2026-07-23.md) | 本轮仅维护中文版 |
 | [仓库修改日志](../CHANGELOG.md) | 本轮仅维护中文版；各模块目录另有本地日志 |
 | [2026-07-18 Bug Hunt 报告](BUG-HUNT-2026-07-18.md) | [2026-07-18 Bug Hunt report](BUG-HUNT-2026-07-18.en.md) |
 | [2026-07-18 Bug Hunt 当前收口入口（中文交接）](BUG-HUNT-HANDOFF-2026-07-18.md) | 暂无英文交接文件 |

@@ -28,6 +28,7 @@ public final class KsHWP extends JavaPlugin {
     private MapRenderer mapRenderer;
     private MapAnnotationManager annotationManager;
     private HwpWebHandler webHandler;
+    private volatile FederatedMapPublisher federatedMapPublisher;
     private BukkitTask nearbyPreRenderTask;
 
     /** Hidden 模式玩家集合 — key=player UUID */
@@ -53,6 +54,7 @@ public final class KsHWP extends JavaPlugin {
         }
 
         this.hwpConfig = new HwpConfig(this);
+        this.federatedMapPublisher = new FederatedMapPublisher(this, hwpConfig);
         TileStore tileStore = new TileStore(getDataFolder().toPath());
         this.mapRenderer = new MapRenderer(this, tileStore);
         this.annotationManager = new MapAnnotationManager(this);
@@ -134,6 +136,7 @@ public final class KsHWP extends JavaPlugin {
             case "reload":
                 reloadConfig();
                 hwpConfig = new HwpConfig(this);
+                federatedMapPublisher = new FederatedMapPublisher(this, hwpConfig);
                 restartNearbyPlayerPreRender();
                 sender.sendMessage("§a配置已重载。");
                 break;
@@ -482,6 +485,7 @@ public final class KsHWP extends JavaPlugin {
     public HwpConfig hwpConfig() { return hwpConfig; }
     public MapRenderer mapRenderer() { return mapRenderer; }
     public MapAnnotationManager annotationManager() { return annotationManager; }
+    FederatedMapPublisher federatedMapPublisher() { return federatedMapPublisher; }
 
     private void startNearbyPlayerPreRender() {
         if (!hwpConfig.isPreRenderEnabled()) return;

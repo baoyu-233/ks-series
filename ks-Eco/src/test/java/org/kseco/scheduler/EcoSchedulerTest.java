@@ -1,6 +1,7 @@
 package org.kseco.scheduler;
 
 import org.bukkit.entity.Entity;
+import org.bukkit.Location;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Proxy;
@@ -73,6 +74,7 @@ class EcoSchedulerTest {
 
         @Override public boolean isGlobalThread() { return false; }
         @Override public boolean isEntityThread(Entity entity) { return entityOwned; }
+        @Override public boolean isRegionThread(Location location) { return false; }
         @Override public EcoScheduler.TaskHandle global(Runnable task) {
             if (!deferGlobal) task.run();
             return () -> cancelled.set(true);
@@ -100,6 +102,12 @@ class EcoSchedulerTest {
             entityDispatches++;
             if (!deferGlobal) task.run();
             return () -> cancelled.set(true);
+        }
+        @Override public EcoScheduler.TaskHandle region(Location location, Runnable task) {
+            task.run(); return () -> cancelled.set(true);
+        }
+        @Override public EcoScheduler.TaskHandle regionLater(Location location, Runnable task, long delayTicks) {
+            task.run(); return () -> cancelled.set(true);
         }
     }
 }

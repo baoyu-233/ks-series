@@ -112,7 +112,9 @@ ks-core
 
 跨服开关仍默认关闭，但已不再被“接线未完成”门禁永久拒绝。启用时必须使用共享 MySQL、MariaDB 或 PostgreSQL，并为每台服配置唯一稳定的 `database.server-id`；外部 Vault 经济还必须确认各节点共用同一权威余额库，再显式设置 `cross-server.external-economy-shared: true`。SQLite/local fallback、重复节点身份、运行时失联和未声明共享的外部经济会 fail closed。2026-07-22 的本机测试网络已让 Leaves、Paper、Folia 三个真实服务端共用 MariaDB 与 JDBC 内置经济；一次保持原价的价格失效事件使数据库发布序号从 2 推进到 3，三个节点的 consumer cursor 均推进到 3。该结果仍不等于真实 MySQL、外部远程存量库、外部 Vault、多机网络故障或生产压力验收。`CASH` 仍由 Vault/内置经济持有，非 `CASH` 市场和限时销售会在扣款前拒绝。
 
-Folia 使用独立的 `-folia` 构件；`ks-core` 与 `ks-Eco` 已完成调度边界适配，无 Vault 时直接使用共享 JDBC 内置经济。未适配的 Extra、MM 系列插件和全服财富榜在 Folia 失败关闭。完整节点、端口、数据库和 MCSM 运行边界见 [跨服测试网络](network_1_21/README.md)。
+跨服地图、房产和资产现在使用只读不可变投影：server/world/dimension 策略默认拒绝且 deny 优先，所有 API 需要会话，原始 ASSET 明细与策略管理仅管理员可用。2026-07-23 实机验证得到同源 3 图块 MAP bundle 和 4 套 PROPERTY 聚合；跨服传送仍关闭，滚动图块 bundle 也不等同于完整世界归档。
+
+Folia 使用独立 profile 构建的 `ks-core`、`ks-Eco` 和 `ks-InstanceWorld`；无 Vault 时直接使用共享 JDBC 内置经济。银行、企业、政治、税务、地产和副本 6 个 Extra 已完成本轮适配并在 Folia 实机加载；缺少 FAWE/WorldEdit 或 MythicMobs 时，schematic 与 Boss 对应功能仍单独失败关闭。完整节点、端口、数据库和 MCSM 运行边界见 [跨服测试网络](network_1_21/README.md)。
 
 ### 生存优先的 RPG
 
@@ -205,7 +207,7 @@ Set-Location ..\ks-Eco-bank
 mvn clean package
 ```
 
-再构建各 Extra、`ks-RPG-Gui`、`ks-Cinematic` 和兼容/工具模块。2026-07-22 的最终收口按依赖顺序完成 23/23 个模块 `clean install`，共执行 358 项测试，0 failure、0 error、0 skipped；默认与 Folia 两套 ks-core/ks-Eco 构件也成功。Web 外部脚本 22/22、HTML 内联脚本 6/6、严格源 YAML 319/319、17 个插件入口、85 个源资源和 25 个本地引用全部通过。部署和备份必须使用仓库中的 `scripts/deploy-plugin.ps1`；不要把运行时数据库、备份、测试 token 或本机凭据提交到仓库。
+再构建各 Extra、`ks-RPG-Gui`、`ks-Cinematic` 和兼容/工具模块。2026-07-23 的最终收口按依赖顺序完成 23/23 个模块，共执行 391 项测试，0 failure、0 error、0 skipped；受最终修复影响的默认/Folia 构件均再次定向复验。Web 外部脚本 22/22、严格源 YAML 341/341、17 个插件入口和 25 个本地引用全部通过。部署和备份必须使用仓库中的 `scripts/deploy-plugin.ps1`；不要把运行时数据库、备份、测试 token 或本机凭据提交到仓库。
 
 ## 依赖与兼容
 
@@ -230,11 +232,12 @@ mvn clean package
 | [房地产与副本玩家教程](docs/房地产与副本插件玩家教程.md) / [English](docs/房地产与副本插件玩家教程.en.md) | 玩家 | 土地、房屋和副本的具体操作。 |
 | [代码地图](docs/CODEBASE_MAP.md) / [中文](docs/CODEBASE_MAP.zh-CN.md) | 开发者 | 入口类、模块归属、线程边界和数据库责任。 |
 | [跨服测试网络](network_1_21/README.md) | 运维、开发者 | MCSM 节点、端口、共享数据库、Folia 边界和实机验收。 |
+| [2026-07-23 全功能验收](docs/KS-ECO-FULL-FUNCTION-TEST-2026-07-23.md) | 运维、开发者 | 23 模块矩阵、普通版/Folia API、地图/地产、部署证据和明确限制。 |
 | [修改日志](CHANGELOG.md) | 维护者 | 仓库级发布记录；各模块目录另有本地修改日志。 |
 
 ## 开发状态
 
-KS-Series 仍处于持续迭代阶段。2026-07-22 已由 MCSM 启动 MariaDB、BungeeCord、Leaves 主端、Paper RPG 端和 Folia 实验端；三端 ks-core/ks-Eco 均连接共享数据库并启动跨服运行时。Leaves 保留六个经济 Extra，Paper 只加载企业/税务 Extra，Folia 只加载 ks-core/ks-Eco 核心。RPG/Boss 后续内容仍暂缓。
+KS-Series 仍处于持续迭代阶段。2026-07-23 已由 MCSM 运行 MariaDB、BungeeCord、Leaves 主端、Paper RPG 端和 Folia 实验端；三端 ks-core/ks-Eco 均连接共享数据库并启动跨服运行时。Leaves 加载 6 个经济 Extra，Paper 按 RPG 角色加载企业/税务/地产/副本 4 个，Folia 加载本轮完成适配的 6 个。RPG/Boss 后续内容仍暂缓。
 
 本轮已把旧 SQLite 的 139 张表迁移到真实 MariaDB，并完成真实三端事件发布/轮询烟测；但未连接真实 MySQL，也未执行外部远程存量迁移、外部 Vault 多节点、断网、崩溃注入或生产压力验收。非 `CASH` 玩家结算、需求活动/官方清算交付、旧游戏内工程评标，以及其他尚未 journal 化的外部 Vault/物品窗口仍是明确未完成项。个人工程、个人/企业房产、副本门票和付费复活虽已具备持久 journal、恢复或人工复核基础，也仍需真实玩家并发与故障场景验收。
 

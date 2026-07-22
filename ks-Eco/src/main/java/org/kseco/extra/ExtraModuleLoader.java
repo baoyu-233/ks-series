@@ -91,6 +91,11 @@ public final class ExtraModuleLoader {
 
             Properties props = new Properties();
             props.load(jar.getInputStream(entry));
+            if (!supportsRuntime(props, plugin.foliaRuntime())) {
+                plugin.getLogger().warning("模块 " + moduleId
+                        + " 未声明 folia-supported=true，Folia 环境下已安全跳过。");
+                return;
+            }
             String mainClass = props.getProperty("main-class");
             if (mainClass == null || mainClass.isEmpty()) {
                 plugin.getLogger().warning("模块 " + moduleId + " 未指定 main-class。");
@@ -126,6 +131,11 @@ public final class ExtraModuleLoader {
                     "加载模块 " + moduleId + " 失败，已隔离该模块且继续启动 ks-Eco: "
                             + failure.getMessage(), failure);
         }
+    }
+
+    static boolean supportsRuntime(Properties properties, boolean foliaRuntime) {
+        Objects.requireNonNull(properties, "properties");
+        return !foliaRuntime || Boolean.parseBoolean(properties.getProperty("folia-supported", "false"));
     }
 
     /**

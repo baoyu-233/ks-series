@@ -71,7 +71,7 @@ public final class DungeonDeathHandler implements Listener {
         player.sendMessage("§c[副本] §f你在副本中死亡！");
         player.sendMessage("§7  正在确认阵亡记录，重生后可使用 §f/dungeon revive §7付费回场。");
         instanceManager.recordDeathAsync(instanceId, playerUuid).whenComplete((currentCount, failure) ->
-                instanceManager.runOnServerThread(() -> {
+                eco.scheduler().runPlayer(playerUuid, () -> {
                     if (failure != null || currentCount == null || currentCount < 0) {
                         deadPlayers.remove(playerUuid);
                         player.sendMessage("§c[副本] 阵亡记录未能确认，付费复活已关闭；请联系管理员。");
@@ -95,16 +95,17 @@ public final class DungeonDeathHandler implements Listener {
         if (!deadPlayers.contains(player.getUniqueId())) return;
         var mainWorld = org.bukkit.Bukkit.getWorld("world");
         if (mainWorld != null) event.setRespawnLocation(mainWorld.getSpawnLocation());
-        org.bukkit.Bukkit.getScheduler().runTask(eco, () -> {
+        eco.scheduler().runEntityLater(player, () -> {
             player.setGameMode(org.bukkit.GameMode.SURVIVAL);
             player.sendMessage("§6[副本] §c你已离开战斗区域；完成付费复活后才会返回检查点。");
-        });
+        }, () -> { }, 1L);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerJoin(PlayerJoinEvent event) {
-        org.bukkit.Bukkit.getScheduler().runTaskLater(eco,
-                () -> instanceManager.recoverPlayerOnJoin(event.getPlayer()), 20L);
+        Player player = event.getPlayer();
+        eco.scheduler().runEntityLater(player,
+                () -> instanceManager.recoverPlayerOnJoin(player), () -> { }, 20L);
     }
 
     public double calculateCost(int currentReviveCount) {
@@ -120,7 +121,8 @@ public final class DungeonDeathHandler implements Listener {
      */
     public CompletableFuture<Double> reviveAsync(String instanceId, UUID playerUuid) {
         CompletableFuture<Double> result = new CompletableFuture<>();
-        instanceManager.runOnServerThread(() -> startRevive(instanceId, playerUuid, result));
+        eco.scheduler().runPlayer(playerUuid, ignored -> startRevive(instanceId, playerUuid, result),
+                () -> result.complete(ERR_OFFLINE));
         return result;
     }
 
@@ -161,7 +163,7 @@ public final class DungeonDeathHandler implements Listener {
             DungeonReviveStore.Revival revival = DungeonReviveStore.reserve(connection, instanceId,
                     playerUuid, candidate.reviveCount(), nextCount, cost, System.currentTimeMillis() / 1000);
             return revival == null ? new Preparation(ERR_NOT_DEAD, null) : new Preparation(cost, revival);
-        }).whenComplete((preparation, failure) -> instanceManager.runOnServerThread(() -> {
+        }).whenComplete((preparation, failure) -> eco.scheduler().runPlayer(playerUuid, () -> {
             if (failure != null || preparation == null) {
                 finish(requestKey, result, ERR_PERSIST);
             } else if (preparation.revival() == null) {
@@ -177,7 +179,7 @@ public final class DungeonDeathHandler implements Listener {
         DungeonReviveStore.Revival revival = preparation.revival();
         instanceManager.submitReviveSql(connection -> DungeonReviveStore.claimCharge(
                 connection, revival, System.currentTimeMillis() / 1000)).whenComplete((claimed, failure) ->
-                instanceManager.runOnServerThread(() -> {
+                eco.scheduler().runPlayer(revival.playerUuid(), () -> {
                     if (failure != null || !Boolean.TRUE.equals(claimed)) {
                         instanceManager.submitReviveSql(connection -> DungeonReviveStore.cancelUnclaimedCharge(
                                 connection, revival, "charge claim failed", System.currentTimeMillis() / 1000));
@@ -191,6 +193,25 @@ public final class DungeonDeathHandler implements Listener {
     private void withdrawCharge(String requestKey, Player player, Preparation preparation,
                                 CompletableFuture<Double> result) {
         DungeonReviveStore.Revival revival = preparation.revival();
+        if (eco.vaultHook().directBuiltinActive()) {
+            instanceManager.submitReviveSql(connection -> {
+                if (!eco.vaultHook().hasDirect(revival.playerUuid(), preparation.result())) return ERR_BALANCE;
+                return eco.vaultHook().withdrawDirect(revival.playerUuid(), player.getName(), preparation.result())
+                        ? preparation.result() : ERR_WITHDRAW;
+            }).whenComplete((charged, failure) -> eco.scheduler().runPlayer(revival.playerUuid(), ignored -> {
+                if (failure != null || charged == null) {
+                    instanceManager.submitReviveSql(connection -> DungeonReviveStore.markReview(connection, revival,
+                            DungeonReviveStore.CHARGE_CLAIMED, "Built-in withdrawal outcome unknown",
+                            System.currentTimeMillis() / 1000));
+                    finish(requestKey, result, ERR_PERSIST);
+                } else if (charged < 0) {
+                    rejectCharge(requestKey, revival, charged, "built-in wallet rejected withdrawal", result);
+                } else {
+                    confirmPaidCharge(requestKey, player, preparation, result);
+                }
+            }, () -> finish(requestKey, result, ERR_OFFLINE)));
+            return;
+        }
         var account = org.bukkit.Bukkit.getOfflinePlayer(revival.playerUuid());
         if (!eco.vaultHook().isAvailable()) {
             rejectCharge(requestKey, revival, ERR_VAULT, "Vault unavailable", result);
@@ -213,9 +234,15 @@ public final class DungeonDeathHandler implements Listener {
             return;
         }
 
+        confirmPaidCharge(requestKey, player, preparation, result);
+    }
+
+    private void confirmPaidCharge(String requestKey, Player player, Preparation preparation,
+                                   CompletableFuture<Double> result) {
+        DungeonReviveStore.Revival revival = preparation.revival();
         instanceManager.submitReviveSql(connection -> DungeonReviveStore.confirmPaid(
                 connection, revival, System.currentTimeMillis() / 1000)).whenComplete((confirmed, failure) ->
-                instanceManager.runOnServerThread(() -> {
+                eco.scheduler().runPlayer(revival.playerUuid(), ignored -> {
                     if (failure != null || !Boolean.TRUE.equals(confirmed)) {
                         instanceManager.requestReviveRefund(revival, DungeonReviveStore.CHARGE_CLAIMED,
                                 "paid charge could not be confirmed");
@@ -223,14 +250,16 @@ public final class DungeonDeathHandler implements Listener {
                         return;
                     }
                     returnPaidPlayer(requestKey, player, preparation, result);
-                }));
+                }, () -> finish(requestKey, result, ERR_OFFLINE)));
     }
 
     private void rejectCharge(String requestKey, DungeonReviveStore.Revival revival,
                               double errorCode, String detail, CompletableFuture<Double> result) {
         instanceManager.submitReviveSql(connection -> DungeonReviveStore.rejectCharge(
                 connection, revival, detail, System.currentTimeMillis() / 1000)).whenComplete((ignored, failure) ->
-                instanceManager.runOnServerThread(() -> finish(requestKey, result, errorCode)));
+                eco.scheduler().runPlayer(revival.playerUuid(),
+                        ignoredPlayer -> finish(requestKey, result, errorCode),
+                        () -> finish(requestKey, result, errorCode)));
     }
 
     private void returnPaidPlayer(String requestKey, Player player, Preparation preparation,
@@ -238,25 +267,33 @@ public final class DungeonDeathHandler implements Listener {
         DungeonReviveStore.Revival revival = preparation.revival();
         if (!player.isOnline() || !revival.instanceId().equals(
                 instanceManager.getPlayerActiveInstance(revival.playerUuid()))
-                || !instanceManager.isInstanceReady(revival.instanceId())
-                || !instanceManager.returnPlayerToInstance(revival.instanceId(), player)) {
+                || !instanceManager.isInstanceReady(revival.instanceId())) {
             instanceManager.requestReviveRefund(revival, DungeonReviveStore.PAID_PENDING,
                     "instance world or player unavailable before return");
             finish(requestKey, result, ERR_PERSIST);
             return;
         }
-        deadPlayers.remove(revival.playerUuid());
-        instanceManager.submitReviveSql(connection -> DungeonReviveStore.completeReturn(
-                connection, revival, System.currentTimeMillis() / 1000)).whenComplete((completed, failure) ->
-                instanceManager.runOnServerThread(() -> {
-                    if (failure != null || !Boolean.TRUE.equals(completed)) {
-                        eco.getLogger().severe("[副本系统] 玩家已回场但完成状态未落库，保留 PAID_PENDING 自动恢复: "
-                                + revival.id());
-                        org.bukkit.Bukkit.getScheduler().runTaskLater(eco,
-                                () -> instanceManager.resumePendingRevives(revival.instanceId()), 20L);
-                    }
-                    finish(requestKey, result, preparation.result());
-                }));
+        instanceManager.returnPlayerToInstanceAsync(revival.instanceId(), player).thenAccept(returned -> {
+            if (!returned) {
+                instanceManager.requestReviveRefund(revival, DungeonReviveStore.PAID_PENDING,
+                        "instance teleport failed before return");
+                finish(requestKey, result, ERR_PERSIST);
+                return;
+            }
+            deadPlayers.remove(revival.playerUuid());
+            instanceManager.submitReviveSql(connection -> DungeonReviveStore.completeReturn(
+                    connection, revival, System.currentTimeMillis() / 1000)).whenComplete((completed, failure) ->
+                    eco.scheduler().runPlayer(revival.playerUuid(), ignored -> {
+                        if (failure != null || !Boolean.TRUE.equals(completed)) {
+                            eco.getLogger().severe("[副本系统] 玩家已回场但完成状态未落库，保留 PAID_PENDING 自动恢复: "
+                                    + revival.id());
+                            eco.scheduler().runEntityLater(player,
+                                    () -> instanceManager.resumePendingRevives(revival.instanceId()),
+                                    () -> { }, 20L);
+                        }
+                        finish(requestKey, result, preparation.result());
+                    }, () -> finish(requestKey, result, preparation.result())));
+        });
     }
 
     private void finish(String requestKey, CompletableFuture<Double> result, double value) {

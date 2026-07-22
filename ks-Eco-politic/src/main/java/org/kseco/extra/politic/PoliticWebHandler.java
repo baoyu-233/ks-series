@@ -9,6 +9,7 @@ import org.kseco.KsEco;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.*;
 import java.util.function.Supplier;
 
@@ -19,6 +20,7 @@ import java.util.function.Supplier;
  * 所有 /ks-Eco/politic/api/* 请求由此类处理。
  */
 public final class PoliticWebHandler implements HttpHandler {
+    private static final Duration BUKKIT_TIMEOUT = Duration.ofSeconds(10);
 
     private final KsEco eco;
     private final PoliticManager politicManager;
@@ -361,8 +363,7 @@ public final class PoliticWebHandler implements HttpHandler {
         java.util.UUID puuid = java.util.UUID.fromString(uuid);
         String name = (String) body.getOrDefault("playerName", "");
         if (name == null || name.isEmpty()) {
-            var op = org.bukkit.Bukkit.getOfflinePlayer(puuid);
-            name = op.getName() != null ? op.getName() : uuid;
+            name = offlineName(puuid);
         }
         var result = politicManager.electConsul(puuid, name);
         sendJson(exchange, result.success() ? 200 : 400,
@@ -398,8 +399,7 @@ public final class PoliticWebHandler implements HttpHandler {
         java.util.UUID candidate = java.util.UUID.fromString(candUuid);
         String candName = (String) body.getOrDefault("candidateName", "");
         if (candName == null || candName.isEmpty()) {
-            var op = org.bukkit.Bukkit.getOfflinePlayer(candidate);
-            candName = op.getName() != null ? op.getName() : candUuid;
+            candName = offlineName(candidate);
         }
         String electionId = politicManager.getTribuneElectionId();
         var result = politicManager.castTribuneElectionVote(electionId, s.playerUuid, s.playerName, candidate, candName);
@@ -729,6 +729,21 @@ public final class PoliticWebHandler implements HttpHandler {
         }
         politicManager.setConfig(key, value);
         sendJson(exchange, 200, "{\"success\":true}");
+    }
+
+    private String offlineName(UUID playerUuid) {
+        try {
+            return eco.scheduler().callGlobal(() -> {
+                var player = org.bukkit.Bukkit.getOfflinePlayer(playerUuid);
+                return player.getName() == null ? playerUuid.toString() : player.getName();
+            }, BUKKIT_TIMEOUT);
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            return playerUuid.toString();
+        } catch (Exception failure) {
+            eco.getLogger().warning("[政治系统] 玩家名称快照失败: " + playerUuid);
+            return playerUuid.toString();
+        }
     }
 
     // ================================================================

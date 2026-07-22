@@ -1,23 +1,26 @@
 package org.kseries.instanceworld.internal;
 
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.Sign;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitTask;
 import org.kseries.instanceworld.api.InstanceBounds;
 import org.kseries.instanceworld.api.InstanceMarker;
 import org.kseries.instanceworld.api.InstancePoint;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
+/** Region-owned, chunk-partitioned marker scanner for Paper and Folia. */
 public final class MarkerScanner {
     private final Plugin plugin;
     private final int blocksPerTick;
@@ -27,11 +30,22 @@ public final class MarkerScanner {
         this.blocksPerTick = Math.max(1000, blocksPerTick);
     }
 
-    public CompletableFuture<List<InstanceMarker>> scan(World world, InstanceBounds bounds, BooleanSupplier cancelled) {
-        if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Marker scans must start on the server thread");
+    public CompletableFuture<List<InstanceMarker>> scan(World world, InstanceBounds bounds,
+                                                         BooleanSupplier cancelled) {
         CompletableFuture<List<InstanceMarker>> result = new CompletableFuture<>();
-        Cursor cursor = new Cursor(world, bounds, cancelled, result);
-        cursor.task = Bukkit.getScheduler().runTaskTimer(plugin, cursor, 1L, 1L);
+        ConcurrentLinkedQueue<InstanceMarker> markers = new ConcurrentLinkedQueue<>();
+        int chunkX1 = Math.floorDiv(bounds.minX(), 16), chunkX2 = Math.floorDiv(bounds.maxX(), 16);
+        int chunkZ1 = Math.floorDiv(bounds.minZ(), 16), chunkZ2 = Math.floorDiv(bounds.maxZ(), 16);
+        AtomicInteger remaining = new AtomicInteger((chunkX2 - chunkX1 + 1) * (chunkZ2 - chunkZ1 + 1));
+        for (int cx = chunkX1; cx <= chunkX2; cx++) for (int cz = chunkZ1; cz <= chunkZ2; cz++) {
+            InstanceBounds slice = new InstanceBounds(
+                    Math.max(bounds.minX(), cx << 4), bounds.minY(), Math.max(bounds.minZ(), cz << 4),
+                    Math.min(bounds.maxX(), (cx << 4) + 15), bounds.maxY(), Math.min(bounds.maxZ(), (cz << 4) + 15));
+            Cursor cursor = new Cursor(world, slice, cancelled, markers, remaining, result);
+            Location owner = new Location(world, slice.minX(), slice.minY(), slice.minZ());
+            cursor.task = Bukkit.getRegionScheduler().runAtFixedRate(plugin, owner,
+                    ignored -> cursor.run(), 1L, 1L);
+        }
         return result;
     }
 
@@ -39,28 +53,33 @@ public final class MarkerScanner {
         private final World world;
         private final InstanceBounds box;
         private final BooleanSupplier cancelled;
+        private final ConcurrentLinkedQueue<InstanceMarker> markers;
+        private final AtomicInteger remaining;
         private final CompletableFuture<List<InstanceMarker>> result;
-        private final List<InstanceMarker> markers = new ArrayList<>();
         private int x;
         private int y;
         private int z;
-        private BukkitTask task;
+        private ScheduledTask task;
 
         private Cursor(World world, InstanceBounds box, BooleanSupplier cancelled,
+                       ConcurrentLinkedQueue<InstanceMarker> markers, AtomicInteger remaining,
                        CompletableFuture<List<InstanceMarker>> result) {
             this.world = world;
             this.box = box;
             this.cancelled = cancelled;
+            this.markers = markers;
+            this.remaining = remaining;
             this.result = result;
             this.x = box.minX();
             this.y = box.minY();
             this.z = box.minZ();
         }
 
-        @Override
-        public void run() {
+        @Override public void run() {
+            if (result.isDone()) { task.cancel(); return; }
             if (cancelled.getAsBoolean()) {
-                finishExceptionally(new IllegalStateException("Instance preparation cancelled"));
+                task.cancel();
+                result.completeExceptionally(new IllegalStateException("Instance preparation cancelled"));
                 return;
             }
             try {
@@ -68,12 +87,13 @@ public final class MarkerScanner {
                     inspect();
                     if (!advance()) {
                         task.cancel();
-                        result.complete(List.copyOf(markers));
+                        if (remaining.decrementAndGet() == 0) result.complete(List.copyOf(markers));
                         return;
                     }
                 }
             } catch (Throwable failure) {
-                finishExceptionally(failure);
+                task.cancel();
+                result.completeExceptionally(failure);
             }
         }
 
@@ -93,11 +113,6 @@ public final class MarkerScanner {
             if (++y <= box.maxY()) return true;
             y = box.minY();
             return ++x <= box.maxX();
-        }
-
-        private void finishExceptionally(Throwable failure) {
-            if (task != null) task.cancel();
-            result.completeExceptionally(failure);
         }
     }
 

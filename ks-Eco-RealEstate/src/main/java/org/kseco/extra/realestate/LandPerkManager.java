@@ -2,12 +2,10 @@ package org.kseco.extra.realestate;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
-import org.bukkit.entity.Player;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.Furnace;
 import org.bukkit.block.data.Ageable;
-import org.bukkit.scheduler.BukkitTask;
 import org.kseco.KsEco;
 import org.kseco.database.BusinessSchemaDialect;
 import org.kseco.database.PortableSqlMutation;
@@ -23,6 +21,8 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.time.Duration;
 
 /**
  * Land perks for agricultural/industrial plots.
@@ -61,9 +61,8 @@ public final class LandPerkManager {
     private volatile Map<String, PlotPerk> plotPerks = new ConcurrentHashMap<>();
     private final Map<String, List<FarmSpot>> farmSpotCache = new ConcurrentHashMap<>();
     private final Map<String, List<FurnaceSpot>> furnaceSpotCache = new ConcurrentHashMap<>();
-    private final Map<String, Integer> farmPlayerCursor = new ConcurrentHashMap<>();
     private final Map<String, Long> nextGrowthRunAt = new ConcurrentHashMap<>();
-    private BukkitTask growthTask;
+    private org.kseco.scheduler.EcoScheduler.TaskHandle growthTask;
     private long perfWindowStartedAt = System.currentTimeMillis();
     private int agriSamplesThisWindow = 0;
     private int industryEventsThisWindow = 0;
@@ -116,9 +115,8 @@ public final class LandPerkManager {
 
     public void startCropGrowthTask() {
         stopCropGrowthTask();
-        // Bukkit block access must remain on the server thread. Every scan is bounded
-        // by the shared per-run deadline in the apply phase.
-        growthTask = Bukkit.getScheduler().runTaskTimer(eco, this::planPerkTickAsync, 40L, 20L);
+        growthTask = eco.scheduler().runAsyncTimer(this::planPerkTickAsync,
+                Duration.ofSeconds(2), Duration.ofSeconds(1));
     }
 
     public void stopCropGrowthTask() {
@@ -436,28 +434,96 @@ public final class LandPerkManager {
                 perkTickQueued.set(false);
                 return;
             }
-            List<CropWork> cropWork = List.copyOf(crops);
-            List<FurnaceWork> furnaceWork = List.copyOf(furnaces);
-            Bukkit.getScheduler().runTask(eco, () -> applyPerkTickSync(cropWork, furnaceWork));
+            List<CropWork> cropSnapshot = List.copyOf(crops);
+            List<FurnaceWork> furnaceSnapshot = List.copyOf(furnaces);
+            eco.scheduler().runGlobal(() -> dispatchPerkWork(cropSnapshot, furnaceSnapshot));
         } catch (Throwable t) {
             perkTickQueued.set(false);
             eco.getLogger().warning("[LandPerk] async perk plan failed: " + t.getMessage());
         }
     }
 
-    private void applyPerkTickSync(List<CropWork> crops, List<FurnaceWork> furnaces) {
-        try {
-            long deadline = System.nanoTime() + (long) (getPerkValue("perk_sync_time_budget_ms", 8.0) * 1_000_000L);
-            for (CropWork work : crops) {
-                if (System.nanoTime() > deadline) return;
-                growPlotCrops(work, deadline);
+    private void dispatchPerkWork(List<CropWork> crops, List<FurnaceWork> furnaces) {
+        AtomicInteger pending = new AtomicInteger(1);
+        Runnable finished = () -> {
+            if (pending.decrementAndGet() == 0) perkTickQueued.set(false);
+        };
+        for (CropWork work : crops) scheduleCropWork(work, pending, finished);
+        for (FurnaceWork work : furnaces) scheduleFurnaceWork(work, pending, finished);
+        finished.run();
+    }
+
+    private void scheduleCropWork(CropWork work, AtomicInteger pending, Runnable finished) {
+        World world = Bukkit.getWorld(work.world());
+        if (world == null || work.x2() < work.x1() || work.z2() < work.z1()) return;
+        int remaining = work.samples();
+        List<FarmSpot> cached = farmSpotCache.get(work.plotId());
+        if (cached != null) {
+            List<FarmSpot> snapshot;
+            synchronized (cached) { snapshot = List.copyOf(cached); }
+            for (FarmSpot spot : snapshot) {
+                if (remaining-- <= 0) break;
+                if (!world.getName().equals(spot.world()) || spot.x() < work.x1() || spot.x() > work.x2()
+                        || spot.z() < work.z1() || spot.z() > work.z2()) continue;
+                scheduleRegion(world, spot.x(), spot.y(), spot.z(), pending, finished,
+                        () -> growCachedFarmSpot(work.plotId(), world, spot, work.steps()));
             }
-            for (FurnaceWork work : furnaces) {
-                if (System.nanoTime() > deadline) return;
-                tickIndustrialFurnacePlot(work, deadline);
-            }
-        } finally {
-            perkTickQueued.set(false);
+        }
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+        while (remaining-- > 0) {
+            int x = random.nextInt(work.x1(), work.x2() + 1);
+            int z = random.nextInt(work.z1(), work.z2() + 1);
+            scheduleRegion(world, x, world.getMinHeight(), z, pending, finished, () -> {
+                if (!world.isChunkLoaded(x >> 4, z >> 4)) return;
+                if (!growFarmColumn(work.plotId(), world, x, z, work.steps())) {
+                    growColumn(world, x, z, work.steps());
+                }
+            });
+        }
+    }
+
+    private void scheduleFurnaceWork(FurnaceWork work, AtomicInteger pending, Runnable finished) {
+        World world = Bukkit.getWorld(work.world());
+        if (world == null) return;
+        List<FurnaceSpot> spots = furnaceSpotCache.get(work.plotId());
+        if (spots == null) return;
+        List<FurnaceSpot> snapshot;
+        synchronized (spots) { snapshot = List.copyOf(spots); }
+        for (FurnaceSpot spot : snapshot) {
+            if (!world.getName().equals(spot.world()) || spot.x() < work.x1() || spot.x() > work.x2()
+                    || spot.z() < work.z1() || spot.z() > work.z2()) continue;
+            scheduleRegion(world, spot.x(), spot.y(), spot.z(), pending, finished, () -> {
+                if (!world.isChunkLoaded(spot.x() >> 4, spot.z() >> 4)) return;
+                Block block = world.getBlockAt(spot.x(), spot.y(), spot.z());
+                if (!isFurnaceBlock(block.getType())) {
+                    synchronized (spots) { spots.remove(spot); }
+                    return;
+                }
+                boostFurnace(block);
+            });
+        }
+    }
+
+    private void scheduleRegion(World world, int x, int y, int z, AtomicInteger pending,
+                                Runnable finished, Runnable action) {
+        pending.incrementAndGet();
+        eco.scheduler().runRegion(new org.bukkit.Location(world, x, y, z), () -> {
+            try { action.run(); }
+            finally { finished.run(); }
+        });
+    }
+
+    private void growCachedFarmSpot(String plotId, World world, FarmSpot spot, int steps) {
+        if (!world.isChunkLoaded(spot.x() >> 4, spot.z() >> 4)) return;
+        Block block = world.getBlockAt(spot.x(), spot.y(), spot.z());
+        if (!(block.getBlockData() instanceof Ageable ageable)) {
+            List<FarmSpot> spots = farmSpotCache.get(plotId);
+            if (spots != null) synchronized (spots) { spots.remove(spot); }
+            return;
+        }
+        if (ageable.getAge() < ageable.getMaximumAge()) {
+            ageable.setAge(Math.min(ageable.getAge() + steps, ageable.getMaximumAge()));
+            block.setBlockData(ageable, true);
         }
     }
 
@@ -522,36 +588,6 @@ public final class LandPerkManager {
         return work;
     }
 
-    private void tickIndustrialFurnacePlot(FurnaceWork work, long deadline) {
-        World world = Bukkit.getWorld(work.world());
-        if (world == null) return;
-        // FurnaceStartSmelt/FurnaceSmelt keep this cache current. Scanning a 25x25x13
-        // volume around every player for every industrial plot was the dominant tick cost.
-        boostCachedFurnaces(work.plotId(), world, work.x1(), work.z1(), work.x2(), work.z2(), deadline);
-    }
-
-    private boolean boostCachedFurnaces(String plotId, World world, int x1, int z1, int x2, int z2, long deadline) {
-        List<FurnaceSpot> spots = furnaceSpotCache.get(plotId);
-        if (spots == null || spots.isEmpty()) return true;
-        List<FurnaceSpot> invalid = new ArrayList<>();
-        for (FurnaceSpot spot : List.copyOf(spots)) {
-            if (System.nanoTime() > deadline) return false;
-            if (!world.getName().equals(spot.world()) || spot.x() < x1 || spot.x() > x2 || spot.z() < z1 || spot.z() > z2) {
-                invalid.add(spot);
-                continue;
-            }
-            if (!world.isChunkLoaded(spot.x() >> 4, spot.z() >> 4)) continue;
-            Block block = world.getBlockAt(spot.x(), spot.y(), spot.z());
-            if (!isFurnaceBlock(block.getType())) {
-                invalid.add(spot);
-                continue;
-            }
-            if (!boostFurnace(block)) return false;
-        }
-        if (!invalid.isEmpty()) spots.removeAll(invalid);
-        return true;
-    }
-
     private boolean boostFurnace(Block block) {
         if (!(block.getState() instanceof Furnace furnace)) return true;
         if (furnace.getCookTimeTotal() <= 0 || furnace.getCookTime() <= 0) return true;
@@ -569,107 +605,15 @@ public final class LandPerkManager {
 
     private void rememberFurnaceSpot(String plotId, FurnaceSpot spot) {
         List<FurnaceSpot> spots = furnaceSpotCache.computeIfAbsent(plotId, k -> new ArrayList<>());
-        if (spots.contains(spot)) return;
-        if (spots.size() >= 2048) spots.remove(0);
-        spots.add(spot);
+        synchronized (spots) {
+            if (spots.contains(spot)) return;
+            if (spots.size() >= 2048) spots.remove(0);
+            spots.add(spot);
+        }
     }
 
     private boolean isFurnaceBlock(Material material) {
         return material == Material.FURNACE || material == Material.BLAST_FURNACE || material == Material.SMOKER;
-    }
-
-    private void growPlotCrops(CropWork work, long deadline) {
-        World world = Bukkit.getWorld(work.world());
-        if (world == null) return;
-        String plotId = work.plotId();
-        int x1 = work.x1(), x2 = work.x2();
-        int z1 = work.z1(), z2 = work.z2();
-        if (x2 < x1 || z2 < z1) return;
-        int remaining = work.samples();
-        remaining -= growCachedFarmSpots(plotId, world, work.steps(), remaining, x1, z1, x2, z2, deadline);
-        if (remaining <= 0) return;
-        remaining -= discoverFarmSpotsNearPlayers(plotId, world, work.steps(), remaining, x1, z1, x2, z2, deadline);
-        if (remaining <= 0) return;
-        ThreadLocalRandom random = ThreadLocalRandom.current();
-        for (int i = 0; i < remaining; i++) {
-            if (System.nanoTime() > deadline) return;
-            int x = random.nextInt(x1, x2 + 1);
-            int z = random.nextInt(z1, z2 + 1);
-            if (!world.isChunkLoaded(x >> 4, z >> 4)) continue;
-            if (!growFarmColumn(plotId, world, x, z, work.steps())) {
-                growColumn(world, x, z, work.steps());
-            }
-        }
-    }
-
-    private int growCachedFarmSpots(String plotId, World world, int steps, int budget,
-                                    int x1, int z1, int x2, int z2, long deadline) {
-        if (budget <= 0) return 0;
-        List<FarmSpot> spots = farmSpotCache.get(plotId);
-        if (spots == null || spots.isEmpty()) return 0;
-        int used = 0;
-        List<FarmSpot> invalid = new ArrayList<>();
-        for (FarmSpot spot : List.copyOf(spots)) {
-            if (System.nanoTime() > deadline) break;
-            if (used >= budget) break;
-            if (!world.getName().equals(spot.world()) || spot.x() < x1 || spot.x() > x2 || spot.z() < z1 || spot.z() > z2) {
-                invalid.add(spot);
-                continue;
-            }
-            if (!world.isChunkLoaded(spot.x() >> 4, spot.z() >> 4)) continue;
-            Block block = world.getBlockAt(spot.x(), spot.y(), spot.z());
-            if (!(block.getBlockData() instanceof Ageable ageable)) {
-                invalid.add(spot);
-                continue;
-            }
-            if (ageable.getAge() < ageable.getMaximumAge()) {
-                ageable.setAge(Math.min(ageable.getAge() + steps, ageable.getMaximumAge()));
-                block.setBlockData(ageable, true);
-            }
-            used++;
-        }
-        if (!invalid.isEmpty()) spots.removeAll(invalid);
-        return used;
-    }
-
-    private int discoverFarmSpotsNearPlayers(String plotId, World world, int steps, int budget,
-                                             int x1, int z1, int x2, int z2, long deadline) {
-        if (budget <= 0) return 0;
-        int used = 0;
-        List<Player> players = new ArrayList<>(Bukkit.getOnlinePlayers());
-        if (players.isEmpty()) return 0;
-        int start = Math.floorMod(farmPlayerCursor.getOrDefault(plotId, 0), players.size());
-        int inspectedPlayers = Math.min(3, players.size());
-        for (int playerIndex = 0; playerIndex < inspectedPlayers; playerIndex++) {
-            Player player = players.get((start + playerIndex) % players.size());
-            if (System.nanoTime() > deadline) return used;
-            if (!player.getWorld().equals(world)) continue;
-            int px = player.getLocation().getBlockX();
-            int pz = player.getLocation().getBlockZ();
-            if (px < x1 || px > x2 || pz < z1 || pz > z2) continue;
-            // This is only cache discovery. Cached farmland is handled first, so a
-            // bounded rotating sample is enough to find new farms without scanning
-            // every player's full surroundings for every agricultural plot.
-            int radius = 6;
-            for (int r = 0; r <= radius && used < budget; r++) {
-                if (System.nanoTime() > deadline) return used;
-                for (int dx = -r; dx <= r && used < budget; dx++) {
-                    if (System.nanoTime() > deadline) return used;
-                    int x = px + dx;
-                    if (x < x1 || x > x2) continue;
-                    for (int dz = -r; dz <= r && used < budget; dz++) {
-                        if (Math.max(Math.abs(dx), Math.abs(dz)) != r) continue;
-                        int z = pz + dz;
-                        if (z < z1 || z > z2) continue;
-                        if (!world.isChunkLoaded(x >> 4, z >> 4)) continue;
-                        used++;
-                        growFarmColumn(plotId, world, x, z, steps);
-                    }
-                }
-            }
-        }
-        farmPlayerCursor.put(plotId, (start + inspectedPlayers) % players.size());
-        return used;
     }
 
     private boolean growFarmColumn(String plotId, World world, int x, int z, int steps) {
@@ -691,9 +635,11 @@ public final class LandPerkManager {
 
     private void rememberFarmSpot(String plotId, FarmSpot spot) {
         List<FarmSpot> spots = farmSpotCache.computeIfAbsent(plotId, k -> new ArrayList<>());
-        if (spots.contains(spot)) return;
-        if (spots.size() >= 4096) spots.remove(0);
-        spots.add(spot);
+        synchronized (spots) {
+            if (spots.contains(spot)) return;
+            if (spots.size() >= 4096) spots.remove(0);
+            spots.add(spot);
+        }
     }
 
     private boolean isFarmBase(Material material) {

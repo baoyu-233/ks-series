@@ -28,6 +28,7 @@ ks-Eco (核心)
 - **Web 玩家与管理面板**: `/ks-Eco` 路由；银行产品/经营、企业、税收、定价和地产界面共用认证网关，个人财富榜排除中央银行和系统账户
 - **扩展模块系统**: 从 `plugins/ks-Eco/extra/` 动态加载 JAR
 - **跨服运行时**: JDBC 事件日志、按数据库发布序号推进且按服务器/消费者隔离的轮询游标、失败重试、余额/价格/企业/地产/政治缓存失效、节点心跳、幂等认领和 fencing lease
+- **跨服只读投影**: 本地模块先把地图、房产或资产状态固化为不可变 JSON/二进制快照，再由数据库队列压缩、分片并写入共享库；玩家端可按 server/world/dimension 发现和读取远端快照，读取过程不会触碰远端 Bukkit `World`
 - **地产售楼沙盘**: 区域按登记楼栋组合，先显示道路/地块/占位，再异步并发加载单栋预渲染缓存；方块快照按 tick 限额读取，后台裁剪隐藏体素，支持楼栋房源卡
 - **多货币基础**: 精确最小单位账本、幂等流水、单向兑换规则，以及市场/限时销售的 `currency_id` 兼容
 - **区域需求活动基础**: 有限数量、有限预算、个人提交上限、时间窗、标准物品签名和幂等操作预留；当前仅支持 `CASH`，并默认关闭
@@ -59,6 +60,9 @@ ks-Eco (核心)
 ## 当前接线限制
 
 - SQLite 是本地单节点默认；跨服模式只接受共享 MySQL、MariaDB 或 PostgreSQL。每个节点必须使用唯一稳定的 `database.server-id`；外部 Vault 经济只有在自身也使用共享权威余额库时，才可显式设置 `cross-server.external-economy-shared: true`。跨服选项均为重启生效，运行时 reload 不会替换节点身份或 poller。
+- `federated-assets` 默认关闭、默认拒绝。每项能力的 server/world/dimension 三个 allow 轴都必须命中，任一 deny 命中立即拒绝；因此可单独屏蔽某个服务器、世界或维度。策略、TTL、离线/过期窗口、分片和解压上限可热加载；`database.server-id`、共享连接池及 `cross-server.enabled` 仍需重启。启用投影前必须先让共享数据库 transport 正常启动。
+- Web 查询合同为 `GET /api/federated/snapshot-sources`、`GET /api/federated/snapshot`、`GET /api/federated/assets` 和 `GET /api/federated/assets/aggregate`；管理员通过 `GET|POST /api/admin/federated-assets/settings` 查看或原子替换完整策略。所有接口仍受 ks-core session 鉴权。
+- 当前真实生产者是 ksHWP 的有界多图块 MAP bundle 与房地产 Extra 的 READY 房屋聚合。2026-07-23 实机读取到 3 个 MAP 图块和 4 套 PROPERTY；通用 ASSET 业务生产者与跨服 transfer 尚未完成。
 - transport/cursor/cache/lease 已覆盖迟到事件、同名 consumer 隔离、CAS 冲突重载、重复发布数组比较、慢时钟失效、发布重试和释放后旧 token 失效。价格、企业等级、财富榜、房地产保护和政治缓存接入失效总线；市场、暂存、限售、盲盒以共享 DB/journal/唯一认领为权威。价格刷新使用事务内 fencing，银行维护使用集群独占 lease，过期事件定时清理；运行时或数据库身份不健康时插件 fail closed。
 - 测试会实际启动本机原生 PostgreSQL 与 MariaDB，重复初始化核心业务与跨服 schema，并完成 transport 发布/轮询和 lease fenced 执行；另有共享 SQLite 双节点测试验证广播、去重、停止和接管。2026-07-22 又在真实 Leaves、Paper、Folia 三端共用 MariaDB 的环境完成事件发布和三游标推进。真实 MySQL、外部远程存量库、外部 Vault 多节点、断网和生产负载仍未验证。
 - `CASH` 仍由 Vault/内置经济持有。旧数据默认 `currency_id=CASH`；非 `CASH` 市场或限时销售会在扣款前拒绝。
@@ -149,10 +153,10 @@ cd ks-Eco && mvn clean package
 mvn -Pfolia clean package
 ```
 
-Folia 制品把 Bukkit 全局/异步/实体调度统一收口到 `EcoScheduler`，玩家 GUI、消息、Inventory 和在线钱包操作回交实体调度器；无 Vault 时直接使用共享 JDBC 内置经济。尚未适配的所有 Extra 和全服财富榜在 Folia 失败关闭。
+Folia 制品把 Bukkit global/async/entity/region 调度统一收口到 `EcoScheduler`，玩家 GUI、消息、Inventory 和在线钱包操作回交实体调度器；无 Vault 时直接使用共享 JDBC 内置经济。本轮银行、企业、政治、税务、地产和副本 6 个 Extra 已在 Folia 实机加载；缺少 FAWE/WorldEdit、MythicMobs 时对应 schematic/Boss 功能仍失败关闭。
 
 ## 测试
 
-本轮验证覆盖货币账本、兑换手续费与守恒、支付要求、跨服发布序号/cursor/cache/lease、双节点广播、原生数据库 transport/fencing、玩家市场 settlement、个人工程与个人/企业房产结算、人工复核阶段约束、有限需求活动、官方仓库清算、重大订单、企业项目结算边界、限时销售补偿和 Folia JDBC 钱包/调度边界。内置经济余额使用原子条件扣款与并发安全 update-then-insert，创建账户不再清零旧余额；Web 关键配置、成员、权限、银行利率和企业公户 upsert 已移除 SQLite 专用 DML，并使用事务 savepoint 处理 PostgreSQL 唯一键竞争。`ks-Eco` 默认版和 Folia 版均执行 180 项测试；全仓 23 个 Maven 模块共 358 项测试，全部通过。外部 Web JavaScript 22/22、HTML 内联脚本 6/6、严格源 YAML 319/319、插件入口 17/17 和本地资源引用 25/25 全部通过。
+本轮验证覆盖货币账本、兑换手续费与守恒、支付要求、跨服发布序号/cursor/cache/lease、只读资产投影、双节点广播、原生数据库 transport/fencing、玩家市场 settlement、个人工程与个人/企业房产结算、人工复核阶段约束、有限需求活动、官方仓库清算、重大订单、企业项目结算边界、限时销售补偿和 Folia JDBC 钱包/调度边界。`ks-Eco` 执行 196 项测试；全仓 23 个 Maven 模块共 391 项测试全部通过。外部 Web JavaScript 22/22、严格源 YAML 341/341、插件入口 17/17 和本地资源引用 25/25 通过。
 
-2026-07-22 已通过根备份脚本部署默认版到 Leaves/Paper、Folia 版到 Folia，并由 MCSM 启动三端。日志确认三个稳定节点 ID、MariaDB 数据源、跨服运行时与 `Done`；一次同价失效事件被三个节点消费。该烟测不代表真实 MySQL、外部远程存量迁移、外部 Vault、生产并发锁或网络故障已经验收。自动化验证也不替代真实存款、放款、分红、玩家 GUI、Vault/物品交付崩溃窗口、需求活动或官方清算的游戏内验收。
+2026-07-23 已通过根备份脚本部署普通版到 Leaves/Paper、Folia profile 到 Folia，并由 MCSM 启动三端。Leaves/Folia 各 29 项 Web 合同返回预期状态，日志确认稳定节点 ID、MariaDB、跨服运行时、Extra 6/4/6 与 `Done`。完整矩阵见 `../docs/KS-ECO-FULL-FUNCTION-TEST-2026-07-23.md`。该验收不代表真实 MySQL、外部远程存量迁移、外部 Vault、多机网络故障、生产压力或真人资金/GUI/崩溃窗口已经通过。

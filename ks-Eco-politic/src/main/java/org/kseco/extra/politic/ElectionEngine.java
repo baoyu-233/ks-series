@@ -1,9 +1,11 @@
 package org.kseco.extra.politic;
 
-import org.bukkit.Bukkit;
 import org.kseco.KsEco;
+import org.kseco.scheduler.EcoScheduler;
 
 import java.util.*;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 选举定时引擎。
@@ -19,7 +21,8 @@ public final class ElectionEngine {
     private final KsEco eco;
     private final PoliticManager politicManager;
     private final ProposalManager proposalManager; // reserved for future auto-proposals
-    private int taskId = -1;
+    private EcoScheduler.TaskHandle task;
+    private final AtomicBoolean tickRunning = new AtomicBoolean();
 
     public ElectionEngine(KsEco eco, PoliticManager politicManager, ProposalManager proposalManager) {
         this.eco = eco;
@@ -31,18 +34,33 @@ public final class ElectionEngine {
         int intervalMin = politicManager.getConfigInt("election_check_interval_min", 30);
         long intervalTicks = intervalMin * 60L * 20L;
 
-        // The election flow can inspect OfflinePlayer permissions and may promote
-        // candidates, so it must remain on Bukkit's server thread.
-        taskId = Bukkit.getScheduler().runTaskTimer(
-            eco, this::tick, 200L, intervalTicks).getTaskId();
+        // The timer only queues database work. Bukkit identity/permission reads inside
+        // the election flow are marshalled through EcoScheduler.
+        task = eco.scheduler().runGlobalTimer(this::queueTick, 200L, intervalTicks);
 
         eco.getLogger().info("[政治系统] 选举定时器已启动（间隔 " + intervalMin + " 分钟）");
     }
 
+    private void queueTick() {
+        if (!tickRunning.compareAndSet(false, true)) return;
+        try {
+            eco.asyncWorkPool().executeDatabase(() -> {
+                try {
+                    tick();
+                } finally {
+                    tickRunning.set(false);
+                }
+            });
+        } catch (RejectedExecutionException failure) {
+            tickRunning.set(false);
+            eco.getLogger().warning("[政治系统] 选举检查提交失败: " + failure.getMessage());
+        }
+    }
+
     public void shutdown() {
-        if (taskId >= 0) {
-            Bukkit.getScheduler().cancelTask(taskId);
-            taskId = -1;
+        if (task != null) {
+            task.cancel();
+            task = null;
         }
     }
 

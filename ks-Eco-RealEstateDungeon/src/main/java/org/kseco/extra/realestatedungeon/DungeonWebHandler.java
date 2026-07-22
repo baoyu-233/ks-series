@@ -3,7 +3,6 @@ package org.kseco.extra.realestatedungeon;
 import com.google.gson.Gson;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
-import org.bukkit.Bukkit;
 import org.kscore.KsAuthManager;
 import org.kscore.KsPluginBridge;
 import org.kseco.KsEco;
@@ -11,10 +10,13 @@ import org.kseries.instanceworld.api.InstanceWorldApi;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * 副本系统 Web API 处理器。
@@ -377,24 +379,12 @@ public final class DungeonWebHandler implements HttpHandler {
     }
 
     private <T> T callOnServerThread(Callable<T> action) throws IOException {
-        if (Bukkit.isPrimaryThread()) {
-            try {
-                return action.call();
-            } catch (Exception failure) {
-                throw new IOException("副本操作失败", failure);
-            }
-        }
-        CompletableFuture<T> result = new CompletableFuture<>();
-        Bukkit.getScheduler().runTask(eco, () -> {
-            try {
-                result.complete(action.call());
-            } catch (Throwable failure) {
-                result.completeExceptionally(failure);
-            }
-        });
         try {
-            return result.get(30, TimeUnit.SECONDS);
-        } catch (Exception failure) {
+            return eco.scheduler().callGlobal(action, Duration.ofSeconds(30));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("等待服务器线程处理副本操作被中断", interrupted);
+        } catch (ExecutionException | TimeoutException failure) {
             throw new IOException("等待服务器线程处理副本操作失败", failure);
         }
     }

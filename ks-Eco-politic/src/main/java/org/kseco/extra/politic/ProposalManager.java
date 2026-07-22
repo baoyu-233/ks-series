@@ -7,9 +7,15 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.kseco.KsEco;
 import org.kseco.database.PortableSqlMutation;
+import org.kseco.scheduler.EcoScheduler;
 
 import java.sql.*;
+import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 提案管理器。
@@ -18,6 +24,7 @@ import java.util.*;
  * 包含保民官一票否决 + 元老院覆议全票强行推行。
  */
 public final class ProposalManager {
+    private static final Duration PLAYER_TIMEOUT = Duration.ofSeconds(10);
 
     private final KsEco eco;
     private final PoliticManager politicManager;
@@ -25,7 +32,8 @@ public final class ProposalManager {
     private final Map<String, Integer> lastAnnouncedVoteCount = new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, Long> lastProgressAnnouncementAt = new java.util.concurrent.ConcurrentHashMap<>();
     private final Set<String> deadlineWarnings = java.util.concurrent.ConcurrentHashMap.newKeySet();
-    private int announcementTaskId = -1;
+    private EcoScheduler.TaskHandle announcementTask;
+    private final AtomicBoolean announcementRunning = new AtomicBoolean();
     private volatile boolean enactmentReady;
 
     // 合法状态转换
@@ -49,20 +57,43 @@ public final class ProposalManager {
     }
 
     public synchronized void init() {
-        if (announcementTaskId >= 0) Bukkit.getScheduler().cancelTask(announcementTaskId);
+        if (announcementTask != null) announcementTask.cancel();
         enactmentReady = initializeEnactmentJournal();
         initializeMissingStageDeadlines();
-        announcementTaskId = Bukkit.getScheduler().runTaskTimer(
-                eco, this::checkVotingAnnouncements, 400L, 1200L).getTaskId();
+        announcementTask = eco.scheduler().runGlobalTimer(this::queueVotingAnnouncements, 400L, 1200L);
         if (enactmentReady) {
-            Bukkit.getScheduler().runTask(eco, this::retryRecoverableEnactments);
+            queueDatabase(this::retryRecoverableEnactments, "立法恢复");
+        }
+    }
+
+    private void queueVotingAnnouncements() {
+        if (!announcementRunning.compareAndSet(false, true)) return;
+        try {
+            eco.asyncWorkPool().executeDatabase(() -> {
+                try {
+                    checkVotingAnnouncements();
+                } finally {
+                    announcementRunning.set(false);
+                }
+            });
+        } catch (RejectedExecutionException failure) {
+            announcementRunning.set(false);
+            eco.getLogger().warning("[政治系统] 表决公告检查提交失败: " + failure.getMessage());
+        }
+    }
+
+    private void queueDatabase(Runnable task, String operation) {
+        try {
+            eco.asyncWorkPool().executeDatabase(task);
+        } catch (RejectedExecutionException failure) {
+            eco.getLogger().warning("[政治系统] " + operation + "提交失败: " + failure.getMessage());
         }
     }
 
     public synchronized void shutdown() {
-        if (announcementTaskId >= 0) {
-            Bukkit.getScheduler().cancelTask(announcementTaskId);
-            announcementTaskId = -1;
+        if (announcementTask != null) {
+            announcementTask.cancel();
+            announcementTask = null;
         }
     }
 
@@ -487,8 +518,8 @@ public final class ProposalManager {
     /** 向全服在线玩家广播消息；Web 线程触发状态转换时切回服务器线程。 */
     private void broadcast(Component msg) {
         try {
-            if (Bukkit.isPrimaryThread()) Bukkit.getServer().broadcast(msg);
-            else Bukkit.getScheduler().runTask(eco, () -> Bukkit.getServer().broadcast(msg));
+            if (eco.scheduler().isGlobalThread()) Bukkit.getServer().broadcast(msg);
+            else eco.scheduler().runGlobal(() -> Bukkit.getServer().broadcast(msg));
         } catch (Throwable error) {
             eco.getLogger().warning("[政治系统] 全服公告发送失败: " + error.getMessage());
         }
@@ -654,11 +685,22 @@ public final class ProposalManager {
     }
 
     /** 合资格玩家针对表决中提案发起固定格式全服呼吁，带持久化多级冷却。 */
-    public synchronized AppealResult appealForProposal(String proposalId, UUID actorUuid, String actorName) {
+    public AppealResult appealForProposal(String proposalId, UUID actorUuid, String actorName) {
+        return appealForProposal(proposalId, actorUuid, actorName, appealPermissions(actorUuid));
+    }
+
+    AppealResult appealForProposal(String proposalId, Player actor) {
+        eco.scheduler().requireEntityThread(actor, "politic appeal command");
+        PermissionSnapshot permissions = new PermissionSnapshot(true,
+                actor.hasPermission("kseco.politic.appeal") || actor.hasPermission("kseco.admin"), actor.getName());
+        return appealForProposal(proposalId, actor.getUniqueId(), actor.getName(), permissions);
+    }
+
+    private synchronized AppealResult appealForProposal(String proposalId, UUID actorUuid, String actorName,
+                                                         PermissionSnapshot permissions) {
         if (proposalId == null || proposalId.isBlank() || actorUuid == null) return AppealResult.fail("提案信息缺失", 0);
-        Player actor = Bukkit.getPlayer(actorUuid);
-        if (actor == null) return AppealResult.fail("只有在线玩家可以发起全服呼吁", 0);
-        if (!actor.hasPermission("kseco.politic.appeal") && !actor.hasPermission("kseco.admin")) {
+        if (!permissions.online()) return AppealResult.fail("只有在线玩家可以发起全服呼吁", 0);
+        if (!permissions.allowed()) {
             return AppealResult.fail("你没有发起全服呼吁的权限", 0);
         }
 
@@ -691,7 +733,7 @@ public final class ProposalManager {
                 ps.setString(1, UUID.randomUUID().toString().substring(0, 8));
                 ps.setString(2, proposal.id);
                 ps.setString(3, actorUuid.toString());
-                ps.setString(4, actorName != null ? actorName : actor.getName());
+                ps.setString(4, actorName != null && !actorName.isBlank() ? actorName : permissions.playerName());
                 ps.setString(5, proposal.status);
                 ps.setLong(6, now);
                 ps.executeUpdate();
@@ -708,7 +750,7 @@ public final class ProposalManager {
             case "TRIBUNE_REVIEW" -> "保民官审查";
             default -> "元老院表决";
         };
-        String caller = actorName != null && !actorName.isBlank() ? actorName : actor.getName();
+        String caller = actorName != null && !actorName.isBlank() ? actorName : permissions.playerName();
         long expiresAt = now + Math.max(60,
                 politicManager.getConfigInt("appeal_bulletin_duration_seconds", 900));
         var bridge = eco.bridge();
@@ -725,6 +767,25 @@ public final class ProposalManager {
         eco.getLogger().info("[政治系统] " + caller + " 针对提案 " + proposal.id + " 发起全服呼吁");
         return AppealResult.success("全服呼吁已发布");
     }
+
+    private PermissionSnapshot appealPermissions(UUID playerUuid) {
+        try {
+            Player online = eco.scheduler().callGlobal(() -> Bukkit.getPlayer(playerUuid), PLAYER_TIMEOUT);
+            if (online == null || !online.isOnline()) return new PermissionSnapshot(false, false, playerUuid.toString());
+            return eco.scheduler().callEntity(online,
+                    () -> new PermissionSnapshot(true,
+                            online.hasPermission("kseco.politic.appeal")
+                                    || online.hasPermission("kseco.admin"), online.getName()), PLAYER_TIMEOUT);
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            return new PermissionSnapshot(false, false, playerUuid.toString());
+        } catch (ExecutionException | TimeoutException | RuntimeException failure) {
+            eco.getLogger().warning("[政治系统] 呼吁权限检查失败: " + failure.getMessage());
+            return new PermissionSnapshot(false, false, playerUuid.toString());
+        }
+    }
+
+    private record PermissionSnapshot(boolean online, boolean allowed, String playerName) { }
 
     private boolean isAppealEligible(Proposal p, UUID actorUuid) {
         if (p.proposerUuid.equals(actorUuid.toString())) return true;

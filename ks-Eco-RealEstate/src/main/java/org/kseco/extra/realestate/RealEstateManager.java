@@ -1,12 +1,15 @@
 package org.kseco.extra.realestate;
 
 import org.kseco.KsEco;
+import org.kseco.crossserver.assets.AssetSource;
+import org.kseco.crossserver.assets.FederatedCapability;
 import org.kseco.database.PortableSqlMutation;
 
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 房地产管理器。
@@ -54,12 +57,14 @@ public final class RealEstateManager {
 
     private final KsEco eco;
 
-    // 售楼沙盘单栋预渲染缓存。Bukkit 方块分 tick 在主线程快照，隐藏面裁剪与 JSON 模型组装在线程池完成。
+    // 售楼沙盘单栋预渲染缓存。世界快照按区块派发到所属 region，隐藏面裁剪与 JSON 组装异步完成。
     private static final long VOXEL_CACHE_TTL_MILLIS = 5 * 60 * 1000L;
-    private static final int VOXEL_SCAN_BUDGET_PER_TICK = 8192;
     private static final int MAX_HOUSE_SCAN_VOLUME = 250000;
     private final Map<String, CachedVoxelModel> voxelModelCache = new ConcurrentHashMap<>();
-    private final Set<org.bukkit.scheduler.BukkitTask> voxelSnapshotTasks = ConcurrentHashMap.newKeySet();
+    private final Set<org.kseco.scheduler.EcoScheduler.TaskHandle> voxelSnapshotTasks = ConcurrentHashMap.newKeySet();
+    private final Map<String, Map<String, FederatedPropertySnapshotFactory.HouseSnapshot>> federatedPropertySnapshots =
+            new ConcurrentHashMap<>();
+    private final Map<String, AtomicLong> federatedPropertyRevisions = new ConcurrentHashMap<>();
 
     private record CachedVoxelModel(String signature, long queuedAt,
                                     CompletableFuture<Map<String, Object>> future) {}
@@ -133,12 +138,14 @@ public final class RealEstateManager {
 
     /** 模块停用时取消尚未完成的售楼沙盘快照，防止重载后旧任务继续读取世界。 */
     public void shutdownVoxelCache() {
-        for (org.bukkit.scheduler.BukkitTask task : voxelSnapshotTasks) task.cancel();
+        for (org.kseco.scheduler.EcoScheduler.TaskHandle task : voxelSnapshotTasks) task.cancel();
         voxelSnapshotTasks.clear();
         for (CachedVoxelModel entry : voxelModelCache.values()) {
             entry.future().cancel(false);
         }
         voxelModelCache.clear();
+        federatedPropertySnapshots.clear();
+        federatedPropertyRevisions.clear();
     }
 
     /** 全量重新加载主世界地块边界缓存。地块增/删后调用。 */
@@ -1767,77 +1774,98 @@ public final class RealEstateManager {
     private CachedVoxelModel queueHouseVoxelSnapshot(Map<String, Object> house, String signature, long queuedAt) {
         CompletableFuture<Map<String, Object>> future = new CompletableFuture<>();
         Map<String, Object> immutableHouse = Collections.unmodifiableMap(new LinkedHashMap<>(house));
-        final org.bukkit.scheduler.BukkitTask[] taskRef = new org.bukkit.scheduler.BukkitTask[1];
-        org.bukkit.scheduler.BukkitTask task = new org.bukkit.scheduler.BukkitRunnable() {
-            private final int x1 = ((Number) immutableHouse.get("x1")).intValue();
-            private final int y1 = ((Number) immutableHouse.get("y1")).intValue();
-            private final int z1 = ((Number) immutableHouse.get("z1")).intValue();
-            private final int x2 = ((Number) immutableHouse.get("x2")).intValue();
-            private final int y2 = ((Number) immutableHouse.get("y2")).intValue();
-            private final int z2 = ((Number) immutableHouse.get("z2")).intValue();
-            private int x = x1, y = y1, z = z1;
-            private final List<Object[]> blocks = new ArrayList<>();
-
-            @Override public void run() {
-                if (future.isCancelled() || !eco.isEnabled()) { finishTask(); return; }
-                org.bukkit.World bukkitWorld = org.bukkit.Bukkit.getWorld(String.valueOf(immutableHouse.get("world")));
-                if (bukkitWorld == null) {
-                    future.complete(voxelEnvelope(immutableHouse, "FAILED", true, "world_unavailable", List.of()));
-                    finishTask();
-                    return;
+        String worldName = String.valueOf(immutableHouse.get("world"));
+        int x1 = ((Number) immutableHouse.get("x1")).intValue();
+        int y1 = ((Number) immutableHouse.get("y1")).intValue();
+        int z1 = ((Number) immutableHouse.get("z1")).intValue();
+        int x2 = ((Number) immutableHouse.get("x2")).intValue();
+        int y2 = ((Number) immutableHouse.get("y2")).intValue();
+        int z2 = ((Number) immutableHouse.get("z2")).intValue();
+        org.bukkit.World world = org.bukkit.Bukkit.getWorld(worldName);
+        if (world == null) {
+            future.complete(voxelEnvelope(immutableHouse, "FAILED", true, "world_unavailable", List.of()));
+            return new CachedVoxelModel(signature, queuedAt, future);
+        }
+        String dimensionId = dimensionId(world);
+        CompletableFuture<VoxelScan> snapshotFuture = snapshotVoxelsByRegion(world, x1, y1, z1, x2, y2, z2,
+                MAX_VOXEL_BLOCKS, voxelSnapshotTasks);
+        snapshotFuture.whenComplete((scan, failure) -> {
+            if (failure != null) {
+                future.completeExceptionally(failure);
+                return;
+            }
+            if (scan.truncated) {
+                future.complete(voxelEnvelope(immutableHouse, "FAILED", true, "block_limit", List.of()));
+                return;
+            }
+            eco.scheduler().runAsync(() -> {
+                try {
+                    List<Object[]> snapshot = List.copyOf(scan.blocks);
+                    List<Object[]> visible = cullHiddenVoxels(snapshot);
+                    List<Map<String, Object>> rows = voxelRows(visible);
+                    Map<String, Object> ready = voxelEnvelope(immutableHouse, "READY", false, null, rows);
+                    ready.put("sourceBlocks", snapshot.size());
+                    ready.put("generatedAt", System.currentTimeMillis());
+                    ready.put("cacheTtlSeconds", VOXEL_CACHE_TTL_MILLIS / 1000);
+                    publishPropertySnapshot(immutableHouse, ready, dimensionId);
+                    future.complete(ready);
+                } catch (RuntimeException error) {
+                    future.completeExceptionally(error);
                 }
-                int budget = VOXEL_SCAN_BUDGET_PER_TICK;
-                while (budget-- > 0) {
-                    org.bukkit.block.Block block = bukkitWorld.getBlockAt(x, y, z);
-                    org.bukkit.Material material = block.getType();
-                    if (!material.isAir()) {
-                        if (blocks.size() >= MAX_VOXEL_BLOCKS) {
-                            future.complete(voxelEnvelope(immutableHouse, "FAILED", true, "block_limit", List.of()));
-                            finishTask();
-                            return;
-                        }
-                        String materialName = material.name();
-                        String data = needsBlockData(materialName) ? block.getBlockData().getAsString() : null;
-                        blocks.add(new Object[]{x - x1, y - y1, z - z1,
-                                VoxelColors.colorOf(material), materialName, data});
-                    }
-                    if (++z > z2) { z = z1; if (++y > y2) { y = y1; if (++x > x2) { completeSnapshot(); return; } } }
-                }
-            }
-
-            private void completeSnapshot() {
-                finishTask();
-                List<Object[]> snapshot = List.copyOf(blocks);
-                org.bukkit.Bukkit.getScheduler().runTaskAsynchronously(eco, () -> {
-                    try {
-                        List<Object[]> visible = cullHiddenVoxels(snapshot);
-                        List<Map<String, Object>> rows = new ArrayList<>(visible.size());
-                        for (Object[] block : visible) {
-                            Map<String, Object> row = new LinkedHashMap<>();
-                            row.put("x", block[0]); row.put("y", block[1]); row.put("z", block[2]);
-                            row.put("color", block[3]); row.put("mat", block[4]);
-                            if (block[5] != null) row.put("data", block[5]);
-                            rows.add(row);
-                        }
-                        Map<String, Object> ready = voxelEnvelope(immutableHouse, "READY", false, null, rows);
-                        ready.put("sourceBlocks", snapshot.size());
-                        ready.put("generatedAt", System.currentTimeMillis());
-                        ready.put("cacheTtlSeconds", VOXEL_CACHE_TTL_MILLIS / 1000);
-                        future.complete(ready);
-                    } catch (RuntimeException error) {
-                        future.completeExceptionally(error);
-                    }
-                });
-            }
-
-            private void finishTask() {
-                cancel();
-                if (taskRef[0] != null) voxelSnapshotTasks.remove(taskRef[0]);
-            }
-        }.runTaskTimer(eco, 1L, 1L);
-        taskRef[0] = task;
-        voxelSnapshotTasks.add(task);
+            });
+        });
         return new CachedVoxelModel(signature, queuedAt, future);
+    }
+
+    private void publishPropertySnapshot(Map<String, Object> house, Map<String, Object> ready, String dimensionId) {
+        if (!eco.getConfig().getBoolean("realestate.federated-property-snapshots-enabled", false)
+                || !eco.federatedAssetSettings().enabled()) return;
+        try {
+            String worldId = String.valueOf(house.get("world"));
+            AssetSource source = new AssetSource(eco.ecoDatabase().serverId(), worldId, dimensionId);
+            if (!eco.federatedAssetSettings().policy()
+                    .decide(FederatedCapability.PROPERTY_TRADE, source).allowed()) return;
+            String sourceKey = source.stableKey();
+            Map<String, FederatedPropertySnapshotFactory.HouseSnapshot> bucket = federatedPropertySnapshots
+                    .computeIfAbsent(sourceKey, ignored -> new ConcurrentHashMap<>());
+            String houseId = String.valueOf(house.get("id"));
+            bucket.put(houseId, new FederatedPropertySnapshotFactory.HouseSnapshot(house, ready));
+            List<FederatedPropertySnapshotFactory.HouseSnapshot> snapshot = bucket.entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey()).map(Map.Entry::getValue).toList();
+            long now = System.currentTimeMillis();
+            long revision = federatedPropertyRevisions.computeIfAbsent(sourceKey, ignored -> new AtomicLong())
+                    .updateAndGet(previous -> Math.max(previous + 1, now));
+            var prepared = FederatedPropertySnapshotFactory.create(eco.ecoDatabase().serverId(), dimensionId,
+                    snapshot, revision, now);
+            eco.publishFederatedSnapshot(prepared).whenComplete((result, failure) -> {
+                if (failure != null) {
+                    eco.getLogger().warning("[房地产] 跨服房产快照发布失败: " + failure.getMessage());
+                }
+            });
+        } catch (RuntimeException failure) {
+            eco.getLogger().warning("[房地产] 跨服房产快照准备失败: " + failure.getMessage());
+        }
+    }
+
+    private static String dimensionId(org.bukkit.World world) {
+        return switch (world.getEnvironment()) {
+            case NORMAL -> "minecraft:overworld";
+            case NETHER -> "minecraft:the_nether";
+            case THE_END -> "minecraft:the_end";
+            default -> world.getKey().toString();
+        };
+    }
+
+    private static List<Map<String, Object>> voxelRows(List<Object[]> source) {
+        List<Map<String, Object>> rows = new ArrayList<>(source.size());
+        for (Object[] block : source) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("x", block[0]); row.put("y", block[1]); row.put("z", block[2]);
+            row.put("color", block[3]); row.put("mat", block[4]);
+            if (block[5] != null) row.put("data", block[5]);
+            rows.add(row);
+        }
+        return rows;
     }
 
     private Map<String, Object> voxelEnvelope(Map<String, Object> house, String status,
@@ -1900,14 +1928,8 @@ public final class RealEstateManager {
         try {
             org.bukkit.World bukkitWorld = org.bukkit.Bukkit.getWorld(world);
             if (bukkitWorld == null) return rejectedRegion(world, minX, minZ, maxX, maxZ, "world_unavailable");
-            int[] heights = org.bukkit.Bukkit.getScheduler().callSyncMethod(eco, () -> {
-                int lowest = Integer.MAX_VALUE, highest = Integer.MIN_VALUE;
-                for (int x = minX; x <= maxX; x++) for (int z = minZ; z <= maxZ; z++) {
-                    int y = bukkitWorld.getHighestBlockYAt(x, z);
-                    lowest = Math.min(lowest, y); highest = Math.max(highest, y);
-                }
-                return new int[]{lowest, highest};
-            }).get(5, java.util.concurrent.TimeUnit.SECONDS);
+            int[] heights = snapshotHeightsByRegion(bukkitWorld, minX, minZ, maxX, maxZ)
+                    .get(5, java.util.concurrent.TimeUnit.SECONDS);
             int minY = Math.max(bukkitWorld.getMinHeight(), heights[0] - REGION_SURFACE_BELOW);
             int maxY = Math.min(bukkitWorld.getMaxHeight() - 1, heights[1] + REGION_SURFACE_ABOVE);
             if (maxY - minY + 1 > MAX_REGION_HEIGHT) return rejectedRegion(world, minX, minZ, maxX, maxZ, "height_limit");
@@ -1932,19 +1954,15 @@ public final class RealEstateManager {
             return result;
         }
         try {
-            VoxelScan scan = org.bukkit.Bukkit.getScheduler().callSyncMethod(eco,
-                    () -> scanVoxelsLimited(world, minX, minY, minZ, maxX, maxY, maxZ, MAX_VOXEL_BLOCKS)).get(8, java.util.concurrent.TimeUnit.SECONDS);
+            org.bukkit.World bukkitWorld = org.bukkit.Bukkit.getWorld(world);
+            if (bukkitWorld == null) throw new IllegalStateException("world_unavailable");
+            VoxelScan scan = snapshotVoxelsByRegion(bukkitWorld, minX, minY, minZ, maxX, maxY, maxZ,
+                    MAX_VOXEL_BLOCKS, null).get(8, java.util.concurrent.TimeUnit.SECONDS);
             if (scan.truncated) {
                 result.put("truncated", true); result.put("reason", "block_limit"); result.put("blocks", List.of());
                 return result;
             }
-            List<Map<String, Object>> blocks = new ArrayList<>(scan.blocks.size());
-            for (Object[] block : scan.blocks) {
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("x", block[0]); row.put("y", block[1]); row.put("z", block[2]); row.put("color", block[3]); row.put("mat", block[4]);
-                if (block[5] != null) row.put("data", block[5]);
-                blocks.add(row);
-            }
+            List<Map<String, Object>> blocks = voxelRows(scan.blocks);
             result.put("truncated", false); result.put("blocks", blocks);
         } catch (Exception e) {
             eco.getLogger().warning("[RealEstate] Region voxel export failed: " + e.getMessage());
@@ -1966,46 +1984,98 @@ public final class RealEstateManager {
         private VoxelScan(List<Object[]> blocks, boolean truncated) { this.blocks = blocks; this.truncated = truncated; }
     }
 
-    private VoxelScan scanVoxelsLimited(String world, int x1, int y1, int z1, int x2, int y2, int z2, int limit) {
-        List<Object[]> out = new ArrayList<>();
-        org.bukkit.World bukkitWorld = org.bukkit.Bukkit.getWorld(world);
-        if (bukkitWorld == null) return new VoxelScan(out, false);
-        for (int x = x1; x <= x2; x++) for (int y = y1; y <= y2; y++) for (int z = z1; z <= z2; z++) {
-            org.bukkit.block.Block block = bukkitWorld.getBlockAt(x, y, z);
-            org.bukkit.Material material = block.getType();
-            if (material.isAir()) continue;
-            if (out.size() >= limit) return new VoxelScan(out, true);
-            String materialName = material.name();
-            String data = needsBlockData(materialName) ? block.getBlockData().getAsString() : null;
-            out.add(new Object[]{x - x1, y - y1, z - z1, VoxelColors.colorOf(material), materialName, data});
+    private CompletableFuture<int[]> snapshotHeightsByRegion(org.bukkit.World world,
+                                                               int x1, int z1, int x2, int z2) {
+        CompletableFuture<int[]> future = new CompletableFuture<>();
+        int chunkX1 = Math.floorDiv(x1, 16), chunkX2 = Math.floorDiv(x2, 16);
+        int chunkZ1 = Math.floorDiv(z1, 16), chunkZ2 = Math.floorDiv(z2, 16);
+        int pieces = (chunkX2 - chunkX1 + 1) * (chunkZ2 - chunkZ1 + 1);
+        java.util.concurrent.atomic.AtomicInteger remaining = new java.util.concurrent.atomic.AtomicInteger(pieces);
+        java.util.concurrent.atomic.AtomicInteger lowest = new java.util.concurrent.atomic.AtomicInteger(Integer.MAX_VALUE);
+        java.util.concurrent.atomic.AtomicInteger highest = new java.util.concurrent.atomic.AtomicInteger(Integer.MIN_VALUE);
+        for (int cx = chunkX1; cx <= chunkX2; cx++) for (int cz = chunkZ1; cz <= chunkZ2; cz++) {
+            int minX = Math.max(x1, cx << 4), maxX = Math.min(x2, (cx << 4) + 15);
+            int minZ = Math.max(z1, cz << 4), maxZ = Math.min(z2, (cz << 4) + 15);
+            org.bukkit.Location owner = new org.bukkit.Location(world, minX, 0, minZ);
+            eco.scheduler().runRegion(owner, () -> {
+                try {
+                    for (int x = minX; x <= maxX; x++) for (int z = minZ; z <= maxZ; z++) {
+                        int y = world.getHighestBlockYAt(x, z);
+                        lowest.accumulateAndGet(y, Math::min);
+                        highest.accumulateAndGet(y, Math::max);
+                    }
+                    if (remaining.decrementAndGet() == 0) future.complete(new int[]{lowest.get(), highest.get()});
+                } catch (Throwable failure) {
+                    future.completeExceptionally(failure);
+                }
+            });
         }
-        return new VoxelScan(out, false);
+        return future;
+    }
+
+    private CompletableFuture<VoxelScan> snapshotVoxelsByRegion(org.bukkit.World world,
+                                                                 int x1, int y1, int z1,
+                                                                 int x2, int y2, int z2, int limit,
+                                                                 Set<org.kseco.scheduler.EcoScheduler.TaskHandle> tracked) {
+        CompletableFuture<VoxelScan> future = new CompletableFuture<>();
+        java.util.concurrent.ConcurrentLinkedQueue<Object[]> blocks = new java.util.concurrent.ConcurrentLinkedQueue<>();
+        java.util.concurrent.atomic.AtomicInteger blockCount = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicBoolean truncated = new java.util.concurrent.atomic.AtomicBoolean();
+        int chunkX1 = Math.floorDiv(x1, 16), chunkX2 = Math.floorDiv(x2, 16);
+        int chunkZ1 = Math.floorDiv(z1, 16), chunkZ2 = Math.floorDiv(z2, 16);
+        int pieces = (chunkX2 - chunkX1 + 1) * (chunkZ2 - chunkZ1 + 1);
+        java.util.concurrent.atomic.AtomicInteger remaining = new java.util.concurrent.atomic.AtomicInteger(pieces);
+        List<org.kseco.scheduler.EcoScheduler.TaskHandle> localTasks = new java.util.concurrent.CopyOnWriteArrayList<>();
+        Runnable finish = () -> {
+            if (remaining.decrementAndGet() != 0) return;
+            if (tracked != null) tracked.removeAll(localTasks);
+            future.complete(new VoxelScan(new ArrayList<>(blocks), truncated.get()));
+        };
+        for (int cx = chunkX1; cx <= chunkX2; cx++) for (int cz = chunkZ1; cz <= chunkZ2; cz++) {
+            int minX = Math.max(x1, cx << 4), maxX = Math.min(x2, (cx << 4) + 15);
+            int minZ = Math.max(z1, cz << 4), maxZ = Math.min(z2, (cz << 4) + 15);
+            org.bukkit.Location owner = new org.bukkit.Location(world, minX, y1, minZ);
+            org.kseco.scheduler.EcoScheduler.TaskHandle handle = eco.scheduler().runRegion(owner, () -> {
+                try {
+                    if (!future.isCancelled() && eco.isEnabled() && !truncated.get()) {
+                        for (int x = minX; x <= maxX && !truncated.get(); x++) {
+                            for (int y = y1; y <= y2 && !truncated.get(); y++) {
+                                for (int z = minZ; z <= maxZ; z++) {
+                                    org.bukkit.block.Block block = world.getBlockAt(x, y, z);
+                                    org.bukkit.Material material = block.getType();
+                                    if (material.isAir()) continue;
+                                    if (blockCount.incrementAndGet() > limit) {
+                                        truncated.set(true);
+                                        break;
+                                    }
+                                    String materialName = material.name();
+                                    String data = needsBlockData(materialName) ? block.getBlockData().getAsString() : null;
+                                    blocks.add(new Object[]{x - x1, y - y1, z - z1,
+                                            VoxelColors.colorOf(material), materialName, data});
+                                }
+                            }
+                        }
+                    }
+                    finish.run();
+                } catch (Throwable failure) {
+                    if (tracked != null) tracked.removeAll(localTasks);
+                    future.completeExceptionally(failure);
+                }
+            });
+            localTasks.add(handle);
+            if (tracked != null) tracked.add(handle);
+        }
+        future.whenComplete((ignored, failure) -> {
+            if (future.isCancelled()) for (var task : localTasks) task.cancel();
+            if (tracked != null && future.isDone()) tracked.removeAll(localTasks);
+        });
+        return future;
     }
 
     private static boolean needsBlockData(String matName) {
         return matName.endsWith("_STAIRS") || matName.endsWith("_SLAB")
                 || matName.endsWith("_TRAPDOOR") || matName.endsWith("_DOOR") || matName.endsWith("_FENCE_GATE")
                 || matName.endsWith("_PANE") || matName.endsWith("_FENCE") || matName.endsWith("_WALL");
-    }
-
-    /** 主线程内执行：扫描 AABB 内的非空气方块，返回 {x,y,z,colorRGB,matName,blockDataString} 数组列表（坐标相对房屋原点平移到 0 起）。 */
-    private List<Object[]> scanVoxels(String world, int x1, int y1, int z1, int x2, int y2, int z2) {
-        List<Object[]> out = new ArrayList<>();
-        org.bukkit.World w = org.bukkit.Bukkit.getWorld(world);
-        if (w == null) return out;
-        for (int x = x1; x <= x2; x++) {
-            for (int y = y1; y <= y2; y++) {
-                for (int z = z1; z <= z2; z++) {
-                    org.bukkit.block.Block blk = w.getBlockAt(x, y, z);
-                    org.bukkit.Material mat = blk.getType();
-                    if (mat.isAir()) continue;
-                    String matName = mat.name();
-                    String dataStr = needsBlockData(matName) ? blk.getBlockData().getAsString() : null;
-                    out.add(new Object[]{x - x1, y - y1, z - z1, VoxelColors.colorOf(mat), matName, dataStr});
-                }
-            }
-        }
-        return out;
     }
 
     public List<Map<String, Object>> listHousesForPlot(String plotId) {

@@ -16,6 +16,7 @@
 - 🔄 **玩家区域更新**: 右键 → 更新此区块（反映建筑变更）
 - 🔒 **隐私保护**: 私有备注仅自己可见，其他玩家备注不泄露
 - 🗑 **管理员缓存管理**: 清除指定世界全部缓存
+- 🌐 **可选跨服投影**: 把已完成渲染的冻结图块按世界组成有界 bundle 发布到 ks-Eco，供获授权节点读取；未安装 ks-Eco 时保持本地模式
 
 ## 玩家使用
 
@@ -57,6 +58,11 @@ pre-render:
 annotations:
   max-per-player: 100
   max-text-length: 200
+cross-server:
+  map-publish:
+    enabled: false
+    min-interval-seconds: 15
+    max-payload-bytes: 1048576
 web:
   route: "/kSHWP"
 ```
@@ -64,6 +70,8 @@ web:
 ## 依赖
 
 - **ks-core**: Web 网关 + 鉴权 + 数据库
+- **ks-Eco（可选）**: 跨服 MAP 投影；需同时启用其 `cross-server.federated-assets`
+- bundle 在 HWP 重启后为空，会随实际图块请求渐进恢复；内存/磁盘缓存命中也参与发布。2026-07-23 实机验证同源 3 图块、非 stale、节点在线。
 - Paper 1.21.11+
 - Java 21+
 

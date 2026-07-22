@@ -57,7 +57,7 @@ public final class PlotListMenu implements InventoryHolder {
                 }
                 List<PlotSummary> result = loaded;
                 String resultError = error;
-                Bukkit.getScheduler().runTask(eco, () -> applyLoad(playerId, generation, result, resultError));
+                eco.scheduler().runPlayer(playerId, () -> applyLoad(playerId, generation, result, resultError));
             });
         } catch (RejectedExecutionException rejected) {
             renderError("数据库队列繁忙，请稍后重试");

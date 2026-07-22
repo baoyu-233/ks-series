@@ -1,5 +1,8 @@
 package org.kseco.extra.bank;
 
+import org.bukkit.Bukkit;
+import org.bukkit.OfflinePlayer;
+import org.bukkit.entity.Player;
 import org.kseco.KsEco;
 
 import java.sql.Connection;
@@ -7,6 +10,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -14,6 +18,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 
 /**
  * Enterprise lending is deliberately separate from player loans. Loan proceeds,
@@ -25,6 +32,7 @@ public final class EnterpriseFinanceManager {
             "EXPANSION", "REAL_ESTATE_DEVELOPMENT", "PROJECT_DEPOSIT", "LOGISTICS_NETWORK");
     private static final Set<String> COLLATERAL_TYPES = Set.of("PLOT", "HOUSE", "PROJECT_CONTRACT", "INVENTORY");
     private static final long DEFAULT_GRACE_SECONDS = 3L * 86400L;
+    private static final Duration WALLET_TIMEOUT = Duration.ofSeconds(10);
 
     private final KsEco eco;
 
@@ -245,13 +253,12 @@ public final class EnterpriseFinanceManager {
         return rows("SELECT * FROM ks_bank_collateral_auctions WHERE status='OPEN' ORDER BY closes_at ASC LIMIT 100");
     }
 
-    /** Vault is touched here, so callers must marshal this method onto the Bukkit main thread. */
+    /** Wallet work is marshalled to the bidder entity, or uses the direct database wallet on Folia. */
     public Map<String, Object> placeAuctionBid(String auctionId, UUID bidderUuid, double amount) {
-        if (!org.bukkit.Bukkit.isPrimaryThread() || !validAmount(amount)) return fail("竞价必须在服务器主线程执行且金额有效");
-        var bidder = org.bukkit.Bukkit.getOfflinePlayer(bidderUuid);
+        if (!validAmount(amount)) return fail("竞价金额无效");
         BankAuctionEscrowStore.BidReservation reservation;
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null || !eco.vaultHook().has(bidder, amount)) return fail("余额不足或数据库不可用");
+            if (conn == null || !walletHas(bidderUuid, amount)) return fail("余额不足或数据库不可用");
             String buyerEnterpriseId = resolveAuctionBuyerEnterprise(conn, auctionId, bidderUuid);
             reservation = BankAuctionEscrowStore.prepare(conn, auctionId, bidderUuid,
                     buyerEnterpriseId, amount, now());
@@ -262,7 +269,7 @@ public final class EnterpriseFinanceManager {
 
         final boolean charged;
         try {
-            charged = eco.vaultHook().withdraw(bidder, amount);
+            charged = walletWithdraw(bidderUuid, amount);
         } catch (Throwable uncertain) {
             markAuctionChargeCompensation(reservation, false,
                     "Vault withdrawal outcome unknown: " + message(uncertain));
@@ -681,10 +688,6 @@ public final class EnterpriseFinanceManager {
     }
 
     private void recoverAuctionEscrows() {
-        if (!org.bukkit.Bukkit.isPrimaryThread()) {
-            org.bukkit.Bukkit.getScheduler().runTask(eco, this::recoverAuctionEscrows);
-            return;
-        }
         int unknown = 0;
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn != null) unknown = BankAuctionEscrowStore.recoverUnknownExternalCalls(conn, now());
@@ -698,10 +701,6 @@ public final class EnterpriseFinanceManager {
     }
 
     public void retryAuctionRefunds() {
-        if (!org.bukkit.Bukkit.isPrimaryThread()) {
-            org.bukkit.Bukkit.getScheduler().runTask(eco, this::retryAuctionRefunds);
-            return;
-        }
         List<String> ready = new ArrayList<>();
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
@@ -725,8 +724,7 @@ public final class EnterpriseFinanceManager {
             return;
         }
         try {
-            boolean refunded = eco.vaultHook().deposit(
-                    org.bukkit.Bukkit.getOfflinePlayer(escrow.bidderUuid()), escrow.amount());
+            boolean refunded = walletDeposit(escrow.bidderUuid(), escrow.amount());
             try (Connection conn = eco.ksCore().dataStore().getConnection()) {
                 if (conn == null) return;
                 if (refunded) {
@@ -758,9 +756,44 @@ public final class EnterpriseFinanceManager {
 
     private boolean safeAuctionDeposit(UUID playerUuid, double amount, String context) {
         try {
-            return eco.vaultHook().deposit(org.bukkit.Bukkit.getOfflinePlayer(playerUuid), amount);
+            return walletDeposit(playerUuid, amount);
         } catch (Throwable uncertain) {
             eco.getLogger().severe("[企业融资] 拍卖退款结果未知 " + context + ": " + message(uncertain));
+            return false;
+        }
+    }
+
+    private boolean walletHas(UUID playerUuid, double amount) {
+        return eco.vaultHook().directBuiltinActive()
+                ? eco.vaultHook().hasDirect(playerUuid, amount)
+                : callExternalWallet(playerUuid, player -> eco.vaultHook().has(player, amount));
+    }
+
+    private boolean walletWithdraw(UUID playerUuid, double amount) {
+        return eco.vaultHook().directBuiltinActive()
+                ? eco.vaultHook().withdrawDirect(playerUuid, playerUuid.toString(), amount)
+                : callExternalWallet(playerUuid, player -> eco.vaultHook().withdraw(player, amount));
+    }
+
+    private boolean walletDeposit(UUID playerUuid, double amount) {
+        return eco.vaultHook().directBuiltinActive()
+                ? eco.vaultHook().depositDirect(playerUuid, playerUuid.toString(), amount)
+                : callExternalWallet(playerUuid, player -> eco.vaultHook().deposit(player, amount));
+    }
+
+    private boolean callExternalWallet(UUID playerUuid, Function<OfflinePlayer, Boolean> operation) {
+        try {
+            Player online = eco.scheduler().callGlobal(() -> Bukkit.getPlayer(playerUuid), WALLET_TIMEOUT);
+            if (online != null && online.isOnline()) {
+                return eco.scheduler().callEntity(online, () -> operation.apply(online), WALLET_TIMEOUT);
+            }
+            return eco.scheduler().callGlobal(
+                    () -> operation.apply(Bukkit.getOfflinePlayer(playerUuid)), WALLET_TIMEOUT);
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (ExecutionException | TimeoutException | RuntimeException failure) {
+            eco.getLogger().warning("[企业融资] 钱包调用失败: " + failure.getMessage());
             return false;
         }
     }
