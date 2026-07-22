@@ -6,6 +6,7 @@
 .vscode/
 *.iml
 *.class
+*.jar
 
 # Runtime data and local server state
 test_1_21/
@@ -28,6 +29,17 @@ scratchpad/
 .claude/
 mcsm-panel/
 **/node_modules/
+
+# Local cross-server runtime (only README/roles/changelog are publishable)
+network_1_21/mcsm-instances.json
+network_1_21/migration-backup/
+network_1_21/run/
+network_1_21/*/plugins/
+network_1_21/*/logs/
+network_1_21/*/libraries/
+network_1_21/*/world*/
+network_1_21/*/server.jar
+network_1_21/*/eula.txt
 
 # Credentials and local secrets
 .env

@@ -1,7 +1,9 @@
 package org.kseco.extra.realestatedungeon;
 
+import org.bukkit.Bukkit;
 import org.kseco.KsEco;
 import org.kseco.extra.KsEcoExtraModule;
+import org.kseries.instanceworld.api.InstanceWorldApi;
 
 /**
  * ks-Eco 附属模块：副本与硬核房产系统。
@@ -17,7 +19,7 @@ public final class RealEstateDungeonExtra implements KsEcoExtraModule {
 
     private KsEco eco;
     private DungeonConfigManager configManager;
-    private DungeonGridAllocator gridAllocator;
+    private InstanceWorldApi instanceWorld;
     private DungeonRpgBridge rpgBridge;
     private DungeonInstanceManager instanceManager;
     private DungeonPartyManager partyManager;
@@ -37,9 +39,13 @@ public final class RealEstateDungeonExtra implements KsEcoExtraModule {
     public void onLoad(KsEco eco) {
         this.eco = eco;
         this.configManager = new DungeonConfigManager(eco);
-        this.gridAllocator = new DungeonGridAllocator(eco, configManager);
+        var registration = Bukkit.getServicesManager().getRegistration(InstanceWorldApi.class);
+        if (registration == null) {
+            throw new IllegalStateException("ks-InstanceWorld is required by ks-Eco-RealEstateDungeon");
+        }
+        this.instanceWorld = registration.getProvider();
         this.rpgBridge = new DungeonRpgBridge(eco);
-        this.instanceManager = new DungeonInstanceManager(eco, configManager, gridAllocator, rpgBridge);
+        this.instanceManager = new DungeonInstanceManager(eco, configManager, instanceWorld, rpgBridge);
         this.partyManager = new DungeonPartyManager();
         this.deathHandler = new DungeonDeathHandler(eco, instanceManager, configManager);
         eco.getLogger().info("[副本系统] 模块已加载。");
@@ -49,6 +55,8 @@ public final class RealEstateDungeonExtra implements KsEcoExtraModule {
     public void onEnable() {
         // 1) 配置 + 建表（副本表；ks_re_plots 的 instance_id/property_function 由 ks-Eco-RealEstate 维护）
         configManager.init();
+        instanceWorld.registerSchematicRoot("ks-eco-dungeon",
+                eco.getDataFolder().toPath().resolve("dungeon_schematics"));
         instanceManager.init();
         // 2) 注册死亡事件
         deathHandler.register();
@@ -56,11 +64,11 @@ public final class RealEstateDungeonExtra implements KsEcoExtraModule {
         instanceManager.startMonitor();
         // 3) 注册 Web 路由（仅副本相关；房产端点已迁至 ks-Eco-RealEstate）
         this.webHandler = new DungeonWebHandler(eco, configManager, instanceManager,
-                gridAllocator, deathHandler);
+                instanceWorld, deathHandler);
         eco.bridge().registerRoute("ks-eco-realestatedungeon",
                 "/ks-Eco/api/realestate-dungeon", webHandler);
         // 4) 注册 /dungeon 命令（含组队/邀请/开本/复活子命令）
-        this.dungeonCommand = new DungeonCommand(eco, instanceManager, gridAllocator, partyManager, deathHandler);
+        this.dungeonCommand = new DungeonCommand(eco, instanceManager, instanceWorld, partyManager, deathHandler);
         try {
             var cmd = eco.getCommand("dungeon");
             if (cmd != null) cmd.setExecutor(dungeonCommand);
@@ -77,6 +85,10 @@ public final class RealEstateDungeonExtra implements KsEcoExtraModule {
             instanceManager.stopMonitor();
         } catch (Exception ignored) {}
         try {
+            instanceManager.shutdownInstances();
+            instanceWorld.unregisterSchematicRoot("ks-eco-dungeon");
+        } catch (Exception ignored) {}
+        try {
             eco.bridge().unregisterRoute("ks-eco-realestatedungeon");
         } catch (Exception ignored) {}
         eco.getLogger().info("[副本系统] 模块已停用。");
@@ -85,6 +97,6 @@ public final class RealEstateDungeonExtra implements KsEcoExtraModule {
     // --- getters for EcoWebHandler reflection (if needed) ---
     public DungeonConfigManager configManager() { return configManager; }
     public DungeonInstanceManager instanceManager() { return instanceManager; }
-    public DungeonGridAllocator gridAllocator() { return gridAllocator; }
+    public InstanceWorldApi instanceWorld() { return instanceWorld; }
     public DungeonDeathHandler deathHandler() { return deathHandler; }
 }

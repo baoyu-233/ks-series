@@ -37,11 +37,11 @@ public final class DungeonConfigManager {
         public String gridWorldName = "ks-dungeon-world";
         public int gridSpacing = 5000;
         public int maxGrids = 64;
-        public int cleanTimeoutSeconds = 120;
         public int instanceTimeoutMinutes = 60;
         // map（FAWE 贴 schematic）
         public int mapBaseY = 64;            // 贴图基准高度（clipboard 原点对齐到此 Y）
         public int mapArenaRadius = 256;     // 清场/清画布的水平半径（以网格中心为原点）
+        public int mapPrepareTimeoutSeconds = 120;
         public boolean mapSpawnMobs = true;  // 是否扫描 [mm] 告示牌刷怪
         // 注：房产相关配置（开发费/契税/容积率）已迁至 ks-Eco-RealEstate（RealEstateManager 常量）
     }
@@ -61,10 +61,10 @@ public final class DungeonConfigManager {
         KEY_SPECS.put("grid.world_name", new KeySpec(String.class, ReloadMode.ON_NEXT_INSTANCE));
         KEY_SPECS.put("grid.spacing", new KeySpec(Integer.class, ReloadMode.ON_NEXT_INSTANCE));
         KEY_SPECS.put("grid.max_grids", new KeySpec(Integer.class, ReloadMode.ON_NEXT_INSTANCE));
-        KEY_SPECS.put("grid.clean_timeout_seconds", new KeySpec(Integer.class, ReloadMode.IMMEDIATE));
         KEY_SPECS.put("grid.instance_timeout_minutes", new KeySpec(Integer.class, ReloadMode.IMMEDIATE));
         KEY_SPECS.put("map.base_y", new KeySpec(Integer.class, ReloadMode.ON_NEXT_INSTANCE));
         KEY_SPECS.put("map.arena_radius", new KeySpec(Integer.class, ReloadMode.ON_NEXT_INSTANCE));
+        KEY_SPECS.put("map.prepare_timeout_seconds", new KeySpec(Integer.class, ReloadMode.ON_NEXT_INSTANCE));
         KEY_SPECS.put("map.spawn_mobs", new KeySpec(Boolean.class, ReloadMode.IMMEDIATE));
     }
 
@@ -113,10 +113,10 @@ public final class DungeonConfigManager {
         s.gridWorldName = y.getString("grid.world_name", "ks-dungeon-world");
         s.gridSpacing = y.getInt("grid.spacing", 5000);
         s.maxGrids = y.getInt("grid.max_grids", 64);
-        s.cleanTimeoutSeconds = y.getInt("grid.clean_timeout_seconds", 120);
         s.instanceTimeoutMinutes = y.getInt("grid.instance_timeout_minutes", 60);
         s.mapBaseY = y.getInt("map.base_y", 64);
         s.mapArenaRadius = y.getInt("map.arena_radius", 256);
+        s.mapPrepareTimeoutSeconds = y.getInt("map.prepare_timeout_seconds", 120);
         s.mapSpawnMobs = y.getBoolean("map.spawn_mobs", true);
     }
 
@@ -134,10 +134,10 @@ public final class DungeonConfigManager {
         out.put("grid.world_name", snapshot.gridWorldName);
         out.put("grid.spacing", snapshot.gridSpacing);
         out.put("grid.max_grids", snapshot.maxGrids);
-        out.put("grid.clean_timeout_seconds", snapshot.cleanTimeoutSeconds);
         out.put("grid.instance_timeout_minutes", snapshot.instanceTimeoutMinutes);
         out.put("map.base_y", snapshot.mapBaseY);
         out.put("map.arena_radius", snapshot.mapArenaRadius);
+        out.put("map.prepare_timeout_seconds", snapshot.mapPrepareTimeoutSeconds);
         out.put("map.spawn_mobs", snapshot.mapSpawnMobs);
         return out;
     }
@@ -192,10 +192,10 @@ public final class DungeonConfigManager {
         c.gridWorldName = src.gridWorldName;
         c.gridSpacing = src.gridSpacing;
         c.maxGrids = src.maxGrids;
-        c.cleanTimeoutSeconds = src.cleanTimeoutSeconds;
         c.instanceTimeoutMinutes = src.instanceTimeoutMinutes;
         c.mapBaseY = src.mapBaseY;
         c.mapArenaRadius = src.mapArenaRadius;
+        c.mapPrepareTimeoutSeconds = src.mapPrepareTimeoutSeconds;
         c.mapSpawnMobs = src.mapSpawnMobs;
         return c;
     }

@@ -8,6 +8,7 @@ import org.bukkit.Material;
 import org.bukkit.Sound;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
@@ -152,7 +153,7 @@ public final class LimitedSaleAdminGui implements InventoryHolder {
                 : navButton(Material.HOPPER, "§b从手持物品替换",
                 "§7和上方替换按钮一样，会保存完整 NBT"));
         inventory.setItem(25, navButton(Material.BARRIER, "§c删除此商品",
-                "§7Shift+右键删除",
+                "§7中键删除",
                 "§8购买日志会保留，库存记录会删除"));
         if (!sale.blindBoxSale()) {
             inventory.setItem(26, navButton(sale.boxEnabled() ? Material.LIME_SHULKER_BOX : Material.GRAY_SHULKER_BOX,
@@ -181,7 +182,7 @@ public final class LimitedSaleAdminGui implements InventoryHolder {
         lore.add(Component.empty());
         lore.add(Component.text("§a左键编辑", NamedTextColor.GREEN));
         lore.add(Component.text("§e右键启用/停用", NamedTextColor.YELLOW));
-        lore.add(Component.text("§cShift+右键删除", NamedTextColor.RED));
+        lore.add(Component.text("§c中键删除", NamedTextColor.RED));
         meta.lore(lore);
         icon.setItemMeta(meta);
         return icon;
@@ -371,7 +372,7 @@ public final class LimitedSaleAdminGui implements InventoryHolder {
                     int index = gui.page * PAGE_SIZE + slot;
                     if (index < gui.sales.size()) {
                         LimitedSaleManager.SaleItem sale = gui.sales.get(index);
-                        if (event.isShiftClick() && event.isRightClick()) {
+                        if (event.getClick() == ClickType.MIDDLE) {
                             plugin.limitedSaleManager().deleteSale(sale.id());
                             player.sendMessage(ChatColor.GREEN + "已删除直售商品: " + sale.name());
                             gui.loadData();
@@ -474,7 +475,7 @@ public final class LimitedSaleAdminGui implements InventoryHolder {
                     gui.reloadEdit(player);
                 }
                 case 25 -> {
-                    if (event.isShiftClick() && event.isRightClick()) {
+                    if (event.getClick() == ClickType.MIDDLE) {
                         plugin.limitedSaleManager().deleteSale(sale.id());
                         player.sendMessage(ChatColor.GREEN + "已删除直售商品: " + sale.name());
                         gui.view = 0;
@@ -545,9 +546,9 @@ public final class LimitedSaleAdminGui implements InventoryHolder {
                 }
                 plugin.limitedSaleManager().replaceItem(gui.selectedSaleId, dropped);
                 player.sendMessage(ChatColor.GREEN + "已用丢入物品替换直售商品");
-                Bukkit.getScheduler().runTask(plugin, () -> gui.reloadEdit(player));
+                plugin.scheduler().runEntity(player, () -> gui.reloadEdit(player), () -> { });
             } else {
-                Bukkit.getScheduler().runTask(plugin, () -> gui.createFromItem(player, dropped));
+                plugin.scheduler().runEntity(player, () -> gui.createFromItem(player, dropped), () -> { });
             }
         }
     }
@@ -572,7 +573,7 @@ public final class LimitedSaleAdminGui implements InventoryHolder {
             if (!pendingInput.containsKey(playerId)) return;
             event.setCancelled(true);
             String msg = event.getMessage().trim();
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 PendingInput pending = pendingInput.remove(playerId);
                 Player player = Bukkit.getPlayer(playerId);
                 if (pending == null || player == null) return;

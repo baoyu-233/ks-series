@@ -28,19 +28,28 @@ public final class IaFileManager {
         this.plugin = plugin;
     }
 
-    private Path packRoot(String packName) {
-        return Path.of("plugins/ItemsAdder/contents/" + packName);
+    private Path packRoot(String packName) throws IOException {
+        String safePackName = requireSafeSegment(packName, "packName");
+        Path contentsRoot = Path.of("plugins/ItemsAdder/contents").toAbsolutePath().normalize();
+        Path root = contentsRoot.resolve(safePackName).normalize();
+        if (!root.startsWith(contentsRoot)) throw new IOException("pack path escapes ItemsAdder contents");
+        return root;
     }
 
     public void writeImage(String packName, String namespace, String name, byte[] pngBytes) throws IOException {
-        Path dir = packRoot(packName).resolve("resourcepack/assets/" + namespace + "/textures/font/titles");
+        String safeNamespace = requireSafeSegment(namespace, "namespace");
+        String safeName = requireSafeSegment(name, "image name");
+        Path dir = packRoot(packName).resolve("resourcepack/assets")
+                .resolve(safeNamespace).resolve("textures/font/titles").normalize();
         Files.createDirectories(dir);
-        Files.write(dir.resolve(name + ".png"), pngBytes);
+        Files.write(dir.resolve(safeName + ".png"), pngBytes);
     }
 
     /** 追加缺失的 font_images 条目；本文件完全由本插件管理，可以放心整体读改写。 */
     public void ensureConfigEntries(String packName, String namespace, List<String> imageNames,
                                      int yPosition, int scaleRatio) throws IOException {
+        namespace = requireSafeSegment(namespace, "namespace");
+        for (String imageName : imageNames) requireSafeSegment(imageName, "image name");
         Path configPath = packRoot(packName).resolve("configs/font_images.yml");
         List<String> lines;
         if (Files.exists(configPath)) {
@@ -112,5 +121,12 @@ public final class IaFileManager {
             }
         }
         return changed;
+    }
+
+    private static String requireSafeSegment(String value, String label) throws IOException {
+        if (value == null || !value.matches("[a-zA-Z0-9_-]{1,64}")) {
+            throw new IOException(label + " must match [a-zA-Z0-9_-]{1,64}");
+        }
+        return value;
     }
 }

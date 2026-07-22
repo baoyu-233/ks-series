@@ -27,6 +27,7 @@ public final class MenuListener implements Listener {
 
         if (holder instanceof Menu menu) {
             event.setCancelled(true); // 锁定，避免移动正在编辑的物品
+            if (!(event.getWhoClicked() instanceof Player player) || !menu.isOwnedBy(player)) return;
             // 用 rawSlot 判断是否点击了顶部菜单（Shift+点击时 getClickedInventory 可能指向玩家背包）
             int topSize = event.getInventory().getSize();
             if (event.getRawSlot() >= 0 && event.getRawSlot() < topSize) {
@@ -50,7 +51,7 @@ public final class MenuListener implements Listener {
         InventoryHolder holder = event.getInventory().getHolder();
         if (!(event.getPlayer() instanceof Player player)) return;
 
-        if (!(holder instanceof Menu)) return;
+        if (!(holder instanceof Menu menu) || !menu.isOwnedBy(player)) return;
 
         // ★ 如果会话正在等待聊天输入，不清理（聊天回调会重新打开菜单）
         EditSession session = plugin.session(player);
@@ -58,10 +59,10 @@ public final class MenuListener implements Listener {
 
         // 下一 tick 判断：若切换到了另一个菜单，则保留会话；否则结束
         Bukkit.getScheduler().runTask(plugin, () -> {
-            if (plugin.session(player) == null) return;
+            if (plugin.session(player) != session) return;
             InventoryHolder top = player.getOpenInventory().getTopInventory().getHolder();
             if (top instanceof Menu) return;
-            plugin.sessions().remove(player.getUniqueId());
+            plugin.sessions().remove(player.getUniqueId(), session);
         });
     }
 }

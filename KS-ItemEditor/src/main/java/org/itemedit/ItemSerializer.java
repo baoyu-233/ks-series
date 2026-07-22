@@ -176,6 +176,49 @@ public final class ItemSerializer {
             }
         }
     }
+    /**
+     * Apply template display/enchant data onto an existing item body.
+     * Preserves amount, durability, container contents and third-party item identity.
+     */
+    public static ItemStack applyTemplatePreservingBody(ItemStack current, ItemData data) {
+        if (current == null || current.getType().isAir() || data == null) return null;
+        ItemStack result = current.clone();
+        if (data.name == null || data.name.isBlank()) ItemEdits.clearName(result);
+        else ItemEdits.setName(result, data.name);
+
+        java.util.List<net.kyori.adventure.text.Component> lore = new java.util.ArrayList<>();
+        if (data.lore != null) {
+            for (String line : data.lore) {
+                if (line != null && !line.isEmpty()) lore.add(TextUtil.parse(line));
+            }
+        }
+        ItemEdits.setLore(result, lore);
+
+        ItemEdits.clearEnchants(result);
+        if (data.enchantments != null) {
+            for (Map.Entry<String, Integer> entry : data.enchantments.entrySet()) {
+                String keyStr = entry.getKey();
+                if (keyStr == null || !keyStr.matches("^[a-z0-9_\\-./]+:[a-z0-9_\\-./]+$")) continue;
+                try {
+                    Enchantment enchantment = Registry.ENCHANTMENT.get(
+                            net.kyori.adventure.key.Key.key(keyStr));
+                    if (enchantment != null && entry.getValue() > 0) {
+                        ItemEdits.setEnchant(result, enchantment, entry.getValue());
+                    }
+                } catch (Exception ignored) {
+                    // Ignore malformed template keys without replacing the held item body.
+                }
+            }
+        }
+        ItemEdits.setUnbreakable(result, data.unbreakable);
+        ItemEdits.setGlowing(result, data.glowing);
+        if (data.attributeModifiers != null && !data.attributeModifiers.isEmpty()) {
+            ItemEdits.setAttributeModifiers(result, data.attributeModifiers);
+        }
+        applyExtendedData(result, data);
+        return result;
+    }
+
 
     // ---- 工具方法 ----
 

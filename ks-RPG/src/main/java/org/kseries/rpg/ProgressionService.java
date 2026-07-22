@@ -10,6 +10,7 @@ import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
@@ -23,8 +24,8 @@ final class ProgressionService implements RpgProgressionApi {
         this.plugin = plugin;
     }
 
-    void reload() {
-        catalog = ProgressionCatalog.load(plugin.getConfig());
+    void replaceCatalog(ProgressionCatalog catalog) {
+        this.catalog = Objects.requireNonNull(catalog, "catalog");
     }
 
     @Override

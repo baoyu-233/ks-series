@@ -9,6 +9,7 @@ import org.bukkit.Sound;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.inventory.Inventory;
@@ -17,6 +18,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.jetbrains.annotations.NotNull;
 import org.kseco.KsEco;
+import org.kseco.database.PortableSqlMutation;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -559,7 +561,7 @@ public final class EnterpriseGui implements InventoryHolder {
         lore.add(Component.empty());
         lore.add(Component.text("§a§l左键在普通员工与经理间切换", NamedTextColor.YELLOW));
         lore.add(Component.text("§e§lShift+左键 权限/工资设置 §7| §b§l右键 发放本期工资", NamedTextColor.YELLOW));
-        lore.add(Component.text("§c§lShift+右键 移除成员", NamedTextColor.RED));
+        lore.add(Component.text("§c§l中键 移除成员", NamedTextColor.RED));
         meta.lore(lore);
         stack.setItemMeta(meta);
         return stack;
@@ -784,12 +786,23 @@ public final class EnterpriseGui implements InventoryHolder {
                 if (!check.executeQuery().next()) { player.sendMessage("§c目标不是该企业成员。"); return; }
             }
             if (grant) {
-                try (var ps = conn.prepareStatement(
-                        "INSERT OR REPLACE INTO ks_ent_permissions (enterprise_id,player_uuid,permission,granted_by,granted_at) VALUES (?,?,?,?,?)")) {
-                    ps.setString(1, entId); ps.setString(2, memberUuid); ps.setString(3, permission);
-                    ps.setString(4, player.getUniqueId().toString()); ps.setLong(5, System.currentTimeMillis() / 1000);
-                    ps.executeUpdate();
-                }
+                long now = System.currentTimeMillis() / 1000;
+                PortableSqlMutation.upsert(conn,
+                        "UPDATE ks_ent_permissions SET granted_by=?,granted_at=? "
+                                + "WHERE enterprise_id=? AND player_uuid=? AND permission=?", update -> {
+                            update.setString(1, player.getUniqueId().toString());
+                            update.setLong(2, now);
+                            update.setString(3, entId);
+                            update.setString(4, memberUuid);
+                            update.setString(5, permission);
+                        }, "INSERT INTO ks_ent_permissions "
+                                + "(enterprise_id,player_uuid,permission,granted_by,granted_at) VALUES (?,?,?,?,?)", insert -> {
+                            insert.setString(1, entId);
+                            insert.setString(2, memberUuid);
+                            insert.setString(3, permission);
+                            insert.setString(4, player.getUniqueId().toString());
+                            insert.setLong(5, now);
+                        });
                 player.sendMessage("§a已授予 " + ENT_PERM_CN.getOrDefault(permission, permission) + "。");
             } else {
                 try (var ps = conn.prepareStatement("DELETE FROM ks_ent_permissions WHERE enterprise_id=? AND player_uuid=? AND permission=?")) {
@@ -1057,7 +1070,7 @@ public final class EnterpriseGui implements InventoryHolder {
                         if ("member".equals(item.get("type"))) {
                             String memberUuid = String.valueOf(item.get("player_uuid"));
                             String memberName = String.valueOf(item.getOrDefault("player_name", memberUuid));
-                            if (event.isShiftClick() && event.isRightClick()) {
+                            if (event.getClick() == ClickType.MIDDLE) {
                                 gui.doRemoveMember(player, gui.selectedEntId, memberUuid);
                             } else if (event.isShiftClick()) {
                                 gui.view = 4; gui.page = 0;
@@ -1208,7 +1221,7 @@ public final class EnterpriseGui implements InventoryHolder {
 
             event.setCancelled(true);
             String msg = event.getMessage().trim();
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 Player player = Bukkit.getPlayer(playerId);
                 if (player == null) return;
                 if (msg.equalsIgnoreCase("cancel")) {
@@ -1231,13 +1244,16 @@ public final class EnterpriseGui implements InventoryHolder {
                         return;
                     }
                     try (var conn = plugin.ksCore().dataStore().getConnection();
-                         var st = conn.createStatement()) {
+                         var insert = conn.prepareStatement(
+                                 "INSERT INTO ks_ent_invites "
+                                         + "(id,enterprise_id,inviter_uuid,invitee_uuid,created_at) VALUES (?,?,?,?,?)")) {
                         String inviteId = UUID.randomUUID().toString().substring(0, 8);
-                        st.executeUpdate("INSERT INTO ks_ent_invites (id, enterprise_id, inviter_uuid, invitee_uuid, created_at) VALUES ('"
-                                + inviteId + "','" + inv.entId.replace("'", "''") + "','"
-                                + player.getUniqueId().toString().replace("'", "''") + "','"
-                                + target.getUniqueId().toString().replace("'", "''") + "',"
-                                + (System.currentTimeMillis() / 1000) + ")");
+                        insert.setString(1, inviteId);
+                        insert.setString(2, inv.entId);
+                        insert.setString(3, player.getUniqueId().toString());
+                        insert.setString(4, target.getUniqueId().toString());
+                        insert.setLong(5, System.currentTimeMillis() / 1000);
+                        insert.executeUpdate();
                         player.sendMessage("§a已向 " + target.getName() + " 发送合资邀请！");
                     } catch (Exception e) {
                         player.sendMessage("§c邀请失败: " + e.getMessage());

@@ -61,7 +61,7 @@ public final class OfficialWarehouseGui implements InventoryHolder {
             plugin.asyncWorkPool().executeDatabase(() -> {
                 OfficialWarehouseManager.WarehousePage loaded =
                         plugin.officialWarehouseManager().loadPage(offset, PAGE_SIZE);
-                Bukkit.getScheduler().runTask(plugin, () -> finishLoad(loadId, playerUuid, loaded));
+                plugin.scheduler().runPlayer(playerUuid, () -> finishLoad(loadId, playerUuid, loaded));
             });
         } catch (RejectedExecutionException rejected) {
             PENDING_LOADS.remove(loadId);
@@ -161,7 +161,7 @@ public final class OfficialWarehouseGui implements InventoryHolder {
             plugin.asyncWorkPool().executeDatabase(() -> {
                 OfficialWarehouseManager.WarehouseSnapshot claimed =
                         plugin.officialWarehouseManager().claim(warehouseId);
-                Bukkit.getScheduler().runTask(plugin, () -> finishClaim(claimId, claimed));
+                plugin.scheduler().runPlayer(player.getUniqueId(), () -> finishClaim(claimId, claimed));
             });
         } catch (RejectedExecutionException rejected) {
             PENDING_CLAIMS.remove(claimId);
@@ -206,7 +206,7 @@ public final class OfficialWarehouseGui implements InventoryHolder {
                 if (!restored) {
                     plugin.getLogger().severe("Official warehouse claim restoration requires review: " + snapshot.id());
                 }
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                plugin.scheduler().runPlayer(playerUuid, () -> {
                     Player player = Bukkit.getPlayer(playerUuid);
                     if (player != null && player.isOnline()) {
                         player.sendMessage(restored ? "§e物品已恢复到官方仓库。" : "§c仓库恢复失败，请联系管理员检查日志。");

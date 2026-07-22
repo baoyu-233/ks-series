@@ -320,9 +320,8 @@ public final class MarketValueService {
     }
 
     private void requirePrimaryThread(String operation) {
-        if (!Bukkit.isPrimaryThread()) {
-            throw new IllegalStateException("MarketValueService must " + operation + " on the server thread");
-        }
+        // Folia has no universal primary thread. The owning global/entity entry
+        // point is responsible for live Bukkit state before this snapshot step.
     }
 
     public final class MarketFloorSession {

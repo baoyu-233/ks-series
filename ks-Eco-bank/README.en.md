@@ -15,8 +15,14 @@ tracking.
 - One automatically created central bank with a 3.5% base rate and 10% reserve ratio.
 - Player-created commercial banks with owner/capital requirements.
 - Demand and term deposits, 8% loan rate, repayment, and liquidity tracking.
+- Configurable loan amount/term/concurrency bounds, fixed approval quotes, overdue blocking, and compensating rollback
+  when a payout cannot be delivered.
+- Vault work is marshalled to the server thread and database transactions do not span server-thread callbacks.
 - Web panel at `/ks-Eco/bank`.
 
 Tables: `ks_bank_banks`, `ks_bank_accounts`, `ks_bank_loans`, `ks_bank_cb_rates`, and `ks_bank_money_supply`.
+
+Java 21 test/package passed on 2026-07-18; the module currently has no automated test source. No JAR was deployed and
+loan/compensation paths still require in-game acceptance testing.
 
 Build with `cd ks-Eco-bank && mvn clean package`, then place the JAR in `plugins/ks-Eco/extra/`.

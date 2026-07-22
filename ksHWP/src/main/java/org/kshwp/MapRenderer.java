@@ -35,6 +35,8 @@ public final class MapRenderer {
     private final Map<String, CachedTile> tileCache = new ConcurrentHashMap<>();
     /** 缓存访问时间追踪，用于 LRU 淘汰 */
     private final Map<String, Long> cacheAccessTime = new ConcurrentHashMap<>();
+    /** 正在生成的图块；同一图块并发请求共享一个 Future，避免重复压缩和磁盘写入。 */
+    private final Map<String, CompletableFuture<String>> renderInFlight = new ConcurrentHashMap<>();
     /** 异步渲染线程池（避免阻塞 HTTP 线程） */
     private final ExecutorService renderExecutor = Executors.newFixedThreadPool(4, r -> {
         Thread t = new Thread(r, "ksHWP-Renderer");
@@ -263,61 +265,162 @@ public final class MapRenderer {
      */
     public CompletableFuture<String> renderTileAsync(String worldName, int cx, int cz, int zoom) {
         int snappedZoom = snapZoom(zoom);
-        if (snappedZoom == 1) {
-            return renderBaseTileAsync(worldName, cx, cz);
-        }
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                // Bukkit world and chunk APIs are main-thread-only. The worker controls queueing,
-                // while the actual world sample is scheduled safely on the server thread.
-                return Bukkit.getScheduler().callSyncMethod(plugin,
-                        () -> renderTile(worldName, cx, cz, zoom)).get();
-            } catch (Exception e) {
-                plugin.logError("renderTileAsync", "Tile render scheduling failed",
-                        "world=" + worldName + " cx=" + cx + " cz=" + cz + " err=" + e);
-                return null;
-            }
-        }, renderExecutor);
+        String key = worldName + ":" + snappedZoom + ":" + cx + ":" + cz;
+        cacheAccessTime.put(key, System.currentTimeMillis());
+
+        CachedTile memory = tileCache.get(key);
+        if (memory != null) return CompletableFuture.completedFuture(memory.base64Png);
+
+        return renderInFlight.computeIfAbsent(key, ignored ->
+                buildTileFuture(worldName, cx, cz, snappedZoom)
+                        .exceptionally(error -> {
+                            plugin.logError("renderTileAsync", "Tile render failed",
+                                    "world=" + worldName + " zoom=" + snappedZoom
+                                            + " cx=" + cx + " cz=" + cz + " err=" + error);
+                            return null;
+                        })
+                        .whenComplete((result, error) -> renderInFlight.remove(key)));
     }
 
-    private CompletableFuture<String> renderBaseTileAsync(String worldName, int cx, int cz) {
+    /**
+     * 在工作线程读取/合成/压缩图块。缺少缓存时分批回到主线程抓取 ChunkSnapshot；
+     * 任何 ImageIO、图像合成与磁盘 I/O 都不会进入 Paper 主线程。
+     *
+     * <p>高层图块直接从 zoom=1 磁盘图块或 ChunkSnapshot 合成，避免旧递归路径为一张
+     * zoom=8 图块生成、压缩、解码 85 张中间 PNG。</p>
+     */
+    private CompletableFuture<String> buildTileFuture(String worldName, int cx, int cz, int zoom) {
+        String key = worldName + ":" + zoom + ":" + cx + ":" + cz;
         return CompletableFuture.supplyAsync(() -> {
-            String cacheKey = worldName + ":1:" + cx + ":" + cz;
-            cacheAccessTime.put(cacheKey, System.currentTimeMillis());
-
-            CachedTile cached = tileCache.get(cacheKey);
+            CachedTile cached = tileCache.get(key);
             if (cached != null) return cached.base64Png;
-
-            String diskTile = tileStore.load(worldName, 1, cx, cz);
-            if (diskTile != null) {
-                tileCache.put(cacheKey, new CachedTile(diskTile, System.currentTimeMillis(), true));
-                return diskTile;
+            String disk = tileStore.load(worldName, zoom, cx, cz);
+            if (disk != null) {
+                tileCache.put(key, new CachedTile(disk, System.currentTimeMillis(), true));
             }
+            return disk;
+        }, renderExecutor).thenCompose(cached -> {
+            if (cached != null) return CompletableFuture.completedFuture(cached);
+            return renderSnapshotGridAsync(worldName, cx, cz, zoom);
+        });
+    }
 
-            SnapshotTile snapshot;
-            try {
-                snapshot = Bukkit.getScheduler().callSyncMethod(plugin, () -> captureSnapshotTile(worldName, cx, cz)).get();
-            } catch (Exception e) {
-                plugin.logError("renderBaseTileAsync", "Chunk snapshot failed",
-                        "world=" + worldName + " cx=" + cx + " cz=" + cz + " err=" + e);
-                return null;
+    private CompletableFuture<String> renderSnapshotGridAsync(String worldName, int tileX, int tileZ, int zoom) {
+        int baseCx = tileX * zoom;
+        int baseCz = tileZ * zoom;
+        CompletableFuture<String[]> baseTilesFuture = zoom == 1
+                ? CompletableFuture.completedFuture(new String[1])
+                : CompletableFuture.supplyAsync(
+                        () -> loadBaseTileSources(worldName, baseCx, baseCz, zoom), renderExecutor);
+
+        return baseTilesFuture
+                .thenCompose(baseTiles -> captureSnapshotGridAsync(
+                        worldName, baseCx, baseCz, zoom, baseTiles)
+                        .thenApply(snapshots -> new CompositeSources(baseTiles, snapshots)))
+                .thenApplyAsync(sources -> {
+                    BufferedImage composite = new BufferedImage(256, 256, BufferedImage.TYPE_INT_RGB);
+                    Graphics2D graphics = composite.createGraphics();
+                    graphics.drawImage(TileStore.getUnexploredPlainImage(), 0, 0, 256, 256, null);
+
+                    boolean anyReal = false;
+                    int chunkPixels = 256 / zoom;
+                    int blockPixels = 16 / zoom;
+                    for (int index = 0; index < zoom * zoom; index++) {
+                        int dx = index % zoom;
+                        int dz = index / zoom;
+                        int pixelX = dx * chunkPixels;
+                        int pixelZ = dz * chunkPixels;
+                        String baseTile = sources.baseTiles()[index];
+                        SnapshotTile snapshot = sources.snapshots()[index];
+                        if (baseTile != null) {
+                            BufferedImage image = decodeImage(baseTile);
+                            if (image != null) {
+                                graphics.drawImage(image, pixelX, pixelZ, chunkPixels, chunkPixels, null);
+                                anyReal = true;
+                                continue;
+                            }
+                        }
+                        if (snapshot != null) {
+                            renderSnapshotInto(graphics, snapshot, pixelX, pixelZ, blockPixels);
+                            anyReal = true;
+                        }
+                    }
+                    graphics.dispose();
+
+                    String base64 = encodeImage(composite);
+                    if (base64 == null) return null;
+                    String key = worldName + ":" + zoom + ":" + tileX + ":" + tileZ;
+                    tileCache.put(key, new CachedTile(base64, System.currentTimeMillis(), anyReal));
+                    if (anyReal) {
+                        tileStore.save(worldName, zoom, tileX, tileZ, base64);
+                        evictCacheIfNeeded();
+                    }
+                    return base64;
+                }, renderExecutor);
+    }
+
+    private String[] loadBaseTileSources(String worldName, int baseCx, int baseCz, int zoom) {
+        String[] sources = new String[zoom * zoom];
+        for (int dz = 0; dz < zoom; dz++) {
+            for (int dx = 0; dx < zoom; dx++) {
+                int cx = baseCx + dx;
+                int cz = baseCz + dz;
+                int index = dz * zoom + dx;
+                String key = worldName + ":1:" + cx + ":" + cz;
+                CachedTile cached = tileCache.get(key);
+                String base64 = cached != null && cached.hasRealData
+                        ? cached.base64Png
+                        : tileStore.load(worldName, 1, cx, cz);
+                if (base64 != null) {
+                    sources[index] = base64;
+                    tileCache.putIfAbsent(key, new CachedTile(base64, System.currentTimeMillis(), true));
+                    cacheAccessTime.put(key, System.currentTimeMillis());
+                }
             }
+        }
+        return sources;
+    }
 
-            if (snapshot == null) {
-                String unexplored = TileStore.getUnexploredTileB64();
-                tileCache.put(cacheKey, new CachedTile(unexplored, System.currentTimeMillis(), false));
-                return unexplored;
+    /**
+     * 每 tick 最多抓取 8 个基础区块，避免一次 zoom=8 请求把 64 份快照工作挤进同一 tick。
+     * 已有 zoom=1 磁盘图块的位置不再访问 Bukkit 世界。
+     */
+    private CompletableFuture<SnapshotTile[]> captureSnapshotGridAsync(
+            String worldName, int baseCx, int baseCz, int zoom, String[] baseTiles) {
+        SnapshotTile[] snapshots = new SnapshotTile[zoom * zoom];
+        CompletableFuture<SnapshotTile[]> result = new CompletableFuture<>();
+        AtomicInteger next = new AtomicInteger();
+
+        class SnapshotCaptureTask implements Runnable {
+            @Override
+            public void run() {
+                try {
+                    int captured = 0;
+                    while (next.get() < snapshots.length && captured < 8) {
+                        int index = next.getAndIncrement();
+                        if (baseTiles[index] != null) continue;
+                        int dx = index % zoom;
+                        int dz = index / zoom;
+                        snapshots[index] = captureSnapshotTile(worldName, baseCx + dx, baseCz + dz);
+                        captured++;
+                    }
+                    if (next.get() >= snapshots.length) {
+                        result.complete(snapshots);
+                    } else {
+                        Bukkit.getScheduler().runTask(plugin, this);
+                    }
+                } catch (Throwable error) {
+                    result.completeExceptionally(error);
+                }
             }
+        }
 
-            TileImageResult result = renderSnapshotTile(snapshot);
-            String base64 = encodeImage(result.image());
-            if (base64 == null) return null;
-
-            tileCache.put(cacheKey, new CachedTile(base64, System.currentTimeMillis(), true));
-            tileStore.save(worldName, 1, cx, cz, base64);
-            evictCacheIfNeeded();
-            return base64;
-        }, renderExecutor);
+        try {
+            Bukkit.getScheduler().runTask(plugin, new SnapshotCaptureTask());
+        } catch (Throwable error) {
+            result.completeExceptionally(error);
+        }
+        return result;
     }
 
     /** Captures Bukkit data on the server thread. The image is built by a worker from these snapshots. */
@@ -337,6 +440,15 @@ public final class MapRenderer {
         ChunkSnapshot north = snapshotTile.northChunk();
         BufferedImage image = new BufferedImage(256, 256, BufferedImage.TYPE_INT_RGB);
         Graphics2D graphics = image.createGraphics();
+        renderSnapshotInto(graphics, snapshotTile, 0, 0, 16);
+        graphics.dispose();
+        return new TileImageResult(image, true);
+    }
+
+    private void renderSnapshotInto(
+            Graphics2D graphics, SnapshotTile snapshotTile, int pixelX, int pixelZ, int blockPixels) {
+        ChunkSnapshot chunk = snapshotTile.chunk();
+        ChunkSnapshot north = snapshotTile.northChunk();
         Color[][] colors = new Color[16][16];
         boolean[][] water = new boolean[16][16];
         int[][] heights = new int[17][16];
@@ -367,11 +479,13 @@ public final class MapRenderer {
                         Math.min(255, (int) (base.getRed() * factor)),
                         Math.min(255, (int) (base.getGreen() * factor)),
                         Math.min(255, (int) (base.getBlue() * factor))));
-                graphics.fillRect(x * 16, z * 16, 16, 16);
+                graphics.fillRect(
+                        pixelX + x * blockPixels,
+                        pixelZ + z * blockPixels,
+                        blockPixels,
+                        blockPixels);
             }
         }
-        graphics.dispose();
-        return new TileImageResult(image, true);
     }
 
     private int[] getSnapshotTopBlockInfo(ChunkSnapshot chunk, int minY, int x, int z) {
@@ -406,29 +520,23 @@ public final class MapRenderer {
     public void refreshChunkAsync(String worldName, int cx, int cz) {
         renderExecutor.submit(() -> {
             try {
-                Bukkit.getScheduler().callSyncMethod(plugin, () -> {
-                World world = Bukkit.getWorld(worldName);
-                if (world == null || !world.isChunkLoaded(cx, cz)) return null;
+                SnapshotTile snapshot = Bukkit.getScheduler().callSyncMethod(
+                        plugin, () -> captureSnapshotTile(worldName, cx, cz)).get();
+                if (snapshot == null) return;
 
-                // zoom=1：直接重渲，渲染出真实数据才覆盖缓存（不先删旧图，
-                // 防止区块恰好卸载时把已探索图块删成"未探索"）。
-                TileImageResult r1 = resolveTileImage(world, worldName, cx, cz, 1);
-                if (!r1.hasRealData()) return null;
+                // ChunkSnapshot 已脱离 Bukkit live object；图像构建、PNG 压缩和磁盘写入均在 worker。
+                TileImageResult r1 = renderSnapshotTile(snapshot);
                 String b64 = encodeImage(r1.image());
-                if (b64 == null) return null;
+                if (b64 == null) return;
                 String key1 = worldName + ":1:" + cx + ":" + cz;
                 tileCache.put(key1, new CachedTile(b64, System.currentTimeMillis(), true));
                 tileStore.save(worldName, 1, cx, cz, b64);
 
-                // zoom=2：清掉旧合成结果后立即重新合成（zoom=1 新图已在缓存）。
+                // 低层更新后失效所有父图块；zoom=2 在 worker 链中异步重合成。
                 invalidateTile(worldName, 2, cx >> 1, cz >> 1);
-                renderTile(worldName, cx >> 1, cz >> 1, 2);
-
-                // zoom=4/8：只失效，下次被请求时用新的 zoom=2 惰性重合成。
                 invalidateTile(worldName, 4, cx >> 2, cz >> 2);
                 invalidateTile(worldName, 8, cx >> 3, cz >> 3);
-                return null;
-                }).get();
+                renderTileAsync(worldName, cx >> 1, cz >> 1, 2);
             } catch (Exception e) {
                 plugin.logError("refreshChunk", "探索刷新失败", "world=" + worldName + " cx=" + cx + " cz=" + cz + " err=" + e);
             }
@@ -1006,6 +1114,8 @@ public final class MapRenderer {
     private record CachedTile(String base64Png, long timestamp, boolean hasRealData) {}
 
     private record SnapshotTile(ChunkSnapshot chunk, ChunkSnapshot northChunk, int minY) {}
+
+    private record CompositeSources(String[] baseTiles, SnapshotTile[] snapshots) {}
 
     private record PreRenderTask(String worldName, int cx, int cz, int zoom) {}
 }

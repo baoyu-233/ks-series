@@ -1,15 +1,16 @@
-# ks-core v1.0.0
+# ks-core v1.1.0
 
 > [中文](README.md) | English
 
-**KS-Series core infrastructure**: shared Web gateway, token authentication, route dispatch, and SQLite storage.
+**KS-Series core infrastructure**: shared Web gateway, token authentication, route dispatch, and pooled JDBC storage.
 
 ## Features
 
 - Embedded HTTP gateway using `com.sun.net.httpserver`, normally on port 8123.
 - URL-prefix routing to registered child plugins.
 - Session creation, validation, renewal, and 600-second timeout.
-- Shared SQLite connection pool for child plugins.
+- HikariCP storage for SQLite, MySQL, MariaDB, and PostgreSQL while preserving `KsDataStore.getConnection()`.
+- Remote database initialization fails fast unless `fallback-to-sqlite` is enabled; a fallback node is local-only.
 - CORS support.
 
 | Plugin | Route | Purpose |
@@ -36,7 +37,18 @@ web-gateway:
   token-timeout-seconds: 600
 database:
   type: sqlite
-  sqlite.file: "data.db"
+  jdbc-url: ""
+  username: ""
+  password: ""
+  fallback-to-sqlite: false
+  sqlite:
+    file: "data.db"
+  pool:
+    maximum-pool-size: 5
 ```
 
-Requires Paper 1.21.11+ and Java 21+. Build with `cd ks-core && mvn clean package`.
+Supported types are `sqlite`, `mysql`, `mariadb`, `postgresql`, and `auto`; PostgreSQL requires an explicit JDBC URL.
+The core schema is portable, but most ks-Eco business SQL has not yet been certified against live remote databases.
+
+Requires Paper 1.21.11+ and Java 21+. On 2026-07-18, four JUnit tests and package/install passed; Shade still reports
+module-descriptor and overlapping-resource warnings.

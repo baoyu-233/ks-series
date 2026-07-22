@@ -6,6 +6,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.kseco.KsEco;
+import org.kseco.database.PortableSqlMutation;
 
 import java.sql.*;
 import java.util.*;
@@ -25,6 +26,7 @@ public final class ProposalManager {
     private final Map<String, Long> lastProgressAnnouncementAt = new java.util.concurrent.ConcurrentHashMap<>();
     private final Set<String> deadlineWarnings = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private int announcementTaskId = -1;
+    private volatile boolean enactmentReady;
 
     // 合法状态转换
     private static final Map<String, List<String>> ALLOWED_TRANSITIONS = new LinkedHashMap<>();
@@ -48,15 +50,64 @@ public final class ProposalManager {
 
     public synchronized void init() {
         if (announcementTaskId >= 0) Bukkit.getScheduler().cancelTask(announcementTaskId);
+        enactmentReady = initializeEnactmentJournal();
         initializeMissingStageDeadlines();
         announcementTaskId = Bukkit.getScheduler().runTaskTimer(
                 eco, this::checkVotingAnnouncements, 400L, 1200L).getTaskId();
+        if (enactmentReady) {
+            Bukkit.getScheduler().runTask(eco, this::retryRecoverableEnactments);
+        }
     }
 
     public synchronized void shutdown() {
         if (announcementTaskId >= 0) {
             Bukkit.getScheduler().cancelTask(announcementTaskId);
             announcementTaskId = -1;
+        }
+    }
+
+    private boolean initializeEnactmentJournal() {
+        long now = System.currentTimeMillis() / 1000;
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return false;
+            ProposalEnactmentJournal.ensureSchema(conn);
+            ProposalEnactmentJournal.recoverInterrupted(conn, now);
+            return true;
+        } catch (SQLException e) {
+            eco.getLogger().severe("[Politic] Enactment journal initialization failed; enactment is disabled: "
+                    + e.getMessage());
+            return false;
+        }
+    }
+
+    private void retryRecoverableEnactments() {
+        List<String> proposalIds = new ArrayList<>();
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return;
+            try (PreparedStatement ps = conn.prepareStatement("""
+                    SELECT p.id
+                    FROM ks_politic_proposals p
+                    JOIN ks_politic_enactment_journal j ON j.proposal_id=p.id
+                    WHERE p.status IN ('APPROVED','OVERRIDDEN')
+                      AND j.status IN ('PENDING','FAILED')
+                    ORDER BY p.created_at
+                    """)) {
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) proposalIds.add(rs.getString(1));
+                }
+            }
+        } catch (SQLException e) {
+            eco.getLogger().warning("[Politic] Failed to load recoverable enactments: " + e.getMessage());
+            return;
+        }
+
+        for (String proposalId : proposalIds) {
+            TransitionResult result = transitionProposal(
+                    proposalId, "ENACTED", UUID.randomUUID(), "SYSTEM");
+            if (!result.success()) {
+                eco.getLogger().warning("[Politic] Enactment retry remains pending for " + proposalId
+                        + ": " + result.error());
+            }
         }
     }
 
@@ -242,49 +293,81 @@ public final class ProposalManager {
                 break;
         }
 
-        // ENACTED：先执行 payload，失败则不标记为已颁布（避免"假颁布"——
-        // 此前是先写 ENACTED 再 enact 且吞异常，导致法案没生效却显示已通过）
         if ("ENACTED".equals(newState)) {
-            String enactErr = enact(p);
-            if (enactErr != null) {
-                return TransitionResult.fail("法案执行失败，未颁布: " + enactErr);
-            }
+            return enactAndTransition(p, current);
         }
 
-        // 执行状态更新
-        p.status = newState;
         long now = System.currentTimeMillis() / 1000;
+        long stageStartedAt;
+        long stageDeadlineAt;
         if ("SENATE_VOTING".equals(newState) || "SENATE_OVERRIDE".equals(newState)) {
             int durationMinutes = votingDurationMinutes(newState);
-            p.stageStartedAt = now;
-            p.stageDeadlineAt = now + durationMinutes * 60L;
+            stageStartedAt = now;
+            stageDeadlineAt = now + durationMinutes * 60L;
         } else {
-            p.stageStartedAt = 0;
-            p.stageDeadlineAt = 0;
+            stageStartedAt = 0;
+            stageDeadlineAt = 0;
         }
-        if ("ENACTED".equals(newState)) p.enactedAt = now;
+
+        boolean preparesEnactment = "APPROVED".equals(newState) || "OVERRIDDEN".equals(newState);
+        if (preparesEnactment && !enactmentReady) {
+            return TransitionResult.fail("法案执行日志不可用，当前禁止批准提案");
+        }
+        String operationId = preparesEnactment
+                ? ProposalEnactmentJournal.operationId(p.id) : p.enactmentOperationId;
+        String enactmentStatus = preparesEnactment
+                ? ProposalEnactmentJournal.PENDING : p.enactmentStatus;
+        String enactmentError = preparesEnactment ? "" : p.enactmentError;
 
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return TransitionResult.fail("数据库连接失败");
-
-            try (PreparedStatement ps = conn.prepareStatement(
-                "UPDATE ks_politic_proposals SET status=?, result_summary=?, enacted_at=?, " +
-                        "stage_started_at=?, stage_deadline_at=? WHERE id=? AND status=?")) {
-                ps.setString(1, newState);
-                ps.setString(2, p.resultSummary != null ? p.resultSummary : "");
-                ps.setLong(3, "ENACTED".equals(newState) ? now : p.enactedAt);
-                ps.setLong(4, p.stageStartedAt);
-                ps.setLong(5, p.stageDeadlineAt);
-                ps.setString(6, proposalId);
-                ps.setString(7, current);
-                if (ps.executeUpdate() != 1) {
-                    return TransitionResult.fail("提案状态已被其他操作更新，请刷新后重试");
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                if (preparesEnactment) {
+                    ProposalEnactmentJournal.prepare(
+                            conn, p.id, operationId, p.proposalType, now);
                 }
+                try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE ks_politic_proposals SET status=?, result_summary=?, enacted_at=?, " +
+                            "stage_started_at=?, stage_deadline_at=?, enactment_operation_id=?, " +
+                            "enactment_status=?, enactment_error=? WHERE id=? AND status=?")) {
+                    ps.setString(1, newState);
+                    ps.setString(2, p.resultSummary != null ? p.resultSummary : "");
+                    ps.setLong(3, p.enactedAt);
+                    ps.setLong(4, stageStartedAt);
+                    ps.setLong(5, stageDeadlineAt);
+                    ps.setString(6, operationId != null ? operationId : "");
+                    ps.setString(7, enactmentStatus != null ? enactmentStatus : ProposalEnactmentJournal.NONE);
+                    ps.setString(8, enactmentError != null ? enactmentError : "");
+                    ps.setString(9, proposalId);
+                    ps.setString(10, current);
+                    if (ps.executeUpdate() != 1) {
+                        conn.rollback();
+                        return TransitionResult.fail("提案状态已被其他操作更新，请刷新后重试");
+                    }
+                }
+                if (Set.of("SENATE_VOTING", "TRIBUNE_REVIEW", "SENATE_OVERRIDE").contains(newState)) {
+                    voteManager.snapshotElectorate(conn, p.id, newState, now);
+                }
+                conn.commit();
+            } catch (SQLException | RuntimeException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
             }
         } catch (SQLException e) {
             eco.getLogger().warning("[政治系统] 状态更新失败: " + e.getMessage());
             return TransitionResult.fail("数据库写入失败");
         }
+
+        p.status = newState;
+        p.stageStartedAt = stageStartedAt;
+        p.stageDeadlineAt = stageDeadlineAt;
+        p.enactmentOperationId = operationId != null ? operationId : "";
+        p.enactmentStatus = enactmentStatus != null ? enactmentStatus : ProposalEnactmentJournal.NONE;
+        p.enactmentError = enactmentError != null ? enactmentError : "";
 
         // 推送 / 撤下 ks-core 公告栏（表决中、已颁布）
         publishToBulletin(p, newState);
@@ -704,36 +787,207 @@ public final class ProposalManager {
     // 法案执行（ENACTED 时触发）
     // ================================================================
 
-    /**
-     * 执行已通过法案的 payload。
-     * 直接写入对应的业务表，绕过 Web API。
-     *
-     * @return null 表示执行成功；非 null 为错误信息（调用方据此拒绝颁布）。
-     *         未知类型（如 GENERAL 宣示性提案）视为成功——它们没有自动副作用。
-     */
-    private String enact(Proposal p) {
-        String validationError = validateProposalPayload(p.proposalType, p.payload);
-        if (validationError != null) return validationError;
-        long now = System.currentTimeMillis() / 1000;
-        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return "数据库连接失败";
+    /** Atomically claims, applies, journals, and commits one approved proposal. */
+    private TransitionResult enactAndTransition(Proposal p, String current) {
+        if (!enactmentReady) {
+            return TransitionResult.fail("法案执行日志不可用，已拒绝颁布");
+        }
+        if (ProposalEnactmentJournal.REVIEW_REQUIRED.equals(p.enactmentStatus)) {
+            return TransitionResult.fail("该提案来自执行日志升级前，必须人工核对后再处理");
+        }
 
-            switch (p.proposalType) {
-                case "SET_TAX_RATE" -> {
-                    // payload: {category, rate, industry?}
-                    // 写入 ks_tax_rates
-                    try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT INTO ks_tax_rates (category, industry, rate, updated_at) VALUES (?,?,?,?) " +
-                        "ON CONFLICT(category, industry) DO UPDATE SET rate=excluded.rate, updated_at=excluded.updated_at")) {
-                        ps.setString(1, p.payload.getOrDefault("category", "").toString());
-                        String ind = p.payload.get("industry") != null ? p.payload.get("industry").toString() : null;
-                        if (ind == null || ind.isEmpty()) ps.setNull(2, Types.VARCHAR);
-                        else ps.setString(2, ind);
-                        ps.setDouble(3, Double.parseDouble(p.payload.getOrDefault("rate", "0.08").toString()));
-                        ps.setLong(4, now);
-                        ps.executeUpdate();
+        String expectedOperationId = ProposalEnactmentJournal.operationId(p.id);
+        if (!expectedOperationId.equals(p.enactmentOperationId)) {
+            return TransitionResult.fail("提案缺少可信执行 operation ID，已拒绝重放");
+        }
+
+        String claimToken = UUID.randomUUID().toString();
+        long now = System.currentTimeMillis() / 1000;
+        List<OfficialPriceUpdate> priceUpdates = new ArrayList<>();
+        boolean transitionedHere = false;
+
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return TransitionResult.fail("数据库连接失败");
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                ProposalEnactmentJournal.JournalRow existing =
+                        ProposalEnactmentJournal.read(conn, p.id);
+                if (existing == null) {
+                    conn.rollback();
+                    markProposalForEnactmentReview(p, expectedOperationId,
+                            "Missing enactment journal for an approved proposal");
+                    return TransitionResult.fail("提案没有执行日志，已转为人工复核，未执行任何副作用");
+                }
+
+                ProposalEnactmentJournal.ClaimResult claim = ProposalEnactmentJournal.claim(
+                        conn, p.id, expectedOperationId, p.proposalType, claimToken, now);
+                if (claim.outcome() == ProposalEnactmentJournal.ClaimOutcome.BUSY) {
+                    conn.rollback();
+                    return TransitionResult.fail("法案正在由另一执行者处理，请稍后刷新");
+                }
+                if (claim.outcome() == ProposalEnactmentJournal.ClaimOutcome.REVIEW_REQUIRED) {
+                    conn.rollback();
+                    return TransitionResult.fail("法案执行需要人工复核: " + claim.detail());
+                }
+                if (claim.outcome() == ProposalEnactmentJournal.ClaimOutcome.APPLIED) {
+                    transitionedHere = repairAppliedProposalState(conn, p.id, current, expectedOperationId, now);
+                    conn.commit();
+                } else {
+                    applyEnactment(conn, p, expectedOperationId, now, priceUpdates);
+                    try (PreparedStatement update = conn.prepareStatement("""
+                            UPDATE ks_politic_proposals
+                            SET status='ENACTED', enacted_at=?, stage_started_at=0, stage_deadline_at=0,
+                                enactment_operation_id=?, enactment_status='APPLIED', enactment_error=''
+                            WHERE id=? AND status=?
+                            """)) {
+                        update.setLong(1, now);
+                        update.setString(2, expectedOperationId);
+                        update.setString(3, p.id);
+                        update.setString(4, current);
+                        if (update.executeUpdate() != 1) {
+                            throw new SQLException("Proposal state changed before enactment commit");
+                        }
                     }
-                    eco.getLogger().info("[政治系统] 法案执行: 设置税率 " + p.payload);
+                    ProposalEnactmentJournal.markApplied(
+                            conn, p.id, expectedOperationId, claimToken, now);
+                    conn.commit();
+                    transitionedHere = true;
+                }
+            } catch (SQLException | RuntimeException e) {
+                conn.rollback();
+                recordEnactmentFailure(p, expectedOperationId, e);
+                return TransitionResult.fail("法案执行失败，事务已回滚且可重试: " + failureMessage(e));
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        } catch (SQLException e) {
+            recordEnactmentFailure(p, expectedOperationId, e);
+            return TransitionResult.fail("法案执行数据库失败，未标记为已颁布: " + failureMessage(e));
+        }
+
+        Proposal fresh = getProposal(p.id);
+        if (fresh == null || !"ENACTED".equals(fresh.status)) {
+            return TransitionResult.fail("法案日志已完成，但提案状态读取失败，请人工核对");
+        }
+        applyPostCommitPriceUpdates(priceUpdates, p.id);
+        eco.getLogger().info("[Politic] Enactment applied: proposal=" + p.id
+                + " operation=" + expectedOperationId + " type=" + p.proposalType);
+        if (transitionedHere) publishToBulletin(fresh, "ENACTED");
+        return TransitionResult.success(fresh, current, "ENACTED");
+    }
+
+    private boolean repairAppliedProposalState(Connection conn, String proposalId, String current,
+                                               String operationId, long now) throws SQLException {
+        try (PreparedStatement update = conn.prepareStatement("""
+                UPDATE ks_politic_proposals
+                SET status='ENACTED', enacted_at=?, stage_started_at=0, stage_deadline_at=0,
+                    enactment_operation_id=?, enactment_status='APPLIED', enactment_error=''
+                WHERE id=? AND status=?
+                """)) {
+            update.setLong(1, now);
+            update.setString(2, operationId);
+            update.setString(3, proposalId);
+            update.setString(4, current);
+            if (update.executeUpdate() == 1) return true;
+        }
+        try (PreparedStatement select = conn.prepareStatement(
+                "SELECT status FROM ks_politic_proposals WHERE id=?")) {
+            select.setString(1, proposalId);
+            try (ResultSet rs = select.executeQuery()) {
+                if (rs.next() && "ENACTED".equals(rs.getString(1))) return false;
+            }
+        }
+        throw new SQLException("Applied enactment journal conflicts with proposal state");
+    }
+
+    private void recordEnactmentFailure(Proposal p, String operationId, Exception failure) {
+        long now = System.currentTimeMillis() / 1000;
+        String error = failureMessage(failure);
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return;
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                ProposalEnactmentJournal.recordFailure(
+                        conn, p.id, operationId, p.proposalType, error, now);
+                try (PreparedStatement update = conn.prepareStatement("""
+                        UPDATE ks_politic_proposals
+                        SET enactment_operation_id=?, enactment_status='FAILED', enactment_error=?
+                        WHERE id=? AND status IN ('APPROVED','OVERRIDDEN')
+                        """)) {
+                    update.setString(1, operationId);
+                    update.setString(2, error);
+                    update.setString(3, p.id);
+                    update.executeUpdate();
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        } catch (SQLException journalFailure) {
+            eco.getLogger().severe("[Politic] Unable to persist enactment failure for " + p.id
+                    + ": " + journalFailure.getMessage());
+        }
+    }
+
+    private void markProposalForEnactmentReview(Proposal p, String operationId, String reason) {
+        try (Connection conn = eco.ksCore().dataStore().getConnection();
+             PreparedStatement update = conn == null ? null : conn.prepareStatement("""
+                     UPDATE ks_politic_proposals
+                     SET enactment_operation_id=?, enactment_status='REVIEW_REQUIRED', enactment_error=?
+                     WHERE id=? AND status IN ('APPROVED','OVERRIDDEN')
+                     """)) {
+            if (update == null) return;
+            update.setString(1, operationId);
+            update.setString(2, reason);
+            update.setString(3, p.id);
+            update.executeUpdate();
+        } catch (SQLException e) {
+            eco.getLogger().severe("[Politic] Unable to mark proposal for enactment review: " + e.getMessage());
+        }
+    }
+
+    private void applyPostCommitPriceUpdates(List<OfficialPriceUpdate> updates, String proposalId) {
+        for (OfficialPriceUpdate update : updates) {
+            try {
+                eco.priceEngine().registerItem(update.material(), update.buyPrice());
+            } catch (RuntimeException e) {
+                eco.getLogger().severe("[Politic] Proposal " + proposalId
+                        + " committed, but official-price cache refresh failed for "
+                        + update.material() + ": " + e.getMessage());
+            }
+        }
+    }
+
+    private static String derivedEffectId(String operationId, String effect) {
+        UUID value = UUID.nameUUIDFromBytes((operationId + ":" + effect)
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return value.toString().substring(0, 8);
+    }
+
+    private static String failureMessage(Exception failure) {
+        String message = failure.getMessage();
+        if (message == null || message.isBlank()) message = failure.getClass().getSimpleName();
+        return message.length() <= 1000 ? message : message.substring(0, 1000);
+    }
+
+    private void applyEnactment(Connection conn, Proposal p, String operationId, long now,
+                                List<OfficialPriceUpdate> priceUpdates) throws SQLException {
+        String validationError = validateProposalPayload(p.proposalType, p.payload);
+        if (validationError != null) throw new SQLException(validationError);
+
+        switch (p.proposalType) {
+                case "GENERAL" -> { /* Declarative proposal with no automatic side effect. */ }
+                case "SET_TAX_RATE" -> {
+                    String category = ProposalTaxRateStore.normalizeKey(p.payload.get("category"));
+                    String industry = ProposalTaxRateStore.normalizeKey(p.payload.get("industry"));
+                    double rate = number(p.payload.get("rate"));
+                    if (industry.isBlank()) ProposalTaxRateStore.upsertGeneral(conn, category, rate, now);
+                    else ProposalTaxRateStore.upsertIndustry(conn, category, industry, rate, now);
                 }
 
                 case "SET_TAX_BRACKET" -> {
@@ -743,25 +997,24 @@ public final class ProposalManager {
                         try (PreparedStatement ps = conn.prepareStatement(
                             "DELETE FROM ks_tax_brackets WHERE id=?")) {
                             ps.setString(1, (String) p.payload.get("id"));
-                            ps.executeUpdate();
+                            if (ps.executeUpdate() != 1) {
+                                throw new SQLException("Tax bracket does not exist");
+                            }
                         }
                     } else {
-                        try (PreparedStatement ps = conn.prepareStatement(
-                            "INSERT INTO ks_tax_brackets (id, industry, scope, profit_min, profit_max, rate, updated_at) " +
-                            "VALUES (?,?,?,?,?,?,?) " +
-                            "ON CONFLICT(id) DO UPDATE SET industry=excluded.industry, profit_min=excluded.profit_min, " +
-                            "profit_max=excluded.profit_max, rate=excluded.rate, updated_at=excluded.updated_at")) {
-                            ps.setString(1, (String) p.payload.getOrDefault("id", UUID.randomUUID().toString().substring(0, 8)));
-                            ps.setString(2, (String) p.payload.getOrDefault("industry", "OTHER"));
-                            ps.setString(3, (String) p.payload.getOrDefault("scope", "ENTERPRISE_TAX"));
-                            ps.setDouble(4, Double.parseDouble(p.payload.getOrDefault("profitMin", "0").toString()));
-                            ps.setDouble(5, Double.parseDouble(p.payload.getOrDefault("profitMax", "1000000").toString()));
-                            ps.setDouble(6, Double.parseDouble(p.payload.getOrDefault("rate", "0.05").toString()));
-                            ps.setLong(7, now);
-                            ps.executeUpdate();
-                        }
+                        String id = text(p.payload.get("id")).isBlank()
+                                ? derivedEffectId(operationId, "tax-bracket") : text(p.payload.get("id"));
+                        String industry = (String) p.payload.getOrDefault("industry", "OTHER");
+                        String scope = (String) p.payload.getOrDefault("scope", "ENTERPRISE_TAX");
+                        double min = Double.parseDouble(p.payload.getOrDefault("profitMin", "0").toString());
+                        double max = Double.parseDouble(p.payload.getOrDefault("profitMax", "1000000").toString());
+                        double rate = Double.parseDouble(p.payload.getOrDefault("rate", "0.05").toString());
+                        PortableSqlMutation.upsert(conn,
+                                "UPDATE ks_tax_brackets SET industry=?,scope=?,profit_min=?,profit_max=?,rate=?,updated_at=? WHERE id=?",
+                                ps -> { ps.setString(1, industry); ps.setString(2, scope); ps.setDouble(3, min); ps.setDouble(4, max); ps.setDouble(5, rate); ps.setLong(6, now); ps.setString(7, id); },
+                                "INSERT INTO ks_tax_brackets (industry,scope,profit_min,profit_max,rate,updated_at,id) VALUES (?,?,?,?,?,?,?)",
+                                ps -> { ps.setString(1, industry); ps.setString(2, scope); ps.setDouble(3, min); ps.setDouble(4, max); ps.setDouble(5, rate); ps.setLong(6, now); ps.setString(7, id); });
                     }
-                    eco.getLogger().info("[政治系统] 法案执行: 设置阶梯税率 " + p.payload);
                 }
 
                 case "SET_CB_RATES" -> {
@@ -775,14 +1028,8 @@ public final class ProposalManager {
                         ps.setLong(3, now);
                         ps.executeUpdate();
                     }
-                    // 同时写 cb_config
-                    try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT OR REPLACE INTO ks_bank_cb_config (key, value) VALUES ('base_rate',?), ('reserve_requirement',?)")) {
-                        ps.setString(1, String.valueOf(baseRate));
-                        ps.setString(2, String.valueOf(reserveReq));
-                        ps.executeUpdate();
-                    }
-                    eco.getLogger().info("[政治系统] 法案执行: 设置央行利率");
+                    upsertCentralBankConfig(conn, "base_rate", String.valueOf(baseRate));
+                    upsertCentralBankConfig(conn, "reserve_requirement", String.valueOf(reserveReq));
                 }
 
                 case "CB_INJECT" -> {
@@ -792,9 +1039,9 @@ public final class ProposalManager {
                     String mode = (String) p.payload.getOrDefault("mode", "GRANT");
                     if ("LOAN".equals(mode)) {
                         // 直接写入 LOAN 方式（简单版：只记入 cb_loans）
-                        String loanId = UUID.randomUUID().toString().substring(0, 8);
+                        String loanId = derivedEffectId(operationId, "central-bank-loan");
                         double rate = Double.parseDouble(p.payload.getOrDefault("interestRate", "0.05").toString());
-                        int termDays = Integer.parseInt(p.payload.getOrDefault("termDays", "30").toString());
+                        int termDays = integer(p.payload.getOrDefault("termDays", 30));
                         long dueAt = now + (termDays * 86400L);
                         try (PreparedStatement ps = conn.prepareStatement(
                             "INSERT INTO ks_bank_cb_loans (id, bank_id, principal, interest_rate, term_days, issued_at, due_at, repaid) " +
@@ -814,9 +1061,10 @@ public final class ProposalManager {
                         "UPDATE ks_bank_banks SET total_assets=total_assets+? WHERE id=?")) {
                         ps.setDouble(1, amount);
                         ps.setString(2, bankId);
-                        ps.executeUpdate();
+                        if (ps.executeUpdate() != 1) {
+                            throw new SQLException("Central bank injection target does not exist");
+                        }
                     }
-                    eco.getLogger().info("[政治系统] 法案执行: 央行注资 " + amount + " to " + bankId + " mode=" + mode);
                 }
 
                 case "SET_OFFICIAL_PRICE" -> {
@@ -827,38 +1075,31 @@ public final class ProposalManager {
                     for (Map<String, Object> price : prices) {
                         String material = (String) price.get("material");
                         double buyPrice = Double.parseDouble(price.getOrDefault("buyPrice", "0").toString());
-                        try (PreparedStatement ps = conn.prepareStatement(
-                            "INSERT INTO ks_official_prices (material, buy_price, category, updated_at) " +
-                            "VALUES (?,?,?,?) " +
-                            "ON CONFLICT(material) DO UPDATE SET buy_price=excluded.buy_price, " +
-                            "category=excluded.category, updated_at=excluded.updated_at")) {
-                            ps.setString(1, material);
-                            ps.setDouble(2, buyPrice);
-                            ps.setString(3, (String) price.getOrDefault("category", ""));
-                            ps.setLong(4, now);
-                            ps.executeUpdate();
-                        }
-                        // ★ 同步到价格引擎内存缓存，立即生效
-                        eco.priceEngine().registerItem(material, buyPrice);
+                        String category = (String) price.getOrDefault("category", "");
+                        PortableSqlMutation.upsert(conn,
+                                "UPDATE ks_official_prices SET buy_price=?,category=?,updated_at=? WHERE material=?",
+                                ps -> { ps.setDouble(1, buyPrice); ps.setString(2, category); ps.setLong(3, now); ps.setString(4, material); },
+                                "INSERT INTO ks_official_prices (buy_price,category,updated_at,material) VALUES (?,?,?,?)",
+                                ps -> { ps.setDouble(1, buyPrice); ps.setString(2, category); ps.setLong(3, now); ps.setString(4, material); });
+                        priceUpdates.add(new OfficialPriceUpdate(material, buyPrice));
                     }
-                    eco.getLogger().info("[政治系统] 法案执行: 设置官价，共 " + prices.size() + " 条");
                 }
 
                 case "RE_ZONE_ADMIN" -> {
                     // payload: {zoneId, action:create|setPrice|setStatus, price?, status?}
                     String action = (String) p.payload.getOrDefault("action", "create");
                     if ("create".equals(action)) {
-                        String zoneId = UUID.randomUUID().toString().substring(0, 8);
+                        String zoneId = derivedEffectId(operationId, "real-estate-zone");
                         try (PreparedStatement ps = conn.prepareStatement(
                             "INSERT INTO ks_re_zones (id, name, world, x1, z1, x2, z2, type, base_price, status) " +
                             "VALUES (?,?,?,?,?,?,?,?,?,?)")) {
                             ps.setString(1, zoneId);
                             ps.setString(2, (String) p.payload.getOrDefault("name", "未命名区域"));
                             ps.setString(3, (String) p.payload.getOrDefault("world", "world"));
-                            ps.setInt(4, Integer.parseInt(p.payload.getOrDefault("x1", "0").toString()));
-                            ps.setInt(5, Integer.parseInt(p.payload.getOrDefault("z1", "0").toString()));
-                            ps.setInt(6, Integer.parseInt(p.payload.getOrDefault("x2", "0").toString()));
-                            ps.setInt(7, Integer.parseInt(p.payload.getOrDefault("z2", "0").toString()));
+                            ps.setInt(4, integer(p.payload.getOrDefault("x1", 0)));
+                            ps.setInt(5, integer(p.payload.getOrDefault("z1", 0)));
+                            ps.setInt(6, integer(p.payload.getOrDefault("x2", 0)));
+                            ps.setInt(7, integer(p.payload.getOrDefault("z2", 0)));
                             ps.setString(8, (String) p.payload.getOrDefault("type", "RESIDENTIAL"));
                             ps.setDouble(9, Double.parseDouble(p.payload.getOrDefault("basePrice", "0").toString()));
                             ps.setString(10, (String) p.payload.getOrDefault("status", "FOR_SALE"));
@@ -869,27 +1110,36 @@ public final class ProposalManager {
                             "UPDATE ks_re_zones SET base_price=? WHERE id=?")) {
                             ps.setDouble(1, Double.parseDouble(p.payload.getOrDefault("price", "0").toString()));
                             ps.setString(2, (String) p.payload.get("zoneId"));
-                            ps.executeUpdate();
+                            if (ps.executeUpdate() != 1) {
+                                throw new SQLException("Real-estate zone does not exist");
+                            }
                         }
                     } else if ("setStatus".equals(action)) {
                         try (PreparedStatement ps = conn.prepareStatement(
                             "UPDATE ks_re_zones SET status=? WHERE id=?")) {
                             ps.setString(1, (String) p.payload.getOrDefault("status", "FOR_SALE"));
                             ps.setString(2, (String) p.payload.get("zoneId"));
-                            ps.executeUpdate();
+                            if (ps.executeUpdate() != 1) {
+                                throw new SQLException("Real-estate zone does not exist");
+                            }
                         }
                     }
-                    eco.getLogger().info("[政治系统] 法案执行: 房地产管理 " + p.payload);
                 }
 
-                default -> eco.getLogger().warning("[政治系统] 未知提案类型: " + p.proposalType);
-            }
-        } catch (SQLException | NumberFormatException e) {
-            eco.getLogger().warning("[政治系统] 法案执行失败: " + e.getMessage());
-            return e.getMessage();
+            default -> throw new SQLException("Unsupported proposal type: " + p.proposalType);
         }
-        return null;
     }
+
+    private static void upsertCentralBankConfig(Connection connection, String key, String value)
+            throws SQLException {
+        PortableSqlMutation.upsert(connection,
+                "UPDATE ks_bank_cb_config SET config_value=? WHERE config_key=?",
+                ps -> { ps.setString(1, value); ps.setString(2, key); },
+                "INSERT INTO ks_bank_cb_config (config_key,config_value) VALUES (?,?)",
+                ps -> { ps.setString(1, key); ps.setString(2, value); });
+    }
+
+    private record OfficialPriceUpdate(String material, double buyPrice) {}
 
     public static String validateProposalPayload(String proposalType, Map<String, Object> payload) {
         if (proposalType == null || payload == null) return "提案类型或参数缺失";
@@ -897,9 +1147,11 @@ public final class ProposalManager {
             return switch (proposalType) {
                 case "GENERAL" -> null;
                 case "SET_TAX_RATE" -> {
-                    String category = text(payload.get("category"));
+                    String category = ProposalTaxRateStore.normalizeKey(payload.get("category"));
+                    String industry = ProposalTaxRateStore.normalizeKey(payload.get("industry"));
                     double rate = number(payload.get("rate"));
-                    yield category.isBlank() || !between(rate, 0, 1) ? "税率提案参数无效" : null;
+                    yield category.isBlank() || category.length() > 128 || industry.length() > 128
+                            || !between(rate, 0, 1) ? "税率提案参数无效" : null;
                 }
                 case "SET_TAX_BRACKET" -> {
                     String action = text(payload.getOrDefault("action", "upsert"));
@@ -921,8 +1173,13 @@ public final class ProposalManager {
                     double amount = number(payload.get("amount"));
                     if (bankId.isBlank() || !between(amount, 0.01, 1_000_000_000_000d)
                             || !Set.of("GRANT", "LOAN").contains(mode)) yield "央行注资参数无效";
-                    if ("LOAN".equals(mode) && (!between(number(payload.get("interestRate")), 0, 1)
-                            || !between(number(payload.get("termDays")), 1, 3650))) yield "央行贷款参数无效";
+                    if ("LOAN".equals(mode)) {
+                        double termDays = number(payload.get("termDays"));
+                        if (!between(number(payload.get("interestRate")), 0, 1)
+                                || !between(termDays, 1, 3650) || !isInteger(termDays)) {
+                            yield "央行贷款参数无效";
+                        }
+                    }
                     yield null;
                 }
                 case "SET_OFFICIAL_PRICE" -> {
@@ -955,6 +1212,7 @@ public final class ProposalManager {
                     yield name.isBlank() || name.length() > 64 || world.isBlank() || world.length() > 64
                             || !Set.of("RESIDENTIAL", "COMMERCIAL", "INDUSTRIAL", "AGRICULTURAL").contains(type)
                             || !Double.isFinite(x1) || !Double.isFinite(z1) || !Double.isFinite(x2) || !Double.isFinite(z2)
+                            || !isInteger(x1) || !isInteger(z1) || !isInteger(x2) || !isInteger(z2)
                             || x1 == x2 || z1 == z2 || !between(price, 0, 1_000_000_000_000d)
                             ? "房地产区域参数无效" : null;
                 }
@@ -971,6 +1229,18 @@ public final class ProposalManager {
 
     private static double number(Object value) {
         return value instanceof Number number ? number.doubleValue() : Double.parseDouble(text(value));
+    }
+
+    private static int integer(Object value) {
+        double number = number(value);
+        if (!isInteger(number) || number < Integer.MIN_VALUE || number > Integer.MAX_VALUE) {
+            throw new NumberFormatException("Expected an integer value");
+        }
+        return (int) number;
+    }
+
+    private static boolean isInteger(double value) {
+        return Double.isFinite(value) && value == Math.rint(value);
     }
 
     private static boolean between(double value, double min, double max) {
@@ -997,6 +1267,9 @@ public final class ProposalManager {
         public long enactedAt;
         public long stageStartedAt;
         public long stageDeadlineAt;
+        public String enactmentOperationId;
+        public String enactmentStatus;
+        public String enactmentError;
 
         @SuppressWarnings("unchecked")
         Proposal(ResultSet rs) throws SQLException {
@@ -1021,6 +1294,9 @@ public final class ProposalManager {
             this.enactedAt = rs.getLong("enacted_at");
             this.stageStartedAt = rs.getLong("stage_started_at");
             this.stageDeadlineAt = rs.getLong("stage_deadline_at");
+            this.enactmentOperationId = rs.getString("enactment_operation_id");
+            this.enactmentStatus = rs.getString("enactment_status");
+            this.enactmentError = rs.getString("enactment_error");
         }
 
         public Map<String, Object> toMap() {
@@ -1040,6 +1316,9 @@ public final class ProposalManager {
             m.put("enactedAt", enactedAt);
             m.put("stageStartedAt", stageStartedAt);
             m.put("stageDeadlineAt", stageDeadlineAt);
+            m.put("enactmentOperationId", enactmentOperationId != null ? enactmentOperationId : "");
+            m.put("enactmentStatus", enactmentStatus != null ? enactmentStatus : ProposalEnactmentJournal.NONE);
+            m.put("enactmentError", enactmentError != null ? enactmentError : "");
             return m;
         }
     }

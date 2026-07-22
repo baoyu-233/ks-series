@@ -3,6 +3,7 @@ package org.kseco.extra.enterprise;
 import com.google.gson.Gson;
 import com.sun.net.httpserver.HttpExchange;
 import org.kseco.KsEco;
+import org.kseco.database.PortableSqlMutation;
 import org.kseco.extra.EnterpriseAccessProvider;
 import org.kscore.KsAuthManager;
 import org.kscore.KsPluginBridge;
@@ -27,7 +28,7 @@ public final class EnterpriseAccessProviderImpl implements EnterpriseAccessProvi
     private static final List<String> ROLES = List.of("CEO", "MANAGER", "EMPLOYEE");
     private static final Set<String> PERMISSIONS = Set.of(
             "MANAGE_MEMBERS", "MANAGE_PERMISSIONS", "MANAGE_BIDDING", "DECLARE_DIVIDEND",
-            "VIEW_FINANCE", "MANAGE_FUNDS", "BLINDBOX_DRAW");
+            "VIEW_FINANCE", "MANAGE_FUNDS", "MANAGE_PROPERTY", "BLINDBOX_DRAW");
 
     private final KsEco eco;
     private final Gson gson = new Gson();
@@ -38,7 +39,7 @@ public final class EnterpriseAccessProviderImpl implements EnterpriseAccessProvi
 
     public void init() {
         try (Connection conn = eco.ksCore().dataStore().getConnection(); Statement stmt = conn.createStatement()) {
-            stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_role_permissions (enterprise_id TEXT NOT NULL, role TEXT NOT NULL, permission TEXT NOT NULL, PRIMARY KEY (enterprise_id, role, permission))");
+            stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_role_permissions (enterprise_id VARCHAR(64) NOT NULL, role VARCHAR(32) NOT NULL, permission VARCHAR(64) NOT NULL, PRIMARY KEY (enterprise_id, role, permission))");
         } catch (Exception e) {
             eco.getLogger().warning("Enterprise access schema initialization failed: " + e.getMessage());
         }
@@ -166,11 +167,12 @@ public final class EnterpriseAccessProviderImpl implements EnterpriseAccessProvi
                 return;
             }
             if (enabled) {
-                try (PreparedStatement ps = conn.prepareStatement("INSERT OR REPLACE INTO ks_ent_permissions (enterprise_id, player_uuid, permission, granted_by, granted_at) VALUES (?,?,?,?,?)")) {
-                    ps.setString(1, enterpriseId); ps.setString(2, targetUuid.toString()); ps.setString(3, permission);
-                    ps.setString(4, session.playerUuid.toString()); ps.setLong(5, System.currentTimeMillis() / 1000);
-                    ps.executeUpdate();
-                }
+                long now = System.currentTimeMillis() / 1000;
+                PortableSqlMutation.upsert(conn,
+                        "UPDATE ks_ent_permissions SET granted_by=?,granted_at=? WHERE enterprise_id=? AND player_uuid=? AND permission=?",
+                        ps -> { ps.setString(1, session.playerUuid.toString()); ps.setLong(2, now); ps.setString(3, enterpriseId); ps.setString(4, targetUuid.toString()); ps.setString(5, permission); },
+                        "INSERT INTO ks_ent_permissions (enterprise_id,player_uuid,permission,granted_by,granted_at) VALUES (?,?,?,?,?)",
+                        ps -> { ps.setString(1, enterpriseId); ps.setString(2, targetUuid.toString()); ps.setString(3, permission); ps.setString(4, session.playerUuid.toString()); ps.setLong(5, now); });
             } else {
                 try (PreparedStatement ps = conn.prepareStatement("DELETE FROM ks_ent_permissions WHERE enterprise_id=? AND player_uuid=? AND permission=?")) {
                     ps.setString(1, enterpriseId); ps.setString(2, targetUuid.toString()); ps.setString(3, permission); ps.executeUpdate();
@@ -222,12 +224,13 @@ public final class EnterpriseAccessProviderImpl implements EnterpriseAccessProvi
     }
 
     private void insertTemplatePermissions(Connection conn, String enterpriseId, String role, Set<String> permissions) throws Exception {
-        try (PreparedStatement ps = conn.prepareStatement("INSERT OR IGNORE INTO ks_ent_role_permissions (enterprise_id, role, permission) VALUES (?,?,?)")) {
-            if (permissions.isEmpty()) {
-                ps.setString(1, enterpriseId); ps.setString(2, role); ps.setString(3, "__NONE__"); ps.addBatch();
-            }
-            for (String permission : permissions) { ps.setString(1, enterpriseId); ps.setString(2, role); ps.setString(3, permission); ps.addBatch(); }
-            ps.executeBatch();
+        Set<String> values = permissions.isEmpty() ? Set.of("__NONE__") : permissions;
+        for (String permission : values) {
+            PortableSqlMutation.insertIfAbsent(conn,
+                    "SELECT 1 FROM ks_ent_role_permissions WHERE enterprise_id=? AND role=? AND permission=?",
+                    ps -> { ps.setString(1, enterpriseId); ps.setString(2, role); ps.setString(3, permission); },
+                    "INSERT INTO ks_ent_role_permissions (enterprise_id,role,permission) VALUES (?,?,?)",
+                    ps -> { ps.setString(1, enterpriseId); ps.setString(2, role); ps.setString(3, permission); });
         }
     }
 

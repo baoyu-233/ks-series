@@ -30,6 +30,7 @@ public final class IntervalTask implements Runnable {
         List<SkillDef> defs = registry.byTrigger(TriggerType.ON_INTERVAL);
         if (defs.isEmpty()) return;
         for (Player p : Bukkit.getOnlinePlayers()) {
+            if (!PlayerEligibility.isEligible(p)) continue;
             for (SkillDef def : defs) {
                 if (!binding.has(p, def)) continue;
                 if (def.chance() < 1.0 && ThreadLocalRandom.current().nextDouble() >= def.chance()) continue;

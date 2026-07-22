@@ -3,6 +3,7 @@ package org.kssentinel;
 import com.google.gson.Gson;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
 import java.sql.*;
@@ -22,6 +23,7 @@ public final class KsSentinel extends JavaPlugin {
 
     private final Gson gson = new Gson();
     private Connection conn;
+    private BukkitTask flushTask;
     private final ConcurrentLinkedQueue<LogEntry> pendingLogs = new ConcurrentLinkedQueue<>();
 
     private final List<RiskEvaluator.Rule> rulesCache = Collections.synchronizedList(new ArrayList<>());
@@ -43,7 +45,8 @@ public final class KsSentinel extends JavaPlugin {
 
         getServer().getPluginManager().registerEvents(new CommandAuditListener(this), this);
 
-        getServer().getScheduler().runTaskTimerAsynchronously(this, this::flushPendingLogs, 100L, 100L);
+        flushTask = getServer().getScheduler().runTaskTimerAsynchronously(
+            this, this::flushPendingLogs, 100L, 100L);
 
         tryRegisterWebHandler();
 
@@ -52,12 +55,16 @@ public final class KsSentinel extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (flushTask != null) {
+            flushTask.cancel();
+            flushTask = null;
+        }
         flushPendingLogs();
         closeConnection();
         getLogger().info("ks-Sentinel 已禁用");
     }
 
-    private void closeConnection() {
+    private synchronized void closeConnection() {
         if (conn != null) {
             try { conn.close(); } catch (SQLException ignored) {}
             conn = null;
@@ -66,7 +73,7 @@ public final class KsSentinel extends JavaPlugin {
 
     // ==================== 数据库 ====================
 
-    private void initDatabase() {
+    private synchronized void initDatabase() {
         try {
             File dbFile = new File(DB_PATH);
             dbFile.getParentFile().mkdirs();
@@ -112,7 +119,7 @@ public final class KsSentinel extends JavaPlugin {
         }
     }
 
-    private void seedDefaultRules() {
+    private synchronized void seedDefaultRules() {
         // command_prefix, checkTargetArg, riskLevel
         Object[][] seeds = {
             {"give", true, "HIGH"}, {"gamemode", true, "HIGH"}, {"tp", true, "HIGH"},
@@ -143,7 +150,7 @@ public final class KsSentinel extends JavaPlugin {
 
     // ==================== 规则缓存（供 RiskEvaluator 高频读取） ====================
 
-    public void reloadRulesCache() {
+    public synchronized void reloadRulesCache() {
         List<RiskEvaluator.Rule> fresh = new ArrayList<>();
         try (Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery("SELECT id, command_prefix, check_target_arg, risk_level, enabled FROM ks_sentinel_rules")) {
@@ -157,7 +164,7 @@ public final class KsSentinel extends JavaPlugin {
         synchronized (rulesCache) { rulesCache.clear(); rulesCache.addAll(fresh); }
     }
 
-    public void reloadExclusionsCache() {
+    public synchronized void reloadExclusionsCache() {
         List<RiskEvaluator.Exclusion> fresh = new ArrayList<>();
         try (Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery("SELECT id, command_prefix FROM ks_sentinel_exclusions")) {
@@ -178,7 +185,7 @@ public final class KsSentinel extends JavaPlugin {
         synchronized (exclusionsCache) { return new ArrayList<>(exclusionsCache); }
     }
 
-    public boolean addRule(String commandPrefix, boolean checkTargetArg, String riskLevel) {
+    public synchronized boolean addRule(String commandPrefix, boolean checkTargetArg, String riskLevel) {
         try (PreparedStatement ps = conn.prepareStatement(
                 "INSERT OR REPLACE INTO ks_sentinel_rules (command_prefix, check_target_arg, risk_level, enabled) VALUES (?, ?, ?, 1)")) {
             ps.setString(1, commandPrefix.toLowerCase(Locale.ROOT));
@@ -193,7 +200,7 @@ public final class KsSentinel extends JavaPlugin {
         }
     }
 
-    public boolean removeRule(int id) {
+    public synchronized boolean removeRule(int id) {
         try (PreparedStatement ps = conn.prepareStatement("DELETE FROM ks_sentinel_rules WHERE id=?")) {
             ps.setInt(1, id);
             int n = ps.executeUpdate();
@@ -202,7 +209,7 @@ public final class KsSentinel extends JavaPlugin {
         } catch (SQLException e) { return false; }
     }
 
-    public boolean addExclusion(String commandPrefix, String note) {
+    public synchronized boolean addExclusion(String commandPrefix, String note) {
         try (PreparedStatement ps = conn.prepareStatement(
                 "INSERT OR REPLACE INTO ks_sentinel_exclusions (command_prefix, note) VALUES (?, ?)")) {
             ps.setString(1, commandPrefix.toLowerCase(Locale.ROOT));
@@ -216,7 +223,7 @@ public final class KsSentinel extends JavaPlugin {
         }
     }
 
-    public boolean removeExclusion(int id) {
+    public synchronized boolean removeExclusion(int id) {
         try (PreparedStatement ps = conn.prepareStatement("DELETE FROM ks_sentinel_exclusions WHERE id=?")) {
             ps.setInt(1, id);
             int n = ps.executeUpdate();
@@ -231,7 +238,7 @@ public final class KsSentinel extends JavaPlugin {
         pendingLogs.add(entry);
     }
 
-    private void flushPendingLogs() {
+    private synchronized void flushPendingLogs() {
         if (pendingLogs.isEmpty() || conn == null) return;
         List<LogEntry> batch = new ArrayList<>();
         LogEntry e;
@@ -265,12 +272,16 @@ public final class KsSentinel extends JavaPlugin {
         } catch (SQLException ex) {
             getLogger().warning("日志批量写入失败: " + ex.getMessage());
             try { conn.rollback(); conn.setAutoCommit(true); } catch (SQLException ignored) {}
+            // Put the batch back so a transient DB failure does not permanently drop audits.
+            for (int i = batch.size() - 1; i >= 0; i--) {
+                pendingLogs.offer(batch.get(i));
+            }
         }
     }
 
     // ==================== 查询（Web/指令共用） ====================
 
-    public List<Map<String, Object>> queryLogs(String riskLevel, String executor, String commandLike,
+    public synchronized List<Map<String, Object>> queryLogs(String riskLevel, String executor, String commandLike,
                                                 long fromTs, long toTs, int limit, int offset) {
         List<Map<String, Object>> list = new ArrayList<>();
         StringBuilder sql = new StringBuilder("SELECT * FROM ks_sentinel_logs WHERE 1=1");

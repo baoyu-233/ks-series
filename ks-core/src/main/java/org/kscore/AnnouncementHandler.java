@@ -5,7 +5,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
-import org.bukkit.Bukkit;
+import org.kscore.scheduler.KsScheduler;
 
 import java.io.IOException;
 import java.util.List;
@@ -181,7 +181,7 @@ public final class AnnouncementHandler implements HttpHandler {
                 .append(Component.text(title, NamedTextColor.WHITE))
                 .append(Component.text("  — " + (author != null ? author : "管理员"), NamedTextColor.GRAY))
                 .build();
-            Bukkit.getServer().broadcast(msg);
+            KsScheduler.runGlobal(core, () -> core.getServer().broadcast(msg));
         } catch (Throwable ignored) { }
     }
 }

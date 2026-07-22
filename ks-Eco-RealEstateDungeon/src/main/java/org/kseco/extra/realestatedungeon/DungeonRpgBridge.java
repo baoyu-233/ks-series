@@ -12,6 +12,9 @@ import org.kseco.KsEco;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
@@ -35,12 +38,267 @@ public final class DungeonRpgBridge {
         void log(UUID playerUuid, String detail);
     }
 
+    enum RewardKind {
+        MONEY,
+        COMMAND,
+        MYTHIC_ITEM,
+        MMO_ITEM
+    }
+
+    enum DeliveryOutcome {
+        DELIVERED,
+        SKIPPED,
+        RETRY_REQUIRED,
+        REVIEW_REQUIRED
+    }
+
+    record RewardGrant(String rewardKey, RewardKind kind, double money, String command,
+                       boolean onlineOnly, String itemType, String itemId, int amount,
+                       double chance) { }
+
+    record Delivery(DeliveryOutcome outcome, String detail) {
+        Delivery {
+            detail = detail == null ? "" : detail;
+        }
+    }
+
+    record ProofGrantCommand(String playerName, String proofId) { }
+
+    private enum ProofVerification {
+        VERIFIED,
+        NOT_GRANTED,
+        UNAVAILABLE
+    }
+
     private final KsEco eco;
     private final Random random = new Random();
     private volatile Boolean mmoItemsApiAvailable;
 
     public DungeonRpgBridge(KsEco eco) {
         this.eco = eco;
+    }
+
+    List<RewardGrant> parseRewardGrants(String rewardConfig) {
+        if (rewardConfig == null || rewardConfig.isBlank()) return List.of();
+        JsonElement parsed = JsonParser.parseString(rewardConfig);
+        if (!parsed.isJsonObject()) {
+            throw new IllegalArgumentException("reward_config must be a JSON object");
+        }
+        JsonObject root = parsed.getAsJsonObject();
+        List<RewardGrant> rewards = new ArrayList<>();
+
+        double money = number(root.get("money"), 0.0);
+        if (Double.isFinite(money) && money > 0) {
+            String payload = Double.toString(money);
+            rewards.add(new RewardGrant(rewardKey("money", 0, payload), RewardKind.MONEY,
+                    money, "", false, "", "", 0, 1.0));
+        }
+
+        JsonArray commands = array(root, "commands");
+        if (commands != null) {
+            for (int index = 0; index < commands.size(); index++) {
+                JsonElement element = commands.get(index);
+                String command;
+                double configuredChance = 1.0;
+                boolean onlineOnly = false;
+                if (element.isJsonPrimitive()) {
+                    command = element.getAsString();
+                } else if (element.isJsonObject()) {
+                    JsonObject object = element.getAsJsonObject();
+                    command = string(object, "command", "");
+                    configuredChance = chance(object.get("chance"));
+                    onlineOnly = bool(object, "onlineOnly", false);
+                } else {
+                    continue;
+                }
+                if (command == null || command.isBlank()) continue;
+                String payload = command + "|" + onlineOnly + "|" + configuredChance;
+                rewards.add(new RewardGrant(rewardKey("command", index, payload), RewardKind.COMMAND,
+                        0, command, onlineOnly, "", "", 0, configuredChance));
+            }
+        }
+
+        JsonArray mythicItems = array(root, "mythicItems");
+        if (mythicItems == null) mythicItems = array(root, "mythicmobs");
+        if (mythicItems == null) mythicItems = array(root, "mmitems");
+        addItemRewards(rewards, mythicItems, RewardKind.MYTHIC_ITEM, "mythic");
+
+        JsonArray mmoItems = array(root, "mmoitems");
+        if (mmoItems == null) mmoItems = array(root, "mmoItems");
+        if (mmoItems == null) mmoItems = array(root, "items");
+        addItemRewards(rewards, mmoItems, RewardKind.MMO_ITEM, "mmoitem");
+        return List.copyOf(rewards);
+    }
+
+    Delivery deliverReward(String instanceId, String templateId, UUID uuid, RewardGrant reward) {
+        if (!Bukkit.isPrimaryThread()) {
+            throw new IllegalStateException("Dungeon rewards must be delivered on the server thread");
+        }
+        if (!selected(instanceId, uuid, reward.rewardKey(), reward.chance())) {
+            return new Delivery(chanceMissOutcome(reward), reward.rewardKey()
+                    + (isProofGrantReward(reward) ? " proof_chance_miss" : " chance_miss"));
+        }
+
+        OfflinePlayer offline = Bukkit.getOfflinePlayer(uuid);
+        Player online = Bukkit.getPlayer(uuid);
+        String playerName = online != null ? online.getName()
+                : (offline.getName() == null ? uuid.toString() : offline.getName());
+        try {
+            return switch (reward.kind()) {
+                case MONEY -> grantMoney(offline, uuid, playerName, reward.money())
+                        ? new Delivery(DeliveryOutcome.DELIVERED,
+                        reward.rewardKey() + " money=" + reward.money())
+                        : new Delivery(DeliveryOutcome.RETRY_REQUIRED,
+                        reward.rewardKey() + " economy_rejected");
+                case COMMAND -> deliverCommand(instanceId, templateId, uuid, playerName, online, reward);
+                case MYTHIC_ITEM -> {
+                    ItemStack item = createMythicItem(reward.itemId(), reward.amount());
+                    if (item == null || item.getType().isAir()) {
+                        yield new Delivery(DeliveryOutcome.RETRY_REQUIRED,
+                                reward.rewardKey() + " mythic_item_unavailable");
+                    }
+                    int delivered = giveItemStack(uuid, online, item, "DUNGEON_REWARD:" + instanceId);
+                    yield delivered > 0
+                            ? new Delivery(DeliveryOutcome.DELIVERED,
+                            reward.rewardKey() + " mythicitems=" + delivered)
+                            : new Delivery(DeliveryOutcome.RETRY_REQUIRED,
+                            reward.rewardKey() + " item_delivery_rejected");
+                }
+                case MMO_ITEM -> {
+                    ItemStack item = createMmoItem(reward.itemType(), reward.itemId());
+                    if (item == null || item.getType().isAir()) {
+                        yield new Delivery(DeliveryOutcome.RETRY_REQUIRED,
+                                reward.rewardKey() + " mmoitem_unavailable");
+                    }
+                    int delivered = giveItemCopies(uuid, online, item, reward.amount(),
+                            "DUNGEON_REWARD:" + instanceId);
+                    yield delivered > 0
+                            ? new Delivery(DeliveryOutcome.DELIVERED,
+                            reward.rewardKey() + " mmoitems=" + delivered)
+                            : new Delivery(DeliveryOutcome.RETRY_REQUIRED,
+                            reward.rewardKey() + " item_delivery_rejected");
+                }
+            };
+        } catch (Throwable uncertain) {
+            return new Delivery(DeliveryOutcome.REVIEW_REQUIRED,
+                    reward.rewardKey() + " outcome_unknown=" + safeMessage(uncertain));
+        }
+    }
+
+    private Delivery deliverCommand(String instanceId, String templateId, UUID uuid, String playerName,
+                                    Player online, RewardGrant reward) {
+        if (reward.onlineOnly() && (online == null || !online.isOnline())) {
+            return new Delivery(DeliveryOutcome.RETRY_REQUIRED,
+                    reward.rewardKey() + " online_only_target_offline");
+        }
+        String resolved = placeholders(reward.command(), uuid, playerName, instanceId, templateId);
+        if (resolved.startsWith("/")) resolved = resolved.substring(1);
+        ProofGrantCommand proofGrant = parseProofGrantCommand(resolved);
+        Player proofTarget = null;
+        if (proofGrant != null) {
+            proofTarget = Bukkit.getPlayerExact(proofGrant.playerName());
+            if (proofTarget == null || !proofTarget.isOnline()) {
+                return new Delivery(DeliveryOutcome.RETRY_REQUIRED,
+                        reward.rewardKey() + " proof_target_offline=" + proofGrant.playerName());
+            }
+        }
+        boolean accepted = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), resolved);
+        if (!accepted) {
+            return new Delivery(DeliveryOutcome.REVIEW_REQUIRED,
+                    reward.rewardKey() + " command_returned_false_outcome_unknown");
+        }
+        if (proofGrant != null) {
+            return switch (verifyProof(proofTarget, proofGrant.proofId())) {
+                case VERIFIED -> new Delivery(DeliveryOutcome.DELIVERED,
+                        reward.rewardKey() + " proof_verified=" + proofGrant.proofId());
+                case NOT_GRANTED -> new Delivery(DeliveryOutcome.RETRY_REQUIRED,
+                        reward.rewardKey() + " proof_not_granted=" + proofGrant.proofId());
+                case UNAVAILABLE -> new Delivery(DeliveryOutcome.REVIEW_REQUIRED,
+                        reward.rewardKey() + " proof_verification_unavailable=" + proofGrant.proofId());
+            };
+        }
+        return new Delivery(DeliveryOutcome.DELIVERED, reward.rewardKey() + " command=1");
+    }
+
+    static ProofGrantCommand parseProofGrantCommand(String command) {
+        if (command == null || command.isBlank()) return null;
+        String normalized = command.trim();
+        if (normalized.startsWith("/")) normalized = normalized.substring(1).trim();
+        String[] parts = normalized.split("\\s+");
+        if (parts.length != 5 || !"ksrpg".equalsIgnoreCase(parts[0])
+                || !("proof".equalsIgnoreCase(parts[1]) || "凭证".equals(parts[1]))
+                || !"grant".equalsIgnoreCase(parts[2])) return null;
+        if (parts[3].isBlank() || parts[4].isBlank()) return null;
+        return new ProofGrantCommand(parts[3], parts[4]);
+    }
+
+    static DeliveryOutcome chanceMissOutcome(RewardGrant reward) {
+        return isProofGrantReward(reward) ? DeliveryOutcome.REVIEW_REQUIRED : DeliveryOutcome.SKIPPED;
+    }
+
+    private static boolean isProofGrantReward(RewardGrant reward) {
+        return reward != null && reward.kind() == RewardKind.COMMAND
+                && parseProofGrantCommand(reward.command()) != null;
+    }
+
+    private static ProofVerification verifyProof(Player player, String proofId) {
+        if (player == null || !player.isOnline()) return ProofVerification.NOT_GRANTED;
+        try {
+            Class<?> apiClass = Bukkit.getServicesManager().getKnownServices().stream()
+                    .filter(service -> "org.kseries.rpg.api.RpgProgressionApi".equals(service.getName()))
+                    .findFirst().orElse(null);
+            if (apiClass == null) return ProofVerification.UNAVAILABLE;
+            Method getRegistration = org.bukkit.plugin.ServicesManager.class
+                    .getMethod("getRegistration", Class.class);
+            Object registration = getRegistration.invoke(Bukkit.getServicesManager(), apiClass);
+            if (registration == null) return ProofVerification.UNAVAILABLE;
+            Object provider = registration.getClass().getMethod("getProvider").invoke(registration);
+            if (provider == null) return ProofVerification.UNAVAILABLE;
+            Object result = apiClass.getMethod("hasProof", Player.class, String.class)
+                    .invoke(provider, player, proofId);
+            if (!(result instanceof Boolean verified)) return ProofVerification.UNAVAILABLE;
+            return verified ? ProofVerification.VERIFIED : ProofVerification.NOT_GRANTED;
+        } catch (Throwable ignored) {
+            return ProofVerification.UNAVAILABLE;
+        }
+    }
+
+    private static void addItemRewards(List<RewardGrant> rewards, JsonArray items,
+                                       RewardKind kind, String keyPrefix) {
+        if (items == null) return;
+        for (int index = 0; index < items.size(); index++) {
+            JsonElement element = items.get(index);
+            if (!element.isJsonObject()) continue;
+            JsonObject object = element.getAsJsonObject();
+            String type = kind == RewardKind.MMO_ITEM ? string(object, "type", "") : "";
+            String id = string(object, "id", "");
+            int amount = Math.max(1, (int) number(object.get("amount"), 1));
+            double configuredChance = chance(object.get("chance"));
+            if (id.isBlank() || (kind == RewardKind.MMO_ITEM && type.isBlank())) continue;
+            String payload = type + "|" + id + "|" + amount + "|" + configuredChance;
+            rewards.add(new RewardGrant(rewardKey(keyPrefix, index, payload), kind,
+                    0, "", false, type, id, amount, configuredChance));
+        }
+    }
+
+    private static String rewardKey(String kind, int index, String payload) {
+        UUID digest = UUID.nameUUIDFromBytes(payload.getBytes(StandardCharsets.UTF_8));
+        return kind + ":" + index + ":" + Long.toUnsignedString(digest.getMostSignificantBits(), 16)
+                + ":" + Long.toUnsignedString(digest.getLeastSignificantBits(), 16);
+    }
+
+    private static boolean selected(String instanceId, UUID playerUuid, String rewardKey, double chance) {
+        if (chance >= 1.0) return true;
+        if (chance <= 0.0) return false;
+        String seedText = instanceId + "|" + playerUuid + "|" + rewardKey;
+        long seed = UUID.nameUUIDFromBytes(seedText.getBytes(StandardCharsets.UTF_8)).getMostSignificantBits();
+        return new Random(seed).nextDouble() <= chance;
+    }
+
+    private static String safeMessage(Throwable failure) {
+        return failure == null || failure.getMessage() == null
+                ? failure == null ? "unknown" : failure.getClass().getSimpleName()
+                : failure.getMessage();
     }
 
     public void grantCompletionRewards(String instanceId, String templateId, String rewardConfig,
@@ -77,22 +335,27 @@ public final class DungeonRpgBridge {
 
         for (UUID uuid : participants) {
             if (uuid == null) continue;
-            OfflinePlayer offline = Bukkit.getOfflinePlayer(uuid);
-            Player online = Bukkit.getPlayer(uuid);
-            String playerName = online != null ? online.getName()
-                    : (offline.getName() == null ? uuid.toString() : offline.getName());
+            try {
+                OfflinePlayer offline = Bukkit.getOfflinePlayer(uuid);
+                Player online = Bukkit.getPlayer(uuid);
+                String playerName = online != null ? online.getName()
+                        : (offline.getName() == null ? uuid.toString() : offline.getName());
 
-            int commandCount = grantCommands(commands, uuid, playerName, instanceId, templateId);
-            boolean paid = grantMoney(offline, uuid, playerName, money);
-            int mythicItemCount = grantMythicItems(mythicItems, uuid, online, instanceId);
-            int itemCount = grantMmoItems(mmoItems, uuid, online, instanceId);
+                int commandCount = grantCommands(commands, uuid, playerName, instanceId, templateId);
+                boolean paid = grantMoney(offline, uuid, playerName, money);
+                int mythicItemCount = grantMythicItems(mythicItems, uuid, online, instanceId);
+                int itemCount = grantMmoItems(mmoItems, uuid, online, instanceId);
 
-            if (online != null && online.isOnline() && (money > 0 || commandCount > 0 || mythicItemCount > 0 || itemCount > 0)) {
-                online.sendMessage("§6[副本] §a通关奖励已发放。");
-            }
-            if (logger != null && (money > 0 || commandCount > 0 || mythicItemCount > 0 || itemCount > 0)) {
-                logger.log(uuid, "template=" + templateId + " money=" + (paid ? money : 0)
-                        + " commands=" + commandCount + " mythicitems=" + mythicItemCount + " mmoitems=" + itemCount);
+                if (online != null && online.isOnline() && (money > 0 || commandCount > 0 || mythicItemCount > 0 || itemCount > 0)) {
+                    online.sendMessage("§6[副本] §a通关奖励已发放。");
+                }
+                if (logger != null && (money > 0 || commandCount > 0 || mythicItemCount > 0 || itemCount > 0)) {
+                    logger.log(uuid, "template=" + templateId + " money=" + (paid ? money : 0)
+                            + " commands=" + commandCount + " mythicitems=" + mythicItemCount + " mmoitems=" + itemCount);
+                }
+            } catch (Throwable failure) {
+                eco.getLogger().warning("[Dungeon RPG] reward failed for player " + uuid
+                        + " instance=" + instanceId + ": " + failure.getMessage());
             }
         }
     }

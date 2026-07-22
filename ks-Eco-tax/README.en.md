@@ -17,4 +17,9 @@ Tax and macro-control module with progressive rates, live rate changes, penaltie
 The module provides progressive enterprise rates, Web adjustments, a minimum tax of 1.0, configurable penalties,
 and records in `ks_tax_records`, `ks_tax_penalties`, and `ks_tax_rates`. Its Web panel is `/ks-Eco/tax`.
 
+It normalizes fractional and legacy percentage rates, persists industry rates separately, refreshes shared-database
+snapshots, rejects non-finite tax bases, and performs idempotent asynchronous audit writes with refund on final failure.
+Java 21 test/package passed on 2026-07-18; there are currently no automated test sources. No JAR was deployed and live
+remote-database/game tax flows remain untested.
+
 Build with `cd ks-Eco-tax && mvn clean package`, then place the JAR in `plugins/ks-Eco/extra/`.

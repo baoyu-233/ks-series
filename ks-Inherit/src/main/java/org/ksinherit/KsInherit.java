@@ -64,7 +64,7 @@ public final class KsInherit extends JavaPlugin {
         getLogger().info("ks-Inherit 已禁用");
     }
 
-    private void closeConnection() {
+    private synchronized void closeConnection() {
         if (conn != null) {
             try { conn.close(); } catch (SQLException ignored) {}
             conn = null;
@@ -79,7 +79,7 @@ public final class KsInherit extends JavaPlugin {
      * <p>工作流：从 1.20.6 复制 db 时改名为 items_new.db 放到插件目录，
      * 执行 /inherit reload 即可，无需停止服务器。
      */
-    public String reloadDatabase() {
+    public synchronized String reloadDatabase() {
         File newDbFile = new File(getDataFolder(), "items_new.db");
         if (newDbFile.exists()) {
             int count = importFromExternalDb(newDbFile.getAbsolutePath());
@@ -107,7 +107,7 @@ public final class KsInherit extends JavaPlugin {
      * 从外部 SQLite db 逐行导入全部物品到当前数据库。
      * 使用独立 JDBC 连接读取外部 db，避免 ATTACH 导致的文件锁问题。
      */
-    private int importFromExternalDb(String externalPath) {
+    private synchronized int importFromExternalDb(String externalPath) {
         Connection extConn = null;
         try {
             extConn = DriverManager.getConnection("jdbc:sqlite:" + externalPath);
@@ -157,7 +157,7 @@ public final class KsInherit extends JavaPlugin {
 
     // ==================== 数据库 ====================
 
-    private void initDatabase() {
+    private synchronized void initDatabase() {
         try {
             File dbFile = new File(DB_PATH);
             dbFile.getParentFile().mkdirs();
@@ -202,16 +202,23 @@ public final class KsInherit extends JavaPlugin {
         return conn;
     }
 
-    private void loadSlotOverrides() {
+    private synchronized void loadSlotOverrides() {
+        slotOverrides.clear();
         try {
             var c = getConnection();
             if (c == null) return;
-            var rs = c.createStatement().executeQuery(
-                "SELECT key, value FROM ks_inherit_config WHERE key LIKE 'slot_%'");
-            while (rs.next()) {
-                String uuid = rs.getString("key").substring(5);
-                int slots = Integer.parseInt(rs.getString("value"));
-                slotOverrides.put(UUID.fromString(uuid), slots);
+            try (Statement stmt = c.createStatement();
+                 ResultSet rs = stmt.executeQuery(
+                     "SELECT key, value FROM ks_inherit_config WHERE key LIKE 'slot_%'")) {
+                while (rs.next()) {
+                    try {
+                        String uuid = rs.getString("key").substring(5);
+                        int slots = Integer.parseInt(rs.getString("value"));
+                        slotOverrides.put(UUID.fromString(uuid), Math.max(1, Math.min(54, slots)));
+                    } catch (IllegalArgumentException ignored) {
+                        // Ignore malformed legacy overrides instead of failing plugin startup.
+                    }
+                }
             }
         } catch (SQLException ignored) {}
     }
@@ -223,14 +230,18 @@ public final class KsInherit extends JavaPlugin {
     }
 
     /** 设置玩家可用槽位数 */
-    public void setMaxSlots(UUID uuid, int slots) {
+    public synchronized void setMaxSlots(UUID uuid, int slots) {
+        slots = Math.max(1, Math.min(54, slots));
         slotOverrides.put(uuid, slots);
         try {
             var c = getConnection();
             if (c == null) return;
-            c.createStatement().executeUpdate(
-                "INSERT OR REPLACE INTO ks_inherit_config (key, value) VALUES ('slot_" +
-                uuid.toString() + "', '" + slots + "')");
+            try (PreparedStatement ps = c.prepareStatement(
+                    "INSERT OR REPLACE INTO ks_inherit_config (key, value) VALUES (?, ?)")) {
+                ps.setString(1, "slot_" + uuid);
+                ps.setString(2, Integer.toString(slots));
+                ps.executeUpdate();
+            }
         } catch (SQLException ignored) {}
     }
 
@@ -245,7 +256,10 @@ public final class KsInherit extends JavaPlugin {
      *
      * @return true 表示保存成功；false 表示该槽位已被锁定（已审批/已发放），未作任何修改
      */
-    public boolean saveItem(Player player, int slot, ItemStack item) {
+    public synchronized boolean saveItem(Player player, int slot, ItemStack item) {
+        if (slot < 0 || slot >= GUI_ROWS * 9 || item == null || item.getType().isAir()) {
+            return false;
+        }
         String uuid = player.getUniqueId().toString();
         String name = player.getName();
         long now = System.currentTimeMillis() / 1000;
@@ -276,12 +290,21 @@ public final class KsInherit extends JavaPlugin {
 
             if (isSlotLocked(c, uuid, slot)) return false;
 
-            c.createStatement().executeUpdate(
-                "INSERT OR REPLACE INTO ks_inherit_items (player_uuid, player_name, slot, item_json, item_type, item_name, item_lore, enchantments, status, submitted_at) VALUES ('" +
-                uuid + "', '" + name.replace("'", "''") + "', " + slot + ", '" +
-                base64.replace("'", "''") + "', '" + typeName + "', '" +
-                displayName.replace("'", "''") + "', '" + lore.replace("'", "''") + "', '" +
-                enchants.replace("'", "''") + "', 'PENDING', " + now + ")");
+            try (PreparedStatement ps = c.prepareStatement(
+                    "INSERT OR REPLACE INTO ks_inherit_items " +
+                    "(player_uuid, player_name, slot, item_json, item_type, item_name, item_lore, enchantments, status, submitted_at) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)")) {
+                ps.setString(1, uuid);
+                ps.setString(2, name);
+                ps.setInt(3, slot);
+                ps.setString(4, base64);
+                ps.setString(5, typeName);
+                ps.setString(6, displayName);
+                ps.setString(7, lore);
+                ps.setString(8, enchants);
+                ps.setLong(9, now);
+                ps.executeUpdate();
+            }
             return true;
         } catch (SQLException e) {
             getLogger().warning("保存物品失败: " + e.getMessage());
@@ -290,24 +313,33 @@ public final class KsInherit extends JavaPlugin {
     }
 
     /** 删除玩家槽位物品（已审批/已发放的记录被锁定，不会被删除） */
-    public void deleteItem(Player player, int slot) {
+    public synchronized void deleteItem(Player player, int slot) {
+        if (slot < 0 || slot >= GUI_ROWS * 9) return;
         try {
             var c = getConnection();
             if (c == null) return;
-            c.createStatement().executeUpdate(
-                "DELETE FROM ks_inherit_items WHERE player_uuid='" +
-                player.getUniqueId().toString() + "' AND slot=" + slot +
-                " AND status NOT IN ('APPROVED','DELIVERED')");
+            try (PreparedStatement ps = c.prepareStatement(
+                    "DELETE FROM ks_inherit_items WHERE player_uuid=? AND slot=? " +
+                    "AND status NOT IN ('APPROVED','DELIVERING','DELIVERED')")) {
+                ps.setString(1, player.getUniqueId().toString());
+                ps.setInt(2, slot);
+                ps.executeUpdate();
+            }
         } catch (SQLException ignored) {}
     }
 
     /** 槽位是否已被锁定（已审批待发放 / 已发放，禁止玩家在 GUI 中修改或清空） */
     private boolean isSlotLocked(Connection c, String uuid, int slot) throws SQLException {
-        var rs = c.createStatement().executeQuery(
-            "SELECT status FROM ks_inherit_items WHERE player_uuid='" + uuid + "' AND slot=" + slot);
-        if (rs.next()) {
-            String status = rs.getString("status");
-            return "APPROVED".equals(status) || "DELIVERED".equals(status);
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT status FROM ks_inherit_items WHERE player_uuid=? AND slot=?")) {
+            ps.setString(1, uuid);
+            ps.setInt(2, slot);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    String status = rs.getString("status");
+                    return "APPROVED".equals(status) || "DELIVERING".equals(status) || "DELIVERED".equals(status);
+                }
+            }
         }
         return false;
     }
@@ -319,14 +351,14 @@ public final class KsInherit extends JavaPlugin {
      * 不应再出现在玩家可编辑的存储槽位中，否则玩家关闭 GUI 时会被
      * {@link #saveItem} 重新写入并打回 PENDING，导致重复审批/发放。
      */
-    public Map<Integer, ItemStack> loadItems(Player player) {
+    public synchronized Map<Integer, ItemStack> loadItems(Player player) {
         Map<Integer, ItemStack> items = new LinkedHashMap<>();
         try {
             var c = getConnection();
             if (c == null) return items;
             var rs = c.createStatement().executeQuery(
                 "SELECT slot, item_json, status FROM ks_inherit_items WHERE player_uuid='" +
-                player.getUniqueId().toString() + "' AND status NOT IN ('APPROVED','DELIVERED') ORDER BY slot");
+                player.getUniqueId().toString() + "' AND status NOT IN ('APPROVED','DELIVERING','DELIVERED') ORDER BY slot");
             while (rs.next()) {
                 int slot = rs.getInt("slot");
                 String base64 = rs.getString("item_json");
@@ -345,20 +377,20 @@ public final class KsInherit extends JavaPlugin {
     }
 
     /** 清空玩家所有物品（已审批/已发放的记录被锁定，不会被清空） */
-    public void clearItems(UUID uuid) {
+    public synchronized void clearItems(UUID uuid) {
         try {
             var c = getConnection();
             if (c == null) return;
             c.createStatement().executeUpdate(
                 "DELETE FROM ks_inherit_items WHERE player_uuid='" + uuid.toString() +
-                "' AND status NOT IN ('APPROVED','DELIVERED')");
+                "' AND status NOT IN ('APPROVED','DELIVERING','DELIVERED')");
         } catch (SQLException ignored) {}
     }
 
     // ==================== 审阅 / 批准 / 发放 ====================
 
     /** 获取所有待审物品（管理员用） */
-    public List<Map<String, Object>> getAllItems(String statusFilter) {
+    public synchronized List<Map<String, Object>> getAllItems(String statusFilter) {
         List<Map<String, Object>> list = new ArrayList<>();
         try {
             var c = getConnection();
@@ -385,7 +417,7 @@ public final class KsInherit extends JavaPlugin {
     }
 
     /** 获取指定玩家的物品 */
-    public List<Map<String, Object>> getPlayerItems(String playerUuid) {
+    public synchronized List<Map<String, Object>> getPlayerItems(String playerUuid) {
         List<Map<String, Object>> list = new ArrayList<>();
         try {
             var c = getConnection();
@@ -409,7 +441,7 @@ public final class KsInherit extends JavaPlugin {
     }
 
     /** 批准物品 */
-    public boolean approveItem(int itemId, String reviewerUuid, String reviewerName) {
+    public synchronized boolean approveItem(int itemId, String reviewerUuid, String reviewerName) {
         try {
             var c = getConnection();
             if (c == null) return false;
@@ -423,7 +455,7 @@ public final class KsInherit extends JavaPlugin {
     }
 
     /** 拒绝物品 */
-    public boolean rejectItem(int itemId, String reviewerUuid, String reviewerName) {
+    public synchronized boolean rejectItem(int itemId, String reviewerUuid, String reviewerName) {
         try {
             var c = getConnection();
             if (c == null) return false;
@@ -452,45 +484,99 @@ public final class KsInherit extends JavaPlugin {
             var c = getConnection();
             if (c == null) return "数据库未连接";
 
-            var rs = c.createStatement().executeQuery(
-                "SELECT * FROM ks_inherit_items WHERE id=" + itemId);
-            if (!rs.next()) return "物品不存在";
+            long now = System.currentTimeMillis() / 1000;
+            int claimed;
+            try (var claim = c.prepareStatement(
+                    "UPDATE ks_inherit_items SET status='DELIVERING', delivered_at=? " +
+                            "WHERE id=? AND status='APPROVED'")) {
+                claim.setLong(1, now);
+                claim.setInt(2, itemId);
+                claimed = claim.executeUpdate();
+            }
+            if (claimed != 1) {
+                String status = null;
+                try (var rs = c.createStatement().executeQuery(
+                        "SELECT status FROM ks_inherit_items WHERE id=" + itemId)) {
+                    if (rs.next()) status = rs.getString(1);
+                }
+                if (status == null) return "物品不存在";
+                if ("DELIVERED".equals(status) || "DELIVERING".equals(status)) {
+                    return "物品已发放或正在发放";
+                }
+                return "物品未批准（当前状态: " + status + "）";
+            }
 
-            String status = rs.getString("status");
-            if (!"APPROVED".equals(status)) return "物品未批准（当前状态: " + status + "）";
+            String playerUuid;
+            String base64;
+            try (var rs = c.createStatement().executeQuery(
+                    "SELECT player_uuid, item_json FROM ks_inherit_items WHERE id=" + itemId
+                            + " AND status='DELIVERING'")) {
+                if (!rs.next()) return "物品不存在";
+                playerUuid = rs.getString("player_uuid");
+                base64 = rs.getString("item_json");
+            }
 
-            String playerUuid = rs.getString("player_uuid");
-            String base64 = rs.getString("item_json");
             ItemStack item = ItemStack.deserializeBytes(Base64.getDecoder().decode(base64));
-
             UUID uuid = UUID.fromString(playerUuid);
             Player player = Bukkit.getPlayer(uuid);
 
-            // 尝试 OpenInv（离线玩家背包操作）
+            boolean delivered;
             if (player == null || !player.isOnline()) {
-                boolean deliveredViaOpenInv = tryOpenInvDelivery(uuid, item);
-                if (!deliveredViaOpenInv) {
+                delivered = tryOpenInvDelivery(uuid, item);
+                if (!delivered) {
+                    try (var rollback = c.prepareStatement(
+                            "UPDATE ks_inherit_items SET status='APPROVED', delivered_at=0 " +
+                                    "WHERE id=? AND status='DELIVERING'")) {
+                        rollback.setInt(1, itemId);
+                        rollback.executeUpdate();
+                    }
                     return "玩家不在线且 OpenInv 不可用，请玩家上线后重试";
                 }
             } else {
-                // 在线：直接放入背包
                 var leftover = player.getInventory().addItem(item);
                 if (!leftover.isEmpty()) {
-                    // 背包满 → 尝试丢在地上
                     for (ItemStack is : leftover.values()) {
                         player.getWorld().dropItemNaturally(player.getLocation(), is);
                     }
                 }
+                delivered = true;
             }
 
-            // 标记已发放
-            long now = System.currentTimeMillis() / 1000;
-            c.createStatement().executeUpdate(
-                "UPDATE ks_inherit_items SET status='DELIVERED', delivered_at=" + now +
-                " WHERE id=" + itemId);
+            if (!delivered) {
+                try (var rollback = c.prepareStatement(
+                        "UPDATE ks_inherit_items SET status='APPROVED', delivered_at=0 " +
+                                "WHERE id=? AND status='DELIVERING'")) {
+                    rollback.setInt(1, itemId);
+                    rollback.executeUpdate();
+                }
+                return "发放失败";
+            }
+
+            try (var done = c.prepareStatement(
+                    "UPDATE ks_inherit_items SET status='DELIVERED', delivered_at=? " +
+                            "WHERE id=? AND status='DELIVERING'")) {
+                done.setLong(1, now);
+                done.setInt(2, itemId);
+                if (done.executeUpdate() != 1) {
+                    return "发放完成但状态更新失败，请人工核对，勿重复发放";
+                }
+            }
 
             return "OK";
         } catch (Exception e) {
+            try {
+                var c = getConnection();
+                if (c != null) {
+                    try (var rollback = c.prepareStatement(
+                            "UPDATE ks_inherit_items SET status='APPROVED', delivered_at=0 " +
+                                    "WHERE id=? AND status='DELIVERING'")) {
+                        rollback.setInt(1, itemId);
+                        rollback.executeUpdate();
+                    }
+                }
+            } catch (Exception ignored) {
+                // Keep the original delivery error as the return value.
+            }
             return "发放失败: " + e.getMessage();
         }
     }

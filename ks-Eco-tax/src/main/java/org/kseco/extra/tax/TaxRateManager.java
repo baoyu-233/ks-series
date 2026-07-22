@@ -1,298 +1,414 @@
 package org.kseco.extra.tax;
 
+import org.bukkit.Bukkit;
+import org.bukkit.scheduler.BukkitTask;
 import org.kseco.KsEco;
 
-import java.sql.*;
-import java.util.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * 动态税率管理器（支持行业差异化 + 阶梯）。
- *
- * 税种类别（category）：
- * - MARKET_TRADE: 市场交易税
- * - OFFICIAL_TRADE: 官方交易税
- * - ENTERPRISE_TAX: 企业所得税
- * - BANK_INTEREST: 银行利息税
- * - PENALTY_TAX: 罚金税
- * - DIVIDEND_TAX: 分红税
- *
- * 行业（industry）：INDUSTRY/AGRICULTURE/REAL_ESTATE/OTHER/NULL=通用
- * 阶梯：ks_tax_brackets (scope=ENTERPRISE_TAX, industry, profit_min, profit_max, rate)
- *   查表时按 industry 找 (profit_min <= amount < profit_max) 选 rate；无阶梯则用 ks_tax_rates 基础税率
- */
+/** Dynamic, industry-specific and bracket tax-rate management. */
 public final class TaxRateManager {
 
+    private static final long RATE_REFRESH_TICKS = 20L * 30L;
+
     private final KsEco eco;
-    private final Map<String, Double> rates = new LinkedHashMap<>();  // 兼容旧 API：category -> rate（通用）
-    // 新 API：industryRates[industry] -> [category -> rate]
-    private final Map<String, Map<String, Double>> industryRates = new LinkedHashMap<>();
+    private final AtomicBoolean refreshQueued = new AtomicBoolean();
+
+    private volatile Map<String, Double> rates = defaultRates();
+    private volatile Map<String, Map<String, Double>> industryRates = defaultIndustryRates();
+    private volatile List<TaxBracket> brackets = List.of();
+    private BukkitTask refreshTask;
 
     public TaxRateManager(KsEco eco) {
         this.eco = eco;
     }
 
     public void init() {
-        // 默认通用税率
-        rates.put("MARKET_TRADE", 0.02);
-        rates.put("OFFICIAL_TRADE", 0.0);
-        rates.put("ENTERPRISE_TAX", 0.08);
-        rates.put("BANK_INTEREST", 0.10);
-        rates.put("PLAYER_TRANSFER", 0.01);
-        rates.put("PENALTY_TAX", 0.20);
-        rates.put("DIVIDEND_TAX", 0.10);
-        // 默认行业差异：房地产行业分红税低，鼓励投资
-        Map<String, Double> re = new LinkedHashMap<>();
-        re.put("DIVIDEND_TAX", 0.05);
-        re.put("ENTERPRISE_TAX", 0.10);
-        industryRates.put("REAL_ESTATE", re);
-        // 农业：低企业税
-        Map<String, Double> ag = new LinkedHashMap<>();
-        ag.put("ENTERPRISE_TAX", 0.05);
-        ag.put("MARKET_TRADE", 0.01);
-        industryRates.put("AGRICULTURE", ag);
-        // 工业：标准
-        Map<String, Double> ind = new LinkedHashMap<>();
-        ind.put("DIVIDEND_TAX", 0.12);
-        industryRates.put("INDUSTRY", ind);
-
-        ensureTable();
-        loadRates();
-        loadIndustryRates();
-        ensureBracketsTable();
+        rates = defaultRates();
+        industryRates = defaultIndustryRates();
+        brackets = List.of();
+        queueRefresh();
+        refreshTask = Bukkit.getScheduler().runTaskTimer(
+                eco,
+                this::queueRefresh,
+                RATE_REFRESH_TICKS,
+                RATE_REFRESH_TICKS);
     }
 
-    private void ensureTable() {
-        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) {
-                eco.getLogger().warning("[税率] 数据库连接未就绪，延迟建表");
-                return;
-            }
-            try (Statement stmt = conn.createStatement()) {
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_tax_rates (
-                        category TEXT NOT NULL,
-                        industry TEXT,
-                        rate REAL NOT NULL,
-                        updated_at INTEGER NOT NULL,
-                        PRIMARY KEY(category, industry)
-                    )
-                """);
-                // 兼容旧 DB（缺 industry 列）— 2026-06-27 修复
+    public void shutdown() {
+        if (refreshTask != null) {
+            refreshTask.cancel();
+            refreshTask = null;
+        }
+    }
+
+    private void queueRefresh() {
+        if (!refreshQueued.compareAndSet(false, true)) return;
+        try {
+            eco.asyncWorkPool().executeDatabase(() -> {
                 try {
-                    stmt.execute("ALTER TABLE ks_tax_rates ADD COLUMN industry TEXT");
-                } catch (SQLException ignore) { /* 已存在 */ }
-            }
-        } catch (SQLException e) {
-            eco.getLogger().warning("[税率] 创建表失败: " + e.getMessage());
+                    refreshFromDatabase();
+                } finally {
+                    refreshQueued.set(false);
+                }
+            });
+        } catch (RejectedExecutionException exception) {
+            refreshQueued.set(false);
+            eco.getLogger().warning("[TaxRate] Database queue rejected a rate refresh");
         }
     }
 
-    private void ensureBracketsTable() {
-        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return;
-            try (Statement stmt = conn.createStatement()) {
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_tax_brackets (
-                        id TEXT PRIMARY KEY,
-                        industry TEXT NOT NULL,
-                        scope TEXT NOT NULL DEFAULT 'ENTERPRISE_TAX',
-                        profit_min REAL NOT NULL,
-                        profit_max REAL NOT NULL,
-                        rate REAL NOT NULL,
-                        updated_at INTEGER NOT NULL
-                    )
-                """);
-            }
-        } catch (SQLException e) {
-            eco.getLogger().warning("[税率阶梯] 建表失败: " + e.getMessage());
-        }
-    }
+    private synchronized void refreshFromDatabase() {
+        Map<String, Double> loadedRates = new LinkedHashMap<>(defaultRates());
+        Map<String, Map<String, Double>> loadedIndustryRates = mutableIndustryCopy(defaultIndustryRates());
+        List<TaxBracket> loadedBrackets = new ArrayList<>();
 
-    private void loadRates() {
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
+            ensureTables(conn);
+            migrateLegacyIndustryRates(conn);
+
+            String generalRateQuery = TaxJdbcSupport.hasColumn(conn, "ks_tax_rates", "industry")
+                    ? "SELECT category, rate FROM ks_tax_rates WHERE industry IS NULL OR industry=''"
+                    : "SELECT category, rate FROM ks_tax_rates";
             try (Statement stmt = conn.createStatement();
-                 ResultSet rs = stmt.executeQuery("SELECT category, rate, industry FROM ks_tax_rates WHERE industry IS NULL OR industry=''")) {
+                 ResultSet rs = stmt.executeQuery(generalRateQuery)) {
                 while (rs.next()) {
-                    rates.put(rs.getString("category"), rs.getDouble("rate"));
+                    String category = normalizeKey(rs.getString("category"));
+                    if (!category.isEmpty()) {
+                        loadedRates.put(category,
+                                TaxValuePolicy.normalizeRate(rs.getDouble("rate"),
+                                        loadedRates.getOrDefault(category, 0.02d)));
+                    }
                 }
             }
-        } catch (SQLException e) {
-            eco.getLogger().warning("[税率] 加载失败: " + e.getMessage());
-        }
-    }
 
-    private void loadIndustryRates() {
-        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return;
             try (Statement stmt = conn.createStatement();
-                 ResultSet rs = stmt.executeQuery("SELECT category, rate, industry FROM ks_tax_rates WHERE industry IS NOT NULL AND industry<>''")) {
+                 ResultSet rs = stmt.executeQuery(
+                         "SELECT category, industry, rate FROM ks_tax_industry_rates")) {
                 while (rs.next()) {
-                    String ind = rs.getString("industry");
-                    industryRates.computeIfAbsent(ind, k -> new LinkedHashMap<>())
-                            .put(rs.getString("category"), rs.getDouble("rate"));
+                    String category = normalizeKey(rs.getString("category"));
+                    String industry = normalizeKey(rs.getString("industry"));
+                    if (category.isEmpty() || industry.isEmpty()) continue;
+                    Map<String, Double> categoryRates = loadedIndustryRates.computeIfAbsent(
+                            industry, ignored -> new LinkedHashMap<>());
+                    categoryRates.put(category,
+                            TaxValuePolicy.normalizeRate(rs.getDouble("rate"),
+                                    categoryRates.getOrDefault(category,
+                                            loadedRates.getOrDefault(category, 0.02d))));
                 }
             }
-        } catch (SQLException e) {
-            eco.getLogger().warning("[税率] 行业税率加载失败: " + e.getMessage());
+
+            try (Statement stmt = conn.createStatement();
+                 ResultSet rs = stmt.executeQuery(
+                         "SELECT id, industry, scope, profit_min, profit_max, rate "
+                                 + "FROM ks_tax_brackets")) {
+                while (rs.next()) {
+                    double minimum = rs.getDouble("profit_min");
+                    double maximum = rs.getDouble("profit_max");
+                    if (!Double.isFinite(minimum) || !Double.isFinite(maximum) || maximum <= minimum) {
+                        continue;
+                    }
+                    loadedBrackets.add(new TaxBracket(
+                            rs.getString("id"),
+                            normalizeKey(rs.getString("industry")),
+                            normalizeKey(rs.getString("scope")),
+                            minimum,
+                            maximum,
+                            TaxValuePolicy.normalizeRate(rs.getDouble("rate"), 0.0d)));
+                }
+            }
+        } catch (SQLException | RuntimeException exception) {
+            eco.getLogger().warning("[TaxRate] Failed to refresh rates: " + exception.getMessage());
+            return;
+        }
+
+        loadedBrackets.sort(Comparator.comparing(TaxBracket::industry)
+                .thenComparing(TaxBracket::scope)
+                .thenComparingDouble(TaxBracket::profitMin));
+        rates = Collections.unmodifiableMap(loadedRates);
+        industryRates = immutableIndustryCopy(loadedIndustryRates);
+        brackets = List.copyOf(loadedBrackets);
+    }
+
+    private void ensureTables(Connection conn) throws SQLException {
+        TaxJdbcSupport.ensureTables(conn);
+    }
+
+    private void migrateLegacyIndustryRates(Connection conn) {
+        try {
+            if (!TaxJdbcSupport.hasColumn(conn, "ks_tax_rates", "industry")) return;
+        } catch (SQLException ignored) {
+            return;
+        }
+        List<LegacyIndustryRate> legacyRates = new ArrayList<>();
+        try (Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(
+                     "SELECT category, industry, rate FROM ks_tax_rates "
+                             + "WHERE industry IS NOT NULL AND industry<>''")) {
+            while (rs.next()) {
+                String category = normalizeKey(rs.getString("category"));
+                String industry = normalizeKey(rs.getString("industry"));
+                if (!category.isEmpty() && !industry.isEmpty()) {
+                    legacyRates.add(new LegacyIndustryRate(category, industry,
+                            TaxValuePolicy.normalizeRate(rs.getDouble("rate"), 0.0d)));
+                }
+            }
+        } catch (SQLException ignored) {
+            return;
+        }
+
+        long now = System.currentTimeMillis() / 1000L;
+        for (LegacyIndustryRate legacy : legacyRates) {
+            try {
+                TaxJdbcSupport.insertIndustryRateIfAbsent(
+                        conn, legacy.category(), legacy.industry(), legacy.rate(), now);
+            } catch (SQLException exception) {
+                eco.getLogger().warning("[TaxRate] Failed to migrate legacy industry rate "
+                        + legacy.industry() + "/" + legacy.category() + ": " + exception.getMessage());
+            }
         }
     }
 
-    /** 旧 API：取通用税率 */
     public double getRate(String category) {
-        return rates.getOrDefault(category, 0.02);
+        String normalizedCategory = normalizeKey(category);
+        return rates.getOrDefault(normalizedCategory, 0.02d);
     }
 
-    /** 新 API：按行业取税率（先查 industry，没有就回退到通用） */
     public double getRate(String category, String industry) {
-        if (industry != null && !industry.isEmpty()) {
-            Map<String, Double> m = industryRates.get(industry);
-            if (m != null && m.containsKey(category)) return m.get(category);
+        String normalizedCategory = normalizeKey(category);
+        String normalizedIndustry = normalizeKey(industry);
+        Map<String, Double> configured = industryRates.get(normalizedIndustry);
+        if (configured != null && configured.containsKey(normalizedCategory)) {
+            return configured.get(normalizedCategory);
         }
-        return getRate(category);
+        return getRate(normalizedCategory);
     }
 
-    /**
-     * 设置税率（管理员操作）。
-     * industry=null 表示通用；否则是具体行业。
-     */
     public void setRate(String category, double rate, String industry) {
-        double v = Math.max(0.0, Math.min(1.0, rate));
-        if (industry == null || industry.isEmpty()) {
-            rates.put(category, v);
-        } else {
-            industryRates.computeIfAbsent(industry, k -> new LinkedHashMap<>()).put(category, v);
+        String normalizedCategory = normalizeKey(category);
+        String normalizedIndustry = normalizeKey(industry);
+        if (!isValidKey(normalizedCategory) || (!normalizedIndustry.isEmpty()
+                && !isValidKey(normalizedIndustry)) || !Double.isFinite(rate) || rate < 0.0d) {
+            eco.getLogger().warning("[TaxRate] Rejected invalid rate update");
+            return;
         }
-        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return;
-            ensureTable();
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "INSERT INTO ks_tax_rates (category, industry, rate, updated_at) VALUES (?,?,?,?) " +
-                    "ON CONFLICT(category, industry) DO UPDATE SET rate=excluded.rate, updated_at=excluded.updated_at")) {
-                ps.setString(1, category);
-                if (industry == null || industry.isEmpty()) ps.setNull(2, Types.VARCHAR); else ps.setString(2, industry);
-                ps.setDouble(3, v);
-                ps.setLong(4, System.currentTimeMillis() / 1000);
-                ps.executeUpdate();
+
+        double normalizedRate = TaxValuePolicy.normalizeRate(rate, 0.0d);
+        Runnable persist = () -> persistRateUpdate(
+                normalizedCategory, normalizedIndustry, normalizedRate);
+        if (Bukkit.isPrimaryThread()) {
+            try {
+                eco.asyncWorkPool().executeDatabase(persist);
+            } catch (RejectedExecutionException exception) {
+                eco.getLogger().warning("[TaxRate] Database queue rejected a rate update");
             }
-        } catch (SQLException e) {
-            eco.getLogger().warning("[税率] 保存失败: " + e.getMessage());
+        } else {
+            persist.run();
         }
     }
 
-    /** 兼容旧 setRate(category, rate) */
     public void setRate(String category, double rate) {
         setRate(category, rate, null);
     }
 
+    private synchronized void persistRateUpdate(String category, String industry, double rate) {
+        long now = System.currentTimeMillis() / 1000L;
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return;
+            ensureTables(conn);
+            if (industry.isEmpty()) {
+                TaxJdbcSupport.upsertGeneralRate(conn, category, rate, now);
+            } else {
+                TaxJdbcSupport.upsertIndustryRate(conn, category, industry, rate, now);
+            }
+        } catch (SQLException | RuntimeException exception) {
+            eco.getLogger().warning("[TaxRate] Failed to save rate: " + exception.getMessage());
+            return;
+        }
+
+        if (industry.isEmpty()) {
+            Map<String, Double> updated = new LinkedHashMap<>(rates);
+            updated.put(category, rate);
+            rates = Collections.unmodifiableMap(updated);
+        } else {
+            Map<String, Map<String, Double>> updated = mutableIndustryCopy(industryRates);
+            updated.computeIfAbsent(industry, ignored -> new LinkedHashMap<>()).put(category, rate);
+            industryRates = immutableIndustryCopy(updated);
+        }
+    }
+
     public Map<String, Double> getAllRates() {
         Map<String, Double> merged = new LinkedHashMap<>(rates);
-        for (var e : industryRates.entrySet()) {
-            for (var c : e.getValue().entrySet()) {
-                merged.put(e.getKey() + ":" + c.getKey(), c.getValue());
+        for (Map.Entry<String, Map<String, Double>> industry : industryRates.entrySet()) {
+            for (Map.Entry<String, Double> category : industry.getValue().entrySet()) {
+                merged.put(industry.getKey() + ":" + category.getKey(), category.getValue());
             }
         }
         return merged;
     }
 
-    /** 列出某 industry 税率表 */
     public Map<String, Double> getIndustryRates(String industry) {
-        return industryRates.getOrDefault(industry, Map.of());
+        return industryRates.getOrDefault(normalizeKey(industry), Map.of());
     }
 
     public Map<String, Map<String, Double>> getAllIndustryRates() {
-        return new LinkedHashMap<>(industryRates);
+        return industryRates;
     }
 
-    // ================================================================
-    // 阶梯税率
-    // ================================================================
-
-    /**
-     * 按利润查阶梯税率。industry 和 scope 共同决定。
-     * 返回 -1 表示未配置阶梯，调用方应回退到 getRate(scope, industry)。
-     */
     public double getBracketRate(String industry, String scope, double profit) {
-        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return -1;
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT rate FROM ks_tax_brackets " +
-                    "WHERE industry=? AND scope=? AND profit_min<=? AND profit_max>? " +
-                    "ORDER BY profit_min DESC LIMIT 1")) {
-                ps.setString(1, industry != null ? industry : "OTHER");
-                ps.setString(2, scope);
-                ps.setDouble(3, profit);
-                ps.setDouble(4, profit); // profit_max>? — 必须绑定 profit，否则 SQLite 当 NULL → WHERE 永远不命中
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) return rs.getDouble(1);
-                }
-            }
-        } catch (SQLException ignored) {}
-        return -1;
+        if (!Double.isFinite(profit) || profit < 0.0d) return -1.0d;
+        String normalizedIndustry = normalizeKey(industry);
+        String normalizedScope = normalizeKey(scope);
+        TaxBracket match = null;
+        for (TaxBracket bracket : brackets) {
+            if (!bracket.industry().equals(normalizedIndustry)
+                    || !bracket.scope().equals(normalizedScope)
+                    || profit < bracket.profitMin()
+                    || profit >= bracket.profitMax()) continue;
+            if (match == null || bracket.profitMin() > match.profitMin()) match = bracket;
+        }
+        return match == null ? -1.0d : match.rate();
     }
 
     public List<Map<String, Object>> listBrackets(String industry) {
-        List<Map<String, Object>> out = new ArrayList<>();
-        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return out;
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT id, industry, scope, profit_min, profit_max, rate FROM ks_tax_brackets " +
-                    "WHERE industry=? ORDER BY profit_min ASC")) {
-                ps.setString(1, industry);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        Map<String, Object> m = new LinkedHashMap<>();
-                        m.put("id", rs.getString("id"));
-                        m.put("industry", rs.getString("industry"));
-                        m.put("scope", rs.getString("scope"));
-                        m.put("profitMin", rs.getDouble("profit_min"));
-                        m.put("profitMax", rs.getDouble("profit_max"));
-                        m.put("rate", rs.getDouble("rate"));
-                        out.add(m);
-                    }
-                }
-            }
-        } catch (SQLException e) {
-            eco.getLogger().warning("查阶梯失败: " + e.getMessage());
+        String normalizedIndustry = normalizeKey(industry);
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (TaxBracket bracket : brackets) {
+            if (!bracket.industry().equals(normalizedIndustry)) continue;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", bracket.id());
+            row.put("industry", bracket.industry());
+            row.put("scope", bracket.scope());
+            row.put("profitMin", bracket.profitMin());
+            row.put("profitMax", bracket.profitMax());
+            row.put("rate", bracket.rate());
+            result.add(row);
         }
-        return out;
+        return result;
     }
 
-    public boolean upsertBracket(String id, String industry, String scope,
+    public synchronized boolean upsertBracket(String id, String industry, String scope,
                                  double profitMin, double profitMax, double rate) {
+        String normalizedId = id == null ? "" : id.trim();
+        String normalizedIndustry = normalizeKey(industry);
+        String normalizedScope = normalizeKey(scope);
+        if (!isValidId(normalizedId) || !isValidKey(normalizedIndustry)
+                || !isValidKey(normalizedScope)
+                || !Double.isFinite(profitMin) || !Double.isFinite(profitMax)
+                || profitMin < 0.0d || profitMax <= profitMin
+                || !Double.isFinite(rate) || rate < 0.0d) return false;
+
+        double normalizedRate = TaxValuePolicy.normalizeRate(rate, 0.0d);
+        long now = System.currentTimeMillis() / 1000L;
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return false;
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "INSERT INTO ks_tax_brackets (id, industry, scope, profit_min, profit_max, rate, updated_at) " +
-                    "VALUES (?,?,?,?,?,?,?) " +
-                    "ON CONFLICT(id) DO UPDATE SET industry=excluded.industry, scope=excluded.scope, " +
-                    "profit_min=excluded.profit_min, profit_max=excluded.profit_max, rate=excluded.rate, updated_at=excluded.updated_at")) {
-                ps.setString(1, id);
-                ps.setString(2, industry);
-                ps.setString(3, scope);
-                ps.setDouble(4, profitMin);
-                ps.setDouble(5, profitMax);
-                ps.setDouble(6, Math.max(0.0, Math.min(1.0, rate)));
-                ps.setLong(7, System.currentTimeMillis() / 1000);
-                ps.executeUpdate();
-                return true;
-            }
-        } catch (SQLException e) {
-            eco.getLogger().warning("保存阶梯失败: " + e.getMessage());
+            ensureTables(conn);
+            TaxJdbcSupport.upsertBracket(conn, normalizedId, normalizedIndustry, normalizedScope,
+                    profitMin, profitMax, normalizedRate, now);
+        } catch (SQLException | RuntimeException exception) {
+            eco.getLogger().warning("[TaxRate] Failed to save bracket: " + exception.getMessage());
+            return false;
         }
-        return false;
+        refreshFromDatabase();
+        return true;
     }
 
-    public boolean deleteBracket(String id) {
+    public synchronized boolean deleteBracket(String id) {
+        if (id == null || !isValidId(id.trim())) return false;
+        boolean deleted;
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return false;
-            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM ks_tax_brackets WHERE id=?")) {
-                ps.setString(1, id);
-                return ps.executeUpdate() > 0;
+            ensureTables(conn);
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "DELETE FROM ks_tax_brackets WHERE id=?")) {
+                ps.setString(1, id.trim());
+                deleted = ps.executeUpdate() > 0;
             }
-        } catch (SQLException e) {
-            eco.getLogger().warning("删阶梯失败: " + e.getMessage());
+        } catch (SQLException | RuntimeException exception) {
+            eco.getLogger().warning("[TaxRate] Failed to delete bracket: " + exception.getMessage());
+            return false;
         }
-        return false;
+        if (deleted) refreshFromDatabase();
+        return deleted;
+    }
+
+    private static String normalizeKey(String value) {
+        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private static boolean isValidId(String value) {
+        return value != null && !value.isEmpty() && value.length() <= TaxJdbcSupport.ID_MAX_LENGTH;
+    }
+
+    private static boolean isValidKey(String value) {
+        return value != null && !value.isEmpty() && value.length() <= TaxJdbcSupport.KEY_MAX_LENGTH;
+    }
+
+    private static Map<String, Double> defaultRates() {
+        Map<String, Double> defaults = new LinkedHashMap<>();
+        defaults.put("MARKET_TRADE", 0.02d);
+        defaults.put("OFFICIAL_TRADE", 0.0d);
+        defaults.put("ENTERPRISE_TAX", 0.08d);
+        defaults.put("ENTERPRISE_SMALL", 0.05d);
+        defaults.put("ENTERPRISE_MEDIUM", 0.08d);
+        defaults.put("ENTERPRISE_LARGE", 0.12d);
+        defaults.put("BANK_INTEREST", 0.10d);
+        defaults.put("PLAYER_TRANSFER", 0.01d);
+        defaults.put("PENALTY_TAX", 0.20d);
+        defaults.put("TAX_PENALTY", 0.20d);
+        defaults.put("DIVIDEND_TAX", 0.10d);
+        return Collections.unmodifiableMap(defaults);
+    }
+
+    private static Map<String, Map<String, Double>> defaultIndustryRates() {
+        Map<String, Map<String, Double>> defaults = new LinkedHashMap<>();
+        defaults.put("REAL_ESTATE", Map.of(
+                "DIVIDEND_TAX", 0.05d,
+                "ENTERPRISE_TAX", 0.10d));
+        defaults.put("AGRICULTURE", Map.of(
+                "ENTERPRISE_TAX", 0.05d,
+                "MARKET_TRADE", 0.01d));
+        defaults.put("INDUSTRY", Map.of("DIVIDEND_TAX", 0.12d));
+        return immutableIndustryCopy(defaults);
+    }
+
+    private static Map<String, Map<String, Double>> mutableIndustryCopy(
+            Map<String, Map<String, Double>> source) {
+        Map<String, Map<String, Double>> copy = new LinkedHashMap<>();
+        for (Map.Entry<String, Map<String, Double>> entry : source.entrySet()) {
+            copy.put(entry.getKey(), new LinkedHashMap<>(entry.getValue()));
+        }
+        return copy;
+    }
+
+    private static Map<String, Map<String, Double>> immutableIndustryCopy(
+            Map<String, Map<String, Double>> source) {
+        Map<String, Map<String, Double>> copy = new LinkedHashMap<>();
+        for (Map.Entry<String, Map<String, Double>> entry : source.entrySet()) {
+            copy.put(entry.getKey(), Collections.unmodifiableMap(
+                    new LinkedHashMap<>(entry.getValue())));
+        }
+        return Collections.unmodifiableMap(copy);
+    }
+
+    private record TaxBracket(String id, String industry, String scope,
+                              double profitMin, double profitMax, double rate) {
+    }
+
+    private record LegacyIndustryRate(String category, String industry, double rate) {
     }
 }

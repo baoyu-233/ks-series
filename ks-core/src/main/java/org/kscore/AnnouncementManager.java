@@ -2,9 +2,12 @@ package org.kscore;
 
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 公告 / 公示栏管理（ks-core 本体）。
@@ -33,21 +36,66 @@ public final class AnnouncementManager {
         try (Connection c = core.dataStore().getConnection()) {
             if (c == null) return;
             try (Statement s = c.createStatement()) {
-                s.execute("CREATE TABLE IF NOT EXISTS ks_announcements (" +
-                        "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                        "ref_key TEXT, " +
-                        "category TEXT NOT NULL DEFAULT 'GENERAL', " +
-                        "title TEXT NOT NULL, " +
-                        "body TEXT DEFAULT '', " +
-                        "author TEXT DEFAULT '', " +
-                        "priority INTEGER DEFAULT 0, " +
-                        "created_at INTEGER NOT NULL, " +
-                        "expires_at INTEGER NOT NULL DEFAULT 0)");
-                s.execute("CREATE INDEX IF NOT EXISTS idx_ann_ref ON ks_announcements(ref_key)");
+                KsDataStore.DatabaseDialect dialect = core.dataStore().dialect();
+                s.execute(createTableSql(dialect));
+                if ((dialect != KsDataStore.DatabaseDialect.MYSQL
+                        && dialect != KsDataStore.DatabaseDialect.MARIADB)
+                        || !indexExists(c, "ks_announcements", "idx_ann_ref")) {
+                    try {
+                        s.execute(createIndexSql(dialect));
+                    } catch (SQLException failure) {
+                        if (failure.getErrorCode() != 1061
+                                && !indexExists(c, "ks_announcements", "idx_ann_ref")) {
+                            throw failure;
+                        }
+                    }
+                }
             }
         } catch (SQLException e) {
             core.getLogger().warning("[公告] 建表失败: " + e.getMessage());
         }
+    }
+
+    static String createTableSql(KsDataStore.DatabaseDialect dialect) {
+        String identity = switch (dialect) {
+            case SQLITE -> "INTEGER PRIMARY KEY AUTOINCREMENT";
+            case MYSQL, MARIADB -> "BIGINT AUTO_INCREMENT PRIMARY KEY";
+            case POSTGRESQL -> "BIGSERIAL PRIMARY KEY";
+        };
+        return "CREATE TABLE IF NOT EXISTS ks_announcements (" +
+                "id " + identity + ", " +
+                "ref_key VARCHAR(191), " +
+                "category VARCHAR(64) NOT NULL DEFAULT 'GENERAL', " +
+                "title VARCHAR(255) NOT NULL, " +
+                "body TEXT NOT NULL, " +
+                "author VARCHAR(128) DEFAULT '', " +
+                "priority INTEGER DEFAULT 0, " +
+                "created_at BIGINT NOT NULL, " +
+                "expires_at BIGINT NOT NULL DEFAULT 0)";
+    }
+
+    static String createIndexSql(KsDataStore.DatabaseDialect dialect) {
+        String ifMissing = dialect == KsDataStore.DatabaseDialect.MYSQL
+                || dialect == KsDataStore.DatabaseDialect.MARIADB ? "" : " IF NOT EXISTS";
+        return "CREATE INDEX" + ifMissing + " idx_ann_ref ON ks_announcements(ref_key)";
+    }
+
+    private static boolean indexExists(Connection connection, String tableName, String indexName)
+            throws SQLException {
+        DatabaseMetaData metadata = connection.getMetaData();
+        Set<String> candidates = new LinkedHashSet<>();
+        candidates.add(tableName);
+        candidates.add(tableName.toUpperCase(Locale.ROOT));
+        candidates.add(tableName.toLowerCase(Locale.ROOT));
+        for (String candidate : candidates) {
+            try (ResultSet indexes = metadata.getIndexInfo(connection.getCatalog(), connection.getSchema(),
+                    candidate, false, false)) {
+                while (indexes.next()) {
+                    if (indexName.equalsIgnoreCase(indexes.getString("INDEX_NAME"))) return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** 发布公告；refKey 非空时按其覆盖（upsert）。expiresAt=0 表示永久。返回 id 或 -1。 */

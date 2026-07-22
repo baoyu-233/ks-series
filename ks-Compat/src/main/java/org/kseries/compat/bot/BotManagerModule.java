@@ -62,6 +62,10 @@ public final class BotManagerModule implements CompatModule, Listener, CommandEx
         "use", "use-auto", "auto-use", "use-offhand", "use-on", "place",
         "use-on-offhand", "use-to", "use-to-offhand"
     );
+    // Leaves state actions ignore setDoNumber and run until stopped.
+    private static final Set<String> INFINITE_STATE_ACTION_KEYS = Set.of(
+        "sneak", "swim", "move"
+    );
 
     private final JavaPlugin plugin;
     private final EconomyBridge economy;
@@ -840,6 +844,11 @@ public final class BotManagerModule implements CompatModule, Listener, CommandEx
         int delay = actionDefaultDelayTicks;
         String extra = null;
         String extra2 = null;
+
+        if (INFINITE_STATE_ACTION_KEYS.contains(action) && !actionAllowInfinite) {
+            sender.sendMessage("§c当前不允许无限次数动作。sneak/swim/move 会持续运行到手动停止。");
+            return;
+        }
 
         if ("move".equals(action)) {
             extra = args.length >= 5 ? args[4] : "forward";

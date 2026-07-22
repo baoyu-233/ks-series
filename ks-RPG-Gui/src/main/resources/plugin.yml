@@ -1,5 +1,5 @@
 name: ks-RPG-Gui
-version: ${project.version}
+version: 0.1.0
 main: org.kseries.rpggui.KsRpgGui
 api-version: '1.21'
 description: ks-Series RPG 进度与管理员物品面板。

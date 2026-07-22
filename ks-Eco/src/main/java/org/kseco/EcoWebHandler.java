@@ -6,12 +6,15 @@ import com.sun.net.httpserver.HttpHandler;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
+import org.kseco.database.PortableSqlMutation;
+import org.kseco.extra.BankAccessProvider;
 import org.kscore.KsAuthManager;
 import org.kscore.KsPluginBridge;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
@@ -38,6 +41,7 @@ public final class EcoWebHandler implements HttpHandler {
             "/api/admin/set-balance", "/api/admin/economic-settings",
             "/api/admin/bank/guidance/config", "/api/bank/cb/set-rates",
             "/api/bank/cb/set-rate-range", "/api/bank/cb/inject",
+            "/api/admin/bank/policy-events", "/api/admin/bank/operating-status",
             "/api/tax/rates/set", "/api/tax/bracket/upsert", "/api/tax/bracket/delete",
             "/api/prices/official/save", "/api/admin/realestate/zone",
             "/api/admin/realestate/zone/price", "/api/admin/realestate/zone/status",
@@ -71,12 +75,13 @@ public final class EcoWebHandler implements HttpHandler {
     /** Bukkit and Vault providers are only accessed from the server thread. */
     private <T> T callOnServerThread(Callable<T> action) throws IOException {
         try {
-            if (Bukkit.isPrimaryThread()) return action.call();
-            return Bukkit.getScheduler().callSyncMethod(plugin, action).get(5, TimeUnit.SECONDS);
+            return plugin.scheduler().callGlobal(action, Duration.ofSeconds(5));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Server-thread operation interrupted", e);
-        } catch (ExecutionException | TimeoutException e) {
+        } catch (TimeoutException e) {
+            throw new IOException("Server-thread operation timed out", e);
+        } catch (ExecutionException e) {
             throw new IOException("Server-thread operation failed", e);
         } catch (Exception e) {
             throw new IOException("Server-thread operation failed", e);
@@ -84,29 +89,57 @@ public final class EcoWebHandler implements HttpHandler {
     }
 
     private boolean withdrawWallet(UUID playerUuid, double amount) throws IOException {
-        return callOnServerThread(() -> plugin.vaultHook().withdraw(Bukkit.getOfflinePlayer(playerUuid), amount));
+        return callOnPlayerThread(playerUuid,
+                () -> plugin.vaultHook().withdraw(Bukkit.getOfflinePlayer(playerUuid), amount));
     }
 
     private boolean depositWallet(UUID playerUuid, double amount) throws IOException {
-        return callOnServerThread(() -> plugin.vaultHook().deposit(Bukkit.getOfflinePlayer(playerUuid), amount));
+        return callOnPlayerThread(playerUuid,
+                () -> plugin.vaultHook().deposit(Bukkit.getOfflinePlayer(playerUuid), amount));
     }
 
     private boolean hasWalletBalance(UUID playerUuid, double amount) throws IOException {
-        return callOnServerThread(() -> plugin.vaultHook().has(Bukkit.getOfflinePlayer(playerUuid), amount));
+        return callOnPlayerThread(playerUuid,
+                () -> plugin.vaultHook().has(Bukkit.getOfflinePlayer(playerUuid), amount));
     }
 
     private double walletBalance(UUID playerUuid) throws IOException {
-        return callOnServerThread(() -> plugin.vaultHook().getBalance(Bukkit.getOfflinePlayer(playerUuid)));
+        return callOnPlayerThread(playerUuid,
+                () -> plugin.vaultHook().getBalance(Bukkit.getOfflinePlayer(playerUuid)));
+    }
+
+    private <T> T callOnPlayerThread(UUID playerUuid, Callable<T> action) throws IOException {
+        try {
+            Player online = Bukkit.getPlayer(playerUuid);
+            return online != null && online.isOnline()
+                    ? plugin.scheduler().callEntity(online, action, Duration.ofSeconds(5))
+                    : plugin.scheduler().callGlobal(action, Duration.ofSeconds(5));
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Player-thread operation interrupted", failure);
+        } catch (ExecutionException | TimeoutException failure) {
+            throw new IOException("Player-thread operation failed", failure);
+        }
     }
 
     private void refreshPlayerRankingSnapshotIfStale() {
+        if (plugin.foliaRuntime()) {
+            // Iterating every online/offline account cannot be assigned to one
+            // entity owner. Keep this derived leaderboard closed on Folia until
+            // it is sourced entirely from an async JDBC snapshot.
+            playerRankingSnapshot = List.of();
+            playerRankingSnapshotAt = System.currentTimeMillis();
+            playerRankingRefreshRunning.set(false);
+            return;
+        }
         long now = System.currentTimeMillis();
         if (now - playerRankingSnapshotAt < TimeUnit.MINUTES.toMillis(1)
                 || !playerRankingRefreshRunning.compareAndSet(false, true)) return;
-        Bukkit.getScheduler().runTask(plugin, () -> {
+        plugin.scheduler().runGlobal(() -> {
             List<org.bukkit.OfflinePlayer> players = Arrays.asList(Bukkit.getOfflinePlayers());
             List<Map<String, Object>> entries = new ArrayList<>();
-            new org.bukkit.scheduler.BukkitRunnable() {
+            final org.kseco.scheduler.EcoScheduler.TaskHandle[] handle = new org.kseco.scheduler.EcoScheduler.TaskHandle[1];
+            Runnable refresh = new Runnable() {
                 private int cursor;
 
                 @Override
@@ -130,15 +163,21 @@ public final class EcoWebHandler implements HttpHandler {
                         playerRankingSnapshot = List.copyOf(entries.subList(0, Math.min(50, entries.size())));
                         playerRankingSnapshotAt = System.currentTimeMillis();
                         playerRankingRefreshRunning.set(false);
-                        cancel();
+                        handle[0].cancel();
                     } catch (RuntimeException e) {
                         playerRankingRefreshRunning.set(false);
                         plugin.getLogger().warning("Player ranking snapshot failed: " + e.getMessage());
-                        cancel();
+                        handle[0].cancel();
                     }
                 }
-            }.runTaskTimer(plugin, 1L, 1L);
+            };
+            handle[0] = plugin.scheduler().runGlobalTimer(refresh, 1L, 1L);
         });
+    }
+
+    /** Marks the derived ranking snapshot stale after a local or remote wallet mutation. */
+    public void invalidatePlayerRankingSnapshot() {
+        playerRankingSnapshotAt = 0L;
     }
 
     private void createPendingEnterpriseCreation(HttpExchange exchange, KsAuthManager.Session session, String name,
@@ -284,7 +323,8 @@ public final class EcoWebHandler implements HttpHandler {
             return;
         }
         try {
-            Map<String, Object> result = Bukkit.getScheduler().callSyncMethod(plugin, () -> finalizePendingEnterpriseCreation(pendingId)).get(10, TimeUnit.SECONDS);
+            Map<String, Object> result = plugin.scheduler().callGlobal(
+                    () -> finalizePendingEnterpriseCreation(pendingId), Duration.ofSeconds(10));
             KsPluginBridge.sendJson(exchange, Boolean.TRUE.equals(result.get("success")) ? 200 : 400, gson.toJson(result));
         } catch (Exception e) {
             KsPluginBridge.sendJson(exchange, 500, gson.toJson(Map.of("error", "合资最终成立失败")));
@@ -344,7 +384,9 @@ public final class EcoWebHandler implements HttpHandler {
                         insert.setDouble(6, capital); insert.setString(7, region); insert.setLong(8, now); insert.executeUpdate();
                     }
                     ensureEnterpriseOwnerMembers(conn, createdId, owners, now);
-                    conn.createStatement().executeUpdate("INSERT OR IGNORE INTO ks_ent_corporate_accounts (enterprise_id,bank_id,balance,updated_at) VALUES ('" + createdId + "','" + CORP_BANK_ID + "'," + capital + "," + now + ")");
+                    if (!ensureCorporateAccount(conn, createdId, CORP_BANK_ID, capital, now)) {
+                        throw new java.sql.SQLException("Corporate account already exists for a new enterprise");
+                    }
                     conn.createStatement().executeUpdate("UPDATE ks_bank_banks SET total_assets=total_assets+" + capital + " WHERE id='" + CORP_BANK_ID + "'");
                 }
                 try (var done = conn.prepareStatement("UPDATE ks_ent_pending_creations SET status='FINALIZED', finalized_enterprise_id=? WHERE id=? AND status='FINALIZING'")) {
@@ -377,78 +419,8 @@ public final class EcoWebHandler implements HttpHandler {
             if (tablesEnsured) return;
             try (var conn = plugin.ksCore().dataStore().getConnection()) {
                 if (conn == null) return;
+                EcoWebBusinessSchema.initialize(conn);
                 var stmt = conn.createStatement();
-                // 银行表
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_banks (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'COMMERCIAL', owner_uuids TEXT NOT NULL, total_assets REAL DEFAULT 0.0, reserve_ratio REAL DEFAULT 0.1, interest_rate REAL DEFAULT 0.03, loan_rate REAL DEFAULT 0.08, status TEXT DEFAULT 'ACTIVE', created_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_accounts (id TEXT PRIMARY KEY, bank_id TEXT NOT NULL, player_uuid TEXT NOT NULL, balance REAL DEFAULT 0.0, interest_earned REAL DEFAULT 0.0, opened_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_loans (id TEXT PRIMARY KEY, bank_id TEXT NOT NULL, borrower_uuid TEXT NOT NULL, principal REAL NOT NULL, remaining REAL NOT NULL, interest_rate REAL NOT NULL, term_days INTEGER NOT NULL, issued_at INTEGER NOT NULL, due_at INTEGER NOT NULL, status TEXT DEFAULT 'ACTIVE')");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_cb_rates (id INTEGER PRIMARY KEY AUTOINCREMENT, base_rate REAL NOT NULL, reserve_requirement REAL NOT NULL, set_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_cb_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_rates (bank_id TEXT PRIMARY KEY, loan_rate REAL DEFAULT 0.05, deposit_rate REAL DEFAULT 0.01, updated_at INTEGER DEFAULT (strftime('%s','now')))");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_members (bank_id TEXT, player_uuid TEXT, player_name TEXT, role TEXT DEFAULT 'MEMBER', joined_at INTEGER DEFAULT (strftime('%s','now')), PRIMARY KEY(bank_id, player_uuid))");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_permissions (bank_id TEXT NOT NULL, player_uuid TEXT NOT NULL, permission TEXT NOT NULL, granted_by TEXT, granted_at INTEGER NOT NULL, PRIMARY KEY(bank_id, player_uuid, permission))");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_money_supply (id INTEGER PRIMARY KEY AUTOINCREMENT, m0 REAL NOT NULL, m1 REAL NOT NULL, m2 REAL NOT NULL, snapshot_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_eco_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)");
-                stmt.execute("INSERT OR IGNORE INTO ks_eco_settings (key, value, updated_at) VALUES ('enterprise_min_capital', '50000', strftime('%s','now'))");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_loan_requests (id TEXT PRIMARY KEY, bank_id TEXT NOT NULL, borrower_uuid TEXT NOT NULL, borrower_name TEXT, principal REAL NOT NULL, term_days INTEGER NOT NULL, status TEXT DEFAULT 'PENDING', requested_at INTEGER NOT NULL, decided_at INTEGER, loan_id TEXT)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_guidance_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_guidance_claims (player_uuid TEXT PRIMARY KEY, loan_id TEXT NOT NULL, claimed_at INTEGER NOT NULL)");
-                // 企业表
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_enterprises (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '', type TEXT NOT NULL DEFAULT 'PRIVATE', owner_uuids TEXT NOT NULL, registered_capital REAL DEFAULT 0, current_assets REAL DEFAULT 0, employee_count INTEGER DEFAULT 0, region TEXT DEFAULT '', status TEXT DEFAULT 'ACTIVE', created_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_members (enterprise_id TEXT, player_uuid TEXT, player_name TEXT, role TEXT DEFAULT 'EMPLOYEE', salary REAL DEFAULT 0, joined_at INTEGER DEFAULT (strftime('%s','now')), PRIMARY KEY(enterprise_id, player_uuid))");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_projects (id TEXT PRIMARY KEY, title TEXT NOT NULL, publisher_uuid TEXT NOT NULL, publisher_type TEXT NOT NULL DEFAULT 'OFFICIAL', budget REAL NOT NULL, prepayment_ratio REAL DEFAULT 0.3, penalty_ratio REAL DEFAULT 0.1, deposit_ratio REAL DEFAULT 0, deposit_deadline_hours INTEGER DEFAULT 24, deadline INTEGER NOT NULL, location TEXT DEFAULT '', allow_subcontract INTEGER DEFAULT 1, allow_consortium INTEGER DEFAULT 1, status TEXT DEFAULT 'OPEN', created_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_project_escrow (project_id TEXT PRIMARY KEY, publisher_type TEXT NOT NULL, publisher_ref TEXT NOT NULL, remaining REAL NOT NULL, created_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_bids (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, enterprise_id TEXT, bidder_uuid TEXT, bidder_type TEXT DEFAULT 'ENTERPRISE', bid_amount REAL NOT NULL, is_consortium INTEGER DEFAULT 0, consortium_members TEXT DEFAULT '', status TEXT DEFAULT 'PENDING', deposit_amount REAL DEFAULT 0, deposit_deadline INTEGER DEFAULT 0, deposit_paid_at INTEGER DEFAULT 0, submitted_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_bid_deposits (id TEXT PRIMARY KEY, bid_id TEXT NOT NULL, project_id TEXT NOT NULL, payer_uuid TEXT, payer_enterprise_id TEXT, amount REAL NOT NULL, status TEXT DEFAULT 'HELD', paid_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_dividends (id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, amount REAL NOT NULL, declared_at INTEGER NOT NULL, tax_rate REAL DEFAULT 0, tax_paid REAL DEFAULT 0, status TEXT DEFAULT 'PAID')");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_dividend_payouts (id TEXT PRIMARY KEY, dividend_id TEXT NOT NULL, enterprise_id TEXT NOT NULL, recipient_uuid TEXT NOT NULL, share_percent REAL NOT NULL, gross_amount REAL NOT NULL, tax_amount REAL NOT NULL, net_amount REAL NOT NULL, paid_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_invites (id TEXT PRIMARY KEY, enterprise_id TEXT, bank_id TEXT, inviter_uuid TEXT NOT NULL, invitee_uuid TEXT NOT NULL, status TEXT DEFAULT 'PENDING', created_at INTEGER NOT NULL, responded_at INTEGER)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_pending_creations (id TEXT PRIMARY KEY, creator_uuid TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, owner_uuids TEXT NOT NULL, registered_capital REAL NOT NULL, region TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'PENDING', created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, finalized_enterprise_id TEXT, kind TEXT NOT NULL DEFAULT 'ENTERPRISE')");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_pending_creation_confirmations (pending_id TEXT NOT NULL, player_uuid TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', responded_at INTEGER DEFAULT 0, PRIMARY KEY (pending_id, player_uuid))");
-                try { stmt.execute("ALTER TABLE ks_ent_pending_creations ADD COLUMN kind TEXT NOT NULL DEFAULT 'ENTERPRISE'"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_ent_enterprises ADD COLUMN description TEXT DEFAULT ''"); } catch (java.sql.SQLException ignored) {}
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_permissions (enterprise_id TEXT NOT NULL, player_uuid TEXT NOT NULL, permission TEXT NOT NULL, granted_by TEXT, granted_at INTEGER NOT NULL, PRIMARY KEY(enterprise_id, player_uuid, permission))");
-                // 税收表
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_tax_records (id TEXT PRIMARY KEY, payer_uuid TEXT NOT NULL, payer_name TEXT DEFAULT '', category TEXT DEFAULT '', base_amount REAL DEFAULT 0, tax_rate REAL DEFAULT 0, tax_amount REAL DEFAULT 0, description TEXT DEFAULT '', collected_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_tax_rates (category TEXT PRIMARY KEY, rate REAL NOT NULL, updated_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_tax_penalties (id TEXT PRIMARY KEY, target_uuid TEXT NOT NULL, target_name TEXT DEFAULT '', penalty_type TEXT DEFAULT 'TAX_EVASION', base_amount REAL DEFAULT 0, penalty_rate REAL DEFAULT 0.2, penalty_amount REAL DEFAULT 0, reason TEXT DEFAULT '', paid INTEGER DEFAULT 0, issued_at INTEGER NOT NULL)");
-                // 其他
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_official_prices (material TEXT PRIMARY KEY, buy_price REAL DEFAULT 0, sell_price REAL DEFAULT 0, category TEXT DEFAULT '', updated_at INTEGER DEFAULT (strftime('%s','now')))");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_eco_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, item_material TEXT NOT NULL, item_signature TEXT, quantity INTEGER NOT NULL, unit_price REAL NOT NULL, buyer_uuid TEXT, seller_uuid TEXT, timestamp INTEGER NOT NULL, trade_type TEXT DEFAULT 'PLAYER_TRADE')");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_builtin_economy (uuid TEXT PRIMARY KEY, balance REAL DEFAULT 0, name TEXT DEFAULT '', updated_at INTEGER DEFAULT (strftime('%s','now')))");
-                // 兼容旧数据库：为已存在的表添加新列
-                try { stmt.execute("ALTER TABLE ks_ent_bids ADD COLUMN bidder_uuid TEXT"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_ent_bids ADD COLUMN bidder_type TEXT DEFAULT 'ENTERPRISE'"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_ent_bids ADD COLUMN deposit_amount REAL DEFAULT 0"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_ent_bids ADD COLUMN deposit_deadline INTEGER DEFAULT 0"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_ent_bids ADD COLUMN deposit_paid_at INTEGER DEFAULT 0"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_ent_projects ADD COLUMN deposit_ratio REAL DEFAULT 0"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_ent_projects ADD COLUMN deposit_deadline_hours INTEGER DEFAULT 24"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_bank_banks ADD COLUMN reserve_ratio REAL DEFAULT 0.1"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_bank_banks ADD COLUMN interest_rate REAL DEFAULT 0.03"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_bank_banks ADD COLUMN loan_rate REAL DEFAULT 0.08"); } catch (java.sql.SQLException ignored) {}
-                // 审计日志表
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, player_uuid TEXT NOT NULL, player_name TEXT DEFAULT '', target_type TEXT DEFAULT '', target_id TEXT DEFAULT '', details TEXT DEFAULT '', created_at INTEGER NOT NULL)");
-                // 企业公户表
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_corporate_accounts (enterprise_id TEXT PRIMARY KEY, bank_id TEXT NOT NULL, balance REAL DEFAULT 0.0, updated_at INTEGER NOT NULL)");
-                // 企业采购表
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_procurements (id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, title TEXT NOT NULL, item_desc TEXT DEFAULT '', quantity INTEGER DEFAULT 1, budget REAL NOT NULL, status TEXT DEFAULT 'OPEN', created_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_ent_procurement_bids (id TEXT PRIMARY KEY, procurement_id TEXT NOT NULL, bidder_uuid TEXT, enterprise_id TEXT, bidder_type TEXT DEFAULT 'ENTERPRISE', unit_price REAL NOT NULL, total_price REAL NOT NULL, status TEXT DEFAULT 'PENDING', submitted_at INTEGER NOT NULL)");
-                // 盲盒表（替代官方直售）
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bb_pools (id TEXT PRIMARY KEY, name TEXT NOT NULL, pool_type TEXT NOT NULL DEFAULT 'ITEM', price REAL NOT NULL DEFAULT 100, enabled INTEGER DEFAULT 1, pity_max INTEGER DEFAULT 50, description TEXT DEFAULT '', owner_type TEXT NOT NULL DEFAULT 'PUBLIC', allowed_categories TEXT DEFAULT '', allowed_industries TEXT DEFAULT '', created_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bb_loot (id TEXT PRIMARY KEY, pool_id TEXT NOT NULL, item_material TEXT NOT NULL, item_data BLOB, display_name TEXT DEFAULT '', weight INTEGER NOT NULL DEFAULT 1, rarity TEXT NOT NULL DEFAULT 'COMMON', quantity INTEGER DEFAULT 1, created_at INTEGER NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bb_pity (uuid TEXT NOT NULL, pool_id TEXT NOT NULL, count_since_rare INTEGER DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY(uuid, pool_id))");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bb_pity_rarity (uuid TEXT NOT NULL, pool_id TEXT NOT NULL, rarity TEXT NOT NULL, count_since_hit INTEGER DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY(uuid, pool_id, rarity))");
-                stmt.execute("CREATE TABLE IF NOT EXISTS ks_bb_log (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL, pool_id TEXT NOT NULL, item_material TEXT NOT NULL, rarity TEXT NOT NULL, pulled_at INTEGER NOT NULL)");
-                // 兼容旧库：加列（幂等）
-                try { stmt.execute("ALTER TABLE ks_bb_pools ADD COLUMN owner_type TEXT NOT NULL DEFAULT 'PUBLIC'"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_bb_pools ADD COLUMN allowed_categories TEXT DEFAULT ''"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_bb_pools ADD COLUMN allowed_industries TEXT DEFAULT ''"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_bb_pools ADD COLUMN pity_rules TEXT DEFAULT ''"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_bb_pools ADD COLUMN min_enterprise_level INTEGER NOT NULL DEFAULT 1"); } catch (java.sql.SQLException ignored) {}
-                // 兼容旧库：企业加 industry 列（其他模块能直接 SELECT）
-                try { stmt.execute("ALTER TABLE ks_ent_enterprises ADD COLUMN industry TEXT NOT NULL DEFAULT 'OTHER'"); } catch (java.sql.SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE ks_ent_enterprises ADD COLUMN level INTEGER NOT NULL DEFAULT 1"); } catch (java.sql.SQLException ignored) {}
                 // 自动创建官方企业商业银行（官方创立的商业银行，所有企业公户托管于此）
                 long now = System.currentTimeMillis() / 1000;
                 var rs = stmt.executeQuery("SELECT COUNT(*) FROM ks_bank_banks WHERE id='CORP-BANK'");
@@ -460,7 +432,13 @@ public final class EcoWebHandler implements HttpHandler {
                     stmt.executeUpdate("UPDATE ks_bank_banks SET type='COMMERCIAL' WHERE id='CORP-BANK' AND type='CENTRAL'");
                 }
                 // 确保银行成员表有 SYSTEM（官方）作为企业商业银行的所有者
-                stmt.execute("INSERT OR IGNORE INTO ks_bank_members (bank_id, player_uuid, player_name, role) VALUES ('CORP-BANK', 'SYSTEM', '官方', 'OWNER')");
+                long initializedAt = System.currentTimeMillis() / 1000;
+                PortableSqlMutation.insertIfAbsent(conn,
+                        "SELECT 1 FROM ks_eco_settings WHERE config_key=?",
+                        ps -> ps.setString(1, "enterprise_min_capital"),
+                        "INSERT INTO ks_eco_settings (config_key,config_value,updated_at) VALUES (?,?,?)",
+                        ps -> { ps.setString(1, "enterprise_min_capital"); ps.setString(2, "50000"); ps.setLong(3, initializedAt); });
+                upsertBankMember(conn, CORP_BANK_ID, "SYSTEM", "官方", "OWNER", initializedAt, false);
                 tablesEnsured = true;
                 plugin.getLogger().info("[ks-Eco] 所有业务表已就绪");
             } catch (java.sql.SQLException e) {
@@ -543,6 +521,10 @@ public final class EcoWebHandler implements HttpHandler {
                 handleRefreshPrices(exchange);
             } else if (subPath.equals("/api/admin/idle-items")) {
                 handleIdleItems(exchange, query);
+            } else if (subPath.equals("/api/admin/settlements/review") && "GET".equalsIgnoreCase(method)) {
+                handleSettlementReviewList(exchange);
+            } else if (subPath.equals("/api/admin/settlements/resolve") && "POST".equalsIgnoreCase(method)) {
+                handleSettlementReviewResolve(exchange);
             } else if (subPath.equals("/api/players/search")) {
                 handlePlayerSearch(exchange, query);
             } else if (subPath.equals("/api/test-token") && "POST".equalsIgnoreCase(method)) {
@@ -624,6 +606,8 @@ public final class EcoWebHandler implements HttpHandler {
                 handleReZonesList(exchange, query);
             } else if (subPath.equals("/api/admin/realestate/zone") && "POST".equalsIgnoreCase(method)) {
                 handleReZoneCreate(exchange);
+            } else if (subPath.equals("/api/admin/realestate/house") && "POST".equalsIgnoreCase(method)) {
+                handleReHouseRegister(exchange);
             } else if (subPath.equals("/api/admin/realestate/zone/price") && "POST".equalsIgnoreCase(method)) {
                 handleReZoneSetPrice(exchange);
             } else if (subPath.equals("/api/admin/realestate/zone/status") && "POST".equalsIgnoreCase(method)) {
@@ -644,6 +628,8 @@ public final class EcoWebHandler implements HttpHandler {
                 handleReMyPlots(exchange);
             } else if (subPath.equals("/api/realestate/houses-for-sale")) {
                 handleReHousesForSale(exchange);
+            } else if (subPath.equals("/api/realestate/city/manifest")) {
+                handleReCityManifest(exchange, query);
             } else if (subPath.equals("/api/realestate/house/voxels")) {
                 handleReHouseVoxels(exchange, query);
             } else if (subPath.equals("/api/realestate/region/voxels")) {
@@ -680,6 +666,65 @@ public final class EcoWebHandler implements HttpHandler {
             // ===== Bank CRUD APIs =====
             } else if (subPath.equals("/api/bank/list")) {
                 handleBankList(exchange);
+            } else if (subPath.equals("/api/bank/gameplay/dashboard")) {
+                handleBankGameplayDashboard(exchange);
+            } else if (subPath.equals("/api/bank/deposit-products")) {
+                handleBankDepositProducts(exchange, query);
+            } else if (subPath.equals("/api/bank/term/open") && "POST".equalsIgnoreCase(method)) {
+                handleBankTermOpen(exchange);
+            } else if (subPath.equals("/api/bank/term/redeem") && "POST".equalsIgnoreCase(method)) {
+                handleBankTermRedeem(exchange);
+            } else if (subPath.equals("/api/bank/operations")) {
+                handleBankOperations(exchange, query);
+            } else if (subPath.equals("/api/bank/dividends")) {
+                handleBankDividends(exchange, query);
+            } else if (subPath.equals("/api/bank/dividend/declare") && "POST".equalsIgnoreCase(method)) {
+                handleBankDividendDeclare(exchange);
+            } else if (subPath.equals("/api/bank/loan/products")) {
+                handleBankLoanProducts(exchange);
+            } else if (subPath.equals("/api/bank/loan/collateral")) {
+                handleBankLoanCollateral(exchange, query);
+            } else if (subPath.equals("/api/bank/loan/quote") && "POST".equalsIgnoreCase(method)) {
+                handleBankLoanQuote(exchange);
+            } else if (subPath.equals("/api/bank/loan/apply-quoted") && "POST".equalsIgnoreCase(method)) {
+                handleBankLoanApplyQuoted(exchange);
+            } else if (subPath.equals("/api/bank/loan/restructure") && "POST".equalsIgnoreCase(method)) {
+                handleBankLoanRestructureRequest(exchange);
+            } else if (subPath.equals("/api/bank/loan/restructure/requests")) {
+                handleBankLoanRestructureRequests(exchange, query);
+            } else if (subPath.equals("/api/bank/loan/restructure/decide") && "POST".equalsIgnoreCase(method)) {
+                handleBankLoanRestructureDecide(exchange);
+            } else if (subPath.equals("/api/bank/policy-events")) {
+                handleBankPolicyEvents(exchange);
+            } else if (subPath.equals("/api/admin/bank/policy-events") && "POST".equalsIgnoreCase(method)) {
+                handleBankPolicyEventCreate(exchange);
+            } else if (subPath.equals("/api/admin/bank/operating-status") && "POST".equalsIgnoreCase(method)) {
+                handleBankOperatingStatusSet(exchange);
+            } else if (subPath.equals("/api/bank/equity/portfolio")) {
+                handleBankEquityPortfolio(exchange);
+            } else if (subPath.equals("/api/bank/equity/cap-table")) {
+                handleBankEquityCapTable(exchange, query);
+            } else if (subPath.equals("/api/bank/equity/offerings")) {
+                if ("POST".equalsIgnoreCase(method)) handleBankEquityOfferingCreate(exchange);
+                else handleBankEquityOfferings(exchange, query);
+            } else if (subPath.equals("/api/bank/equity/accept") && "POST".equalsIgnoreCase(method)) {
+                handleBankEquityOfferingAccept(exchange);
+            } else if (subPath.equals("/api/bank/equity/cancel") && "POST".equalsIgnoreCase(method)) {
+                handleBankEquityOfferingCancel(exchange);
+            } else if (subPath.equals("/api/admin/bank/resolution/fund")) {
+                handleBankResolutionFund(exchange);
+            } else if (subPath.equals("/api/admin/bank/resolution/cases")) {
+                handleBankResolutionCases(exchange);
+            } else if (subPath.equals("/api/admin/bank/resolution/fund/top-up") && "POST".equalsIgnoreCase(method)) {
+                handleBankResolutionFundTopUp(exchange);
+            } else if (subPath.equals("/api/admin/bank/resolution/preview") && "POST".equalsIgnoreCase(method)) {
+                handleBankResolutionPreview(exchange);
+            } else if (subPath.equals("/api/admin/bank/resolution/execute") && "POST".equalsIgnoreCase(method)) {
+                handleBankResolutionExecute(exchange);
+            } else if (subPath.equals("/api/admin/bank/loan-payout/review")) {
+                handleBankLoanPayoutReviews(exchange);
+            } else if (subPath.equals("/api/admin/bank/loan-payout/resolve") && "POST".equalsIgnoreCase(method)) {
+                handleBankLoanPayoutReviewResolve(exchange);
             } else if (subPath.equals("/api/bank/cb/rates")) {
                 handleCbRatesGet(exchange);
             } else if (subPath.equals("/api/bank/guidance")) {
@@ -712,6 +757,8 @@ public final class EcoWebHandler implements HttpHandler {
                 handleLoanApply(exchange);
             } else if (subPath.equals("/api/bank/loan/my-requests")) {
                 handleMyLoanRequests(exchange);
+            } else if (subPath.equals("/api/bank/loan/cancel") && "POST".equalsIgnoreCase(method)) {
+                handleMyLoanRequestCancel(exchange);
             } else if (subPath.equals("/api/bank/loan/requests")) {
                 handleLoanRequestsList(exchange, query);
             } else if (subPath.equals("/api/bank/loan/approve") && "POST".equalsIgnoreCase(method)) {
@@ -1354,7 +1401,7 @@ public final class EcoWebHandler implements HttpHandler {
     private void handleRefreshPrices(HttpExchange exchange) throws IOException {
         KsAuthManager.Session session = requireAdminAuth(exchange);
         if (session == null) return;
-        plugin.priceEngine().refreshAllPrices();
+        plugin.refreshPricesCoordinated();
         KsPluginBridge.sendJson(exchange, 200, "{\"message\":\"价格已刷新\"}");
     }
 
@@ -1383,7 +1430,12 @@ public final class EcoWebHandler implements HttpHandler {
         }
         var session = plugin.ksCore().authManager().create(
                 UUID.fromString("00000000-0000-0000-0000-000000000001"), "TEST_ADMIN", true);
-        KsPluginBridge.sendJson(exchange, 200, "{\"token\":\"" + session.token + "\",\"isAdmin\":true,\"playerName\":\"TEST_ADMIN\",\"hint\":\"使用方式: Authorization: Bearer \" + this.token}");
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("token", session.token);
+        response.put("isAdmin", true);
+        response.put("playerName", "TEST_ADMIN");
+        response.put("hint", "使用方式: Authorization: Bearer <token>");
+        KsPluginBridge.sendJson(exchange, 200, gson.toJson(response));
     }
 
     private void handleLogin(HttpExchange exchange, String query) throws IOException {
@@ -1853,7 +1905,7 @@ public final class EcoWebHandler implements HttpHandler {
             return;
         }
         try {
-            Map<String, Object> config = Bukkit.getScheduler().callSyncMethod(plugin, () -> {
+            Map<String, Object> config = plugin.scheduler().callGlobal(() -> {
                 if (update) {
                     Boolean enabled = request.get("enabled") instanceof Boolean value ? value : null;
                     double freeDistance = nonNegative(request, "freeDistance");
@@ -1884,7 +1936,7 @@ public final class EcoWebHandler implements HttpHandler {
                 values.put("minimumFee", plugin.getConfig().getDouble("transport.minimum-fee", 1.0));
                 values.put("maximumFee", plugin.getConfig().getDouble("transport.maximum-fee", 0.0));
                 return values;
-            }).get(5, TimeUnit.SECONDS);
+            }, Duration.ofSeconds(5));
             config.put("message", update ? "物流配置已保存" : "ok");
             KsPluginBridge.sendJson(exchange, 200, gson.toJson(config));
         } catch (Exception e) {
@@ -1919,7 +1971,7 @@ public final class EcoWebHandler implements HttpHandler {
             return;
         }
         try {
-            Map<String, Object> config = Bukkit.getScheduler().callSyncMethod(plugin, () -> {
+            Map<String, Object> config = plugin.scheduler().callGlobal(() -> {
                 if (update) {
                     double taxFreeAmount = nonNegative(request, "taxFreeAmount");
                     plugin.getConfig().set("transfer.tax-free-amount", taxFreeAmount);
@@ -1930,7 +1982,7 @@ public final class EcoWebHandler implements HttpHandler {
                 values.put("taxRate", plugin.getCategoryTaxRate("PLAYER_TRANSFER",
                         plugin.getConfig().getDouble("transfer.tax-rate-fallback", 0.01)));
                 return values;
-            }).get(5, TimeUnit.SECONDS);
+            }, Duration.ofSeconds(5));
             config.put("message", update ? "转账免税额已保存" : "ok");
             KsPluginBridge.sendJson(exchange, 200, gson.toJson(config));
         } catch (Exception e) {
@@ -2076,6 +2128,519 @@ public final class EcoWebHandler implements HttpHandler {
         KsPluginBridge.sendJson(exchange, 200, gson.toJson(resp));
     }
 
+    private void handleBankGameplayDashboard(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "dashboard",
+                new Class[]{UUID.class}, session.playerUuid);
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankDepositProducts(HttpExchange exchange, String query) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        String bankId = KsPluginBridge.parseQuery(query).get("bankId");
+        if (bankId == null || bankId.isBlank()) {
+            KsPluginBridge.sendJson(exchange, 400, gson.toJson(Map.of("error", "请选择银行")));
+            return;
+        }
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "depositProducts",
+                new Class[]{String.class}, bankId);
+        if (result instanceof List<?> products) {
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("products", products)));
+        } else {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "银行产品服务不可用")));
+        }
+    }
+
+    private void handleBankTermOpen(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        if (request == null) {
+            KsPluginBridge.sendJson(exchange, 400, gson.toJson(Map.of("error", "无效请求")));
+            return;
+        }
+        String bankId = String.valueOf(request.getOrDefault("bankId", ""));
+        String productCode = String.valueOf(request.getOrDefault("productCode", ""));
+        double amount = toDouble(request.get("amount"), 0);
+        boolean autoRenew = Boolean.TRUE.equals(request.get("autoRenew"));
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "openTermDeposit",
+                new Class[]{String.class, UUID.class, String.class, double.class, boolean.class},
+                bankId, session.playerUuid, productCode, amount, autoRenew);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_TERM_OPEN", session.playerUuid.toString(), session.playerName, "bank", bankId,
+                    "product=" + productCode + " amount=" + amount + " autoRenew=" + autoRenew);
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankTermRedeem(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String id = request == null ? "" : String.valueOf(request.getOrDefault("depositId", ""));
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "redeemTermDeposit",
+                new Class[]{String.class, UUID.class}, id, session.playerUuid);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_TERM_REDEEM", session.playerUuid.toString(), session.playerName,
+                    "term_deposit", id, "payout=" + values.get("payout"));
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankOperations(HttpExchange exchange, String query) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        String bankId = KsPluginBridge.parseQuery(query).get("bankId");
+        try {
+            if (bankId == null || !hasBankPermission(session, bankId, "VIEW_FINANCE")) {
+                KsPluginBridge.sendJson(exchange, 403, gson.toJson(Map.of("error", "无权查看该银行经营数据")));
+                return;
+            }
+        } catch (java.sql.SQLException failure) {
+            KsPluginBridge.sendJson(exchange, 500, gson.toJson(Map.of("error", "权限检查失败")));
+            return;
+        }
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "bankOperations",
+                new Class[]{String.class}, bankId);
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankDividends(HttpExchange exchange, String query) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        String bankId = KsPluginBridge.parseQuery(query).get("bankId");
+        try {
+            if (bankId == null || !hasBankPermission(session, bankId, "VIEW_FINANCE")) {
+                KsPluginBridge.sendJson(exchange, 403, gson.toJson(Map.of("error", "无权查看该银行分红")));
+                return;
+            }
+        } catch (java.sql.SQLException failure) {
+            KsPluginBridge.sendJson(exchange, 500, gson.toJson(Map.of("error", "权限检查失败")));
+            return;
+        }
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "dividends",
+                new Class[]{String.class}, bankId);
+        if (result instanceof List<?> batches) {
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("dividends", batches)));
+        } else {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "分红服务不可用")));
+        }
+    }
+
+    private void handleBankDividendDeclare(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String bankId = request == null ? "" : String.valueOf(request.getOrDefault("bankId", ""));
+        double amount = request == null ? 0 : toDouble(request.get("amount"), 0);
+        try {
+            if (!hasBankPermission(session, bankId, "DECLARE_DIVIDEND")) {
+                KsPluginBridge.sendJson(exchange, 403, gson.toJson(Map.of("error", "无权宣布银行分红")));
+                return;
+            }
+        } catch (java.sql.SQLException failure) {
+            KsPluginBridge.sendJson(exchange, 500, gson.toJson(Map.of("error", "权限检查失败")));
+            return;
+        }
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "declareDividend",
+                new Class[]{String.class, UUID.class, double.class}, bankId, session.playerUuid, amount);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_DIVIDEND_DECLARE", session.playerUuid.toString(), session.playerName,
+                    "bank", bankId, "batch=" + values.get("batchId") + " amount=" + amount);
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankLoanProducts(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "loanProducts", new Class[]{});
+        if (result instanceof List<?> products) {
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("products", products)));
+        } else {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "贷款产品服务不可用")));
+        }
+    }
+
+    private void handleBankLoanCollateral(HttpExchange exchange, String query) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, String> params = KsPluginBridge.parseQuery(query);
+        String productType = params.getOrDefault("productType", "HOME");
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "eligibleCollateral",
+                new Class[]{UUID.class, String.class}, session.playerUuid, productType);
+        if (result instanceof List<?> assets) {
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("assets", assets)));
+        } else {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "抵押资产服务不可用")));
+        }
+    }
+
+    private void handleBankLoanQuote(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        if (request == null) {
+            KsPluginBridge.sendJson(exchange, 400, gson.toJson(Map.of("error", "无效请求")));
+            return;
+        }
+        String bankId = String.valueOf(request.getOrDefault("bankId", ""));
+        double principal = toDouble(request.get("principal"), 0);
+        int termDays = (int) toDouble(request.get("termDays"), 0);
+        String productType = String.valueOf(request.getOrDefault("productType", "CONSUMER"));
+        String repaymentType = String.valueOf(request.getOrDefault("repaymentType", "BULLET"));
+        String collateralType = String.valueOf(request.getOrDefault("collateralType", ""));
+        String collateralRef = String.valueOf(request.getOrDefault("collateralRef", ""));
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "productLoanQuote",
+                new Class[]{String.class, UUID.class, double.class, int.class, String.class, String.class,
+                        String.class, String.class},
+                bankId, session.playerUuid, principal, termDays, productType, repaymentType,
+                collateralType, collateralRef);
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankLoanApplyQuoted(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        if (request == null) {
+            KsPluginBridge.sendJson(exchange, 400, gson.toJson(Map.of("error", "无效请求")));
+            return;
+        }
+        String bankId = String.valueOf(request.getOrDefault("bankId", ""));
+        double principal = toDouble(request.get("principal"), 0);
+        int termDays = (int) toDouble(request.get("termDays"), 0);
+        double acceptedRate = toDouble(request.get("acceptedRate"), -1);
+        long validUntil = (long) toDouble(request.get("validUntil"), 0);
+        String productType = String.valueOf(request.getOrDefault("productType", "CONSUMER"));
+        String repaymentType = String.valueOf(request.getOrDefault("repaymentType", "BULLET"));
+        String purpose = String.valueOf(request.getOrDefault("purpose", ""));
+        String collateralType = String.valueOf(request.getOrDefault("collateralType", ""));
+        String collateralRef = String.valueOf(request.getOrDefault("collateralRef", ""));
+        Object requestId = callExtraManager("ks-eco-bank", "bankManager", "requestProductLoan",
+                new Class[]{String.class, UUID.class, String.class, double.class, int.class, double.class, long.class,
+                        String.class, String.class, String.class, String.class, String.class},
+                bankId, session.playerUuid, session.playerName, principal, termDays, acceptedRate, validUntil,
+                productType, repaymentType, purpose, collateralType, collateralRef);
+        if (requestId instanceof String id) {
+            auditLog("LOAN_APPLY_QUOTED", session.playerUuid.toString(), session.playerName,
+                    "bank", bankId, "request=" + id + " principal=" + principal + " term=" + termDays);
+            KsPluginBridge.sendJson(exchange, 200,
+                    gson.toJson(Map.of("success", true, "id", id, "message", "报价已锁定，贷款申请已提交")));
+        } else {
+            KsPluginBridge.sendJson(exchange, 400,
+                    gson.toJson(Map.of("success", false, "error", "报价已失效或申请条件发生变化，请重新报价")));
+        }
+    }
+
+    private void handleMyLoanRequestCancel(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String requestId = request == null ? "" : String.valueOf(request.getOrDefault("requestId", ""));
+        Object result = callExtraManager("ks-eco-bank", "bankManager", "cancelLoanRequest",
+                new Class[]{String.class, UUID.class}, requestId, session.playerUuid);
+        boolean success = Boolean.TRUE.equals(result);
+        if (success) auditLog("BANK_LOAN_REQUEST_CANCEL", session.playerUuid.toString(), session.playerName,
+                "loan_request", requestId, "cancelled by borrower");
+        KsPluginBridge.sendJson(exchange, success ? 200 : 400, gson.toJson(success
+                ? Map.of("success", true, "message", "贷款申请已撤销，抵押物已释放")
+                : Map.of("success", false, "error", "申请不存在、已处理或无法撤销")));
+    }
+
+    private void handleBankLoanRestructureRequest(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String loanId = request == null ? "" : String.valueOf(request.getOrDefault("loanId", ""));
+        int requestedDays = request == null ? 0 : (int) toDouble(request.get("requestedDays"), 0);
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "requestRestructure",
+                new Class[]{UUID.class, String.class, int.class}, session.playerUuid, loanId, requestedDays);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_LOAN_RESTRUCTURE_REQUEST", session.playerUuid.toString(), session.playerName,
+                    "loan", loanId, "days=" + requestedDays + " fee=" + values.get("fee"));
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankLoanRestructureRequests(HttpExchange exchange, String query) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, String> values = KsPluginBridge.parseQuery(query);
+        String bankId = values.get("bankId");
+        try {
+            if (bankId == null || !hasBankPermission(session, bankId, "APPROVE_LOAN")) {
+                KsPluginBridge.sendJson(exchange, 403, gson.toJson(Map.of("error", "无权查看展期申请")));
+                return;
+            }
+        } catch (java.sql.SQLException failure) {
+            KsPluginBridge.sendJson(exchange, 500, gson.toJson(Map.of("error", "权限检查失败")));
+            return;
+        }
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "restructureRequests",
+                new Class[]{String.class, String.class}, bankId, values.get("status"));
+        if (result instanceof List<?> requests) {
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("requests", requests)));
+        } else {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "展期服务不可用")));
+        }
+    }
+
+    private void handleBankLoanRestructureDecide(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String requestId = request == null ? "" : String.valueOf(request.getOrDefault("requestId", ""));
+        boolean approve = request != null && Boolean.TRUE.equals(request.get("approve"));
+        try {
+            String bankId = requestBankId("ks_bank_restructure_requests", requestId);
+            if (bankId == null || !hasBankPermission(session, bankId, "APPROVE_LOAN")) {
+                KsPluginBridge.sendJson(exchange, 403, gson.toJson(Map.of("error", "无权处理该展期申请")));
+                return;
+            }
+        } catch (java.sql.SQLException failure) {
+            KsPluginBridge.sendJson(exchange, 500, gson.toJson(Map.of("error", "权限检查失败")));
+            return;
+        }
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "decideRestructure",
+                new Class[]{String.class, UUID.class, boolean.class}, requestId, session.playerUuid, approve);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_LOAN_RESTRUCTURE_DECIDE", session.playerUuid.toString(), session.playerName,
+                    "restructure", requestId, "approve=" + approve);
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankPolicyEvents(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "policyEvents", new Class[]{});
+        if (result instanceof List<?> events) {
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("events", events)));
+        } else {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "政策事件服务不可用")));
+        }
+    }
+
+    private void handleBankPolicyEventCreate(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAdminAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        if (request == null) {
+            KsPluginBridge.sendJson(exchange, 400, gson.toJson(Map.of("error", "无效请求")));
+            return;
+        }
+        long now = System.currentTimeMillis() / 1000;
+        String eventType = String.valueOf(request.getOrDefault("eventType", "RATE_CYCLE"));
+        String title = String.valueOf(request.getOrDefault("title", ""));
+        String description = String.valueOf(request.getOrDefault("description", ""));
+        double rateModifier = toDouble(request.get("rateModifier"), 0);
+        double riskModifier = toDouble(request.get("riskModifier"), 0);
+        long startsAt = (long) toDouble(request.get("startsAt"), now);
+        long endsAt = (long) toDouble(request.get("endsAt"), now + 7 * 86400L);
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "createPolicyEvent",
+                new Class[]{String.class, String.class, String.class, double.class, double.class,
+                        long.class, long.class, UUID.class}, eventType, title, description,
+                rateModifier, riskModifier, startsAt, endsAt, session.playerUuid);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_POLICY_EVENT_CREATE", session.playerUuid.toString(), session.playerName,
+                    "bank_policy_event", String.valueOf(values.get("id")), "type=" + eventType);
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankOperatingStatusSet(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAdminAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String bankId = request == null ? "" : String.valueOf(request.getOrDefault("bankId", ""));
+        String status = request == null ? "" : String.valueOf(request.getOrDefault("status", ""));
+        Object result = callExtraManager("ks-eco-bank", "gameplayManager", "setOperatingStatus",
+                new Class[]{String.class, String.class}, bankId, status);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_OPERATING_STATUS", session.playerUuid.toString(), session.playerName,
+                    "bank", bankId, "status=" + status);
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankEquityPortfolio(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Object result = callExtraManager("ks-eco-bank", "equityManager", "portfolio",
+                new Class[]{UUID.class}, session.playerUuid);
+        if (result instanceof List<?> portfolio) {
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("portfolio", portfolio)));
+        } else {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "股权服务不可用")));
+        }
+    }
+
+    private void handleBankEquityCapTable(HttpExchange exchange, String query) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        String bankId = KsPluginBridge.parseQuery(query).getOrDefault("bankId", "");
+        Object result = callExtraManager("ks-eco-bank", "equityManager", "capTable",
+                new Class[]{String.class}, bankId);
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankEquityOfferings(HttpExchange exchange, String query) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        String bankId = KsPluginBridge.parseQuery(query).getOrDefault("bankId", "");
+        Object result = callExtraManager("ks-eco-bank", "equityManager", "offerings",
+                new Class[]{String.class}, bankId);
+        if (result instanceof List<?> offerings) {
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("offerings", offerings)));
+        } else {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "股份市场不可用")));
+        }
+    }
+
+    private void handleBankEquityOfferingCreate(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String bankId = request == null ? "" : String.valueOf(request.getOrDefault("bankId", ""));
+        String offerType = request == null ? "" : String.valueOf(request.getOrDefault("offerType", "SECONDARY"));
+        long shares = request == null ? 0 : (long) toDouble(request.get("shares"), 0);
+        double price = request == null ? 0 : toDouble(request.get("pricePerShare"), 0);
+        Object result = callExtraManager("ks-eco-bank", "equityManager", "createOffering",
+                new Class[]{String.class, UUID.class, String.class, long.class, double.class},
+                bankId, session.playerUuid, offerType, shares, price);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_SHARE_OFFER_CREATE", session.playerUuid.toString(), session.playerName,
+                    "bank", bankId, "type=" + offerType + ",shares=" + shares);
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankEquityOfferingAccept(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String offeringId = request == null ? "" : String.valueOf(request.getOrDefault("offeringId", ""));
+        Object result = callExtraManager("ks-eco-bank", "equityManager", "acceptOffering",
+                new Class[]{String.class, UUID.class}, offeringId, session.playerUuid);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_SHARE_OFFER_ACCEPT", session.playerUuid.toString(), session.playerName,
+                    "share_offering", offeringId, "accepted");
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankEquityOfferingCancel(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String offeringId = request == null ? "" : String.valueOf(request.getOrDefault("offeringId", ""));
+        Object result = callExtraManager("ks-eco-bank", "equityManager", "cancelOffering",
+                new Class[]{String.class, UUID.class}, offeringId, session.playerUuid);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_SHARE_OFFER_CANCEL", session.playerUuid.toString(), session.playerName,
+                    "share_offering", offeringId, "cancelled");
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankResolutionFund(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAdminAuth(exchange);
+        if (session == null) return;
+        Object result = callExtraManager("ks-eco-bank", "resolutionManager", "fundStatus", new Class[]{});
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankResolutionCases(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAdminAuth(exchange);
+        if (session == null) return;
+        Object result = callExtraManager("ks-eco-bank", "resolutionManager", "cases", new Class[]{});
+        if (result instanceof List<?> cases) {
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("cases", cases)));
+        } else {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "处置历史不可用")));
+        }
+    }
+
+    private void handleBankResolutionFundTopUp(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAdminAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        double amount = request == null ? 0 : toDouble(request.get("amount"), 0);
+        Object result = callExtraManager("ks-eco-bank", "resolutionManager", "recapitalizeFund",
+                new Class[]{double.class}, amount);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_INSURANCE_FUND_TOP_UP", session.playerUuid.toString(), session.playerName,
+                    "insurance_fund", "DEFAULT", "amount=" + amount);
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankResolutionPreview(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAdminAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String bankId = request == null ? "" : String.valueOf(request.getOrDefault("bankId", ""));
+        String bridgeBankId = request == null ? "" : String.valueOf(request.getOrDefault("bridgeBankId", ""));
+        Object result = callExtraManager("ks-eco-bank", "resolutionManager", "preview",
+                new Class[]{String.class, String.class}, bankId, bridgeBankId);
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankResolutionExecute(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAdminAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String bankId = request == null ? "" : String.valueOf(request.getOrDefault("bankId", ""));
+        String bridgeBankId = request == null ? "" : String.valueOf(request.getOrDefault("bridgeBankId", ""));
+        Object result = callExtraManager("ks-eco-bank", "resolutionManager", "resolve",
+                new Class[]{String.class, String.class, UUID.class}, bankId, bridgeBankId, session.playerUuid);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_RESOLUTION_EXECUTE", session.playerUuid.toString(), session.playerName,
+                    "bank", bankId, "bridge=" + bridgeBankId + ",case=" + values.get("caseId"));
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankLoanPayoutReviews(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAdminAuth(exchange);
+        if (session == null) return;
+        Object result = callExtraManager("ks-eco-bank", "bankManager", "listLoanPayoutReviews",
+                new Class[]{});
+        if (result instanceof List<?> reviews) {
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("reviews", reviews)));
+            return;
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void handleBankLoanPayoutReviewResolve(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAdminAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String loanId = request == null ? "" : String.valueOf(request.getOrDefault("loanId", ""));
+        String action = request == null ? "" : String.valueOf(request.getOrDefault("action", ""));
+        Object result = callExtraManager("ks-eco-bank", "bankManager", "resolveLoanPayoutReview",
+                new Class[]{String.class, String.class}, loanId, action);
+        if (result instanceof Map<?, ?> values && Boolean.TRUE.equals(values.get("success"))) {
+            auditLog("BANK_LOAN_PAYOUT_REVIEW_RESOLVED", session.playerUuid.toString(), session.playerName,
+                    "bank_loan", loanId, "action=" + action);
+        }
+        sendBankGameplayResult(exchange, result);
+    }
+
+    private void sendBankGameplayResult(HttpExchange exchange, Object result) throws IOException {
+        if (result instanceof Map<?, ?> values) {
+            boolean success = !Boolean.FALSE.equals(values.get("success"))
+                    && !Boolean.FALSE.equals(values.get("available"));
+            KsPluginBridge.sendJson(exchange, success ? 200 : 400, gson.toJson(values));
+        } else {
+            KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "银行玩法模块不可用")));
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private void handleGuidanceStatus(HttpExchange exchange) throws IOException {
         KsAuthManager.Session session = requireAuth(exchange);
@@ -2094,9 +2659,9 @@ public final class EcoWebHandler implements HttpHandler {
         KsAuthManager.Session session = requireAuth(exchange);
         if (session == null) return;
         try {
-            Object result = Bukkit.getScheduler().callSyncMethod(plugin, () -> callExtraManager(
-                    "ks-eco-bank", "bankManager", "claimStarterLoan", new Class[]{UUID.class}, session.playerUuid))
-                    .get(10, TimeUnit.SECONDS);
+            Object result = plugin.scheduler().callGlobal(() -> callExtraManager(
+                    "ks-eco-bank", "bankManager", "claimStarterLoan", new Class[]{UUID.class}, session.playerUuid),
+                    Duration.ofSeconds(10));
             if (result instanceof Map<?, ?> raw) {
                 Map<String, Object> response = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : raw.entrySet()) response.put(String.valueOf(entry.getKey()), entry.getValue());
@@ -2248,12 +2813,12 @@ public final class EcoWebHandler implements HttpHandler {
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn != null) {
                 try (var rs = conn.createStatement().executeQuery(
-                        "SELECT key, value FROM ks_bank_cb_config WHERE key IN ('rate_adjust_limit','interest_period_days','bank_min_capital')")) {
+                        "SELECT config_key, config_value FROM ks_bank_cb_config WHERE config_key IN ('rate_adjust_limit','interest_period_days','bank_min_capital')")) {
                     while (rs.next()) {
-                        switch (rs.getString("key")) {
-                            case "rate_adjust_limit" -> s.put("rateAdjustLimit", rs.getDouble("value"));
-                            case "interest_period_days" -> s.put("interestPeriodDays", rs.getDouble("value"));
-                            case "bank_min_capital" -> s.put("bankMinCapital", rs.getDouble("value"));
+                        switch (rs.getString("config_key")) {
+                            case "rate_adjust_limit" -> s.put("rateAdjustLimit", rs.getDouble("config_value"));
+                            case "interest_period_days" -> s.put("interestPeriodDays", rs.getDouble("config_value"));
+                            case "bank_min_capital" -> s.put("bankMinCapital", rs.getDouble("config_value"));
                         }
                     }
                 }
@@ -2300,10 +2865,12 @@ public final class EcoWebHandler implements HttpHandler {
             // 保存浮动限制到数据库
             try (var conn = plugin.ksCore().dataStore().getConnection()) {
                 if (conn != null) {
-                    conn.createStatement().executeUpdate(
-                        "INSERT OR REPLACE INTO ks_bank_cb_config (key, value) VALUES ('rate_adjust_limit', " + limit + ")");
+                    upsertBankConfig(conn, "rate_adjust_limit", Double.toString(limit));
                 }
-            } catch (java.sql.SQLException ignored) {}
+            } catch (java.sql.SQLException e) {
+                KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"保存利率浮动限制失败\"}");
+                return;
+            }
         }
         if (req.containsKey("interestPeriodDays")) {
             double days = toDouble(req.get("interestPeriodDays"), 7);
@@ -2313,10 +2880,12 @@ public final class EcoWebHandler implements HttpHandler {
             }
             try (var conn = plugin.ksCore().dataStore().getConnection()) {
                 if (conn != null) {
-                    conn.createStatement().executeUpdate(
-                        "INSERT OR REPLACE INTO ks_bank_cb_config (key, value) VALUES ('interest_period_days', " + days + ")");
+                    upsertBankConfig(conn, "interest_period_days", Double.toString(days));
                 }
-            } catch (java.sql.SQLException ignored) {}
+            } catch (java.sql.SQLException e) {
+                KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"保存利息结算周期失败\"}");
+                return;
+            }
         }
         if (req.containsKey("bankMinCapital")) {
             double minCap = toDouble(req.get("bankMinCapital"), 50000);
@@ -2326,10 +2895,12 @@ public final class EcoWebHandler implements HttpHandler {
             }
             try (var conn = plugin.ksCore().dataStore().getConnection()) {
                 if (conn != null) {
-                    conn.createStatement().executeUpdate(
-                        "INSERT OR REPLACE INTO ks_bank_cb_config (key, value) VALUES ('bank_min_capital', " + minCap + ")");
+                    upsertBankConfig(conn, "bank_min_capital", Double.toString(minCap));
                 }
-            } catch (java.sql.SQLException ignored) {}
+            } catch (java.sql.SQLException e) {
+                KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"保存开行最低资本失败\"}");
+                return;
+            }
         }
         KsPluginBridge.sendJson(exchange, 200, "{\"message\":\"央行利率已更新\"}");
         auditLog("CB_RATES_SET", session.playerUuid.toString(), session.playerName, "central_bank", "CB",
@@ -2484,7 +3055,8 @@ public final class EcoWebHandler implements HttpHandler {
 
     private String requestBankId(String table, String requestId) throws java.sql.SQLException {
         if (requestId == null || requestId.isBlank()) return null;
-        if (!Set.of("ks_bank_loan_requests", "ks_bank_enterprise_loan_requests").contains(table)) {
+        if (!Set.of("ks_bank_loan_requests", "ks_bank_enterprise_loan_requests",
+                "ks_bank_restructure_requests").contains(table)) {
             throw new java.sql.SQLException("Unsupported loan request table");
         }
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
@@ -2662,10 +3234,10 @@ public final class EcoWebHandler implements HttpHandler {
         Object result;
         try {
             // Vault providers are Bukkit APIs and must be invoked from the server thread.
-            result = Bukkit.getScheduler().callSyncMethod(plugin, () -> callExtraManager(
+            result = plugin.scheduler().callGlobal(() -> callExtraManager(
                     "ks-eco-bank", "bankManager", "repayLoan",
                     new Class[]{String.class, UUID.class, double.class},
-                    loanId, borrower, amount)).get(10, TimeUnit.SECONDS);
+                    loanId, borrower, amount), Duration.ofSeconds(10));
         } catch (Exception e) {
             plugin.getLogger().warning("[ks-Eco] Bank repayment sync call failed: " + e.getMessage());
             KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "Repayment service unavailable")));
@@ -2880,9 +3452,9 @@ public final class EcoWebHandler implements HttpHandler {
         String auctionId = String.valueOf(request.getOrDefault("auctionId", ""));
         double amount = toDouble(request.get("amount"), 0);
         try {
-            Object result = Bukkit.getScheduler().callSyncMethod(plugin, () -> callExtraManager(
+            Object result = plugin.scheduler().callGlobal(() -> callExtraManager(
                     "ks-eco-bank", "enterpriseFinanceManager", "placeAuctionBid", new Class[]{String.class, UUID.class, double.class},
-                    auctionId, session.playerUuid, amount)).get(10, TimeUnit.SECONDS);
+                    auctionId, session.playerUuid, amount), Duration.ofSeconds(10));
             if (result instanceof Map<?, ?> response) {
                 Map<String, Object> body = stringKeyedMap(response);
                 if (Boolean.TRUE.equals(body.get("success"))) {
@@ -3035,13 +3607,19 @@ public final class EcoWebHandler implements HttpHandler {
             ent.put("region", region); ent.put("created_at", now);
             // 自动创建企业公户并注入注册资本（使用当前连接）
             try {
-                conn.createStatement().executeUpdate(
-                    "INSERT OR IGNORE INTO ks_ent_corporate_accounts (enterprise_id, bank_id, balance, updated_at) VALUES ('" +
-                    entId.replace("'", "''") + "', '" + CORP_BANK_ID + "', " + capital + ", " + now + ")");
-                conn.createStatement().executeUpdate(
-                    "UPDATE ks_bank_banks SET total_assets = total_assets + " + capital +
-                    " WHERE id='" + CORP_BANK_ID + "'");
-            } catch (java.sql.SQLException ignored) {}
+                if (!ensureCorporateAccount(conn, entId, CORP_BANK_ID, capital, now)) {
+                    throw new java.sql.SQLException("Corporate account already exists for a new enterprise");
+                }
+                try (var bank = conn.prepareStatement(
+                        "UPDATE ks_bank_banks SET total_assets=total_assets+? WHERE id=?")) {
+                    bank.setDouble(1, capital); bank.setString(2, CORP_BANK_ID);
+                    if (bank.executeUpdate() != 1) throw new java.sql.SQLException("Corporate bank is missing");
+                }
+            } catch (java.sql.SQLException e) {
+                removeFailedEnterpriseRegistration(entId);
+                KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"企业公户初始化失败\"}");
+                return;
+            }
             auditLog("ENTERPRISE_REGISTER", session.playerUuid.toString(), session.playerName, "enterprise", entId,
                 "企业名称: " + name + " | 类型: " + type + " | 注册资本: " + String.format("%.2f", capital) + " | 区域: " + region);
             // DB write precedes Vault because this legacy endpoint is handled by the HTTP worker.
@@ -3510,6 +4088,7 @@ public final class EcoWebHandler implements HttpHandler {
                 }
             }
             double escrowAmount = budget * prepay;
+            conn.setAutoCommit(false);
             // 直接写入数据库（publisher_uuid 为 TEXT，企业ID/玩家UUID均可存储，避免反射模块的 UUID 强转崩溃）
             String id = UUID.randomUUID().toString().substring(0, 8);
             long now = System.currentTimeMillis() / 1000;
@@ -3541,15 +4120,10 @@ public final class EcoWebHandler implements HttpHandler {
                 ps.executeUpdate();
             }
             if ("ENTERPRISE".equals(publisherType) && !reserveCorporateProjectEscrow(conn, publisherUuid, escrowAmount)) {
-                try (var escrowDelete = conn.prepareStatement("DELETE FROM ks_ent_project_escrow WHERE project_id=?");
-                     var projectDelete = conn.prepareStatement("DELETE FROM ks_ent_projects WHERE id=?")) {
-                    escrowDelete.setString(1, id);
-                    escrowDelete.executeUpdate();
-                    projectDelete.setString(1, id);
-                    projectDelete.executeUpdate();
-                }
+                conn.rollback();
                 KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"企业公户余额不足，无法托管项目预付款\"}"); return;
             }
+            conn.commit();
             auditLog("PROJECT_PUBLISH", session.playerUuid.toString(), session.playerName, "project", id,
                 "标题: " + title + " | 发布方: " + publisherType + "(" + publisherUuid + ") | 预算: " + String.format("%.2f", budget));
             Map<String, Object> result = new LinkedHashMap<>();
@@ -3602,12 +4176,18 @@ public final class EcoWebHandler implements HttpHandler {
         long now = System.currentTimeMillis() / 1000;
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) { KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"数据库未连接\"}"); return; }
-            // 检查项目是否存在且开放
-            var rs = conn.createStatement().executeQuery(
-                "SELECT status, budget FROM ks_ent_projects WHERE id='" + projectId.replace("'", "''") + "'");
-            if (!rs.next()) { KsPluginBridge.sendJson(exchange, 404, "{\"error\":\"项目不存在\"}"); return; }
-            if (!"OPEN".equals(rs.getString("status"))) {
-                KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"项目已关闭或已授标\"}"); return;
+            double projectBudget;
+            try (var project = conn.prepareStatement(
+                    "SELECT status,budget,deadline FROM ks_ent_projects WHERE id=?")) {
+                project.setString(1, projectId);
+                try (var rows = project.executeQuery()) {
+                    if (!rows.next()) { KsPluginBridge.sendJson(exchange, 404, "{\"error\":\"项目不存在\"}"); return; }
+                    if (!"OPEN".equals(rows.getString("status"))
+                            || !ProjectBiddingDeadlineStore.acceptsBid(rows.getLong("deadline"), now)) {
+                        KsPluginBridge.sendJson(exchange, 409, "{\"error\":\"项目已截止或不再接受投标\"}"); return;
+                    }
+                    projectBudget = rows.getDouble("budget");
+                }
             }
             // 如果是企业投标，做资质检查
             if ("ENTERPRISE".equals(bidderType) && enterpriseId != null) {
@@ -3618,25 +4198,16 @@ public final class EcoWebHandler implements HttpHandler {
                     "SELECT registered_capital FROM ks_ent_enterprises WHERE id='" + enterpriseId.replace("'", "''") + "' AND status='ACTIVE'");
                 if (!rs2.next()) { KsPluginBridge.sendJson(exchange, 404, "{\"error\":\"企业不存在或已注销\"}"); return; }
                 double regCap = rs2.getDouble("registered_capital");
-                double budget = rs.getDouble("budget");
-                if (regCap < budget * 0.75) {
+                if (regCap < projectBudget * 0.75) {
                     KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"企业资质不足（注册资本需 ≥ 项目预算的75%）\"}"); return;
                 }
             }
-            // enterprise_id 在旧数据库中可能是 NOT NULL，个人投标时用空字符串代替 NULL
-            try (var insert = conn.prepareStatement(
-                    "INSERT INTO ks_ent_bids (id, project_id, enterprise_id, bidder_uuid, bidder_type, bid_amount, is_consortium, consortium_members, status, submitted_at) VALUES (?,?,?,?,?,?,?,?,?,?)")) {
-                insert.setString(1, bidId);
-                insert.setString(2, projectId);
-                insert.setString(3, enterpriseId == null ? "" : enterpriseId);
-                insert.setString(4, bidderUuid);
-                insert.setString(5, bidderType);
-                insert.setDouble(6, bidAmount);
-                insert.setInt(7, isConsortium ? 1 : 0);
-                insert.setString(8, "");
-                insert.setString(9, "PENDING");
-                insert.setLong(10, now);
-                insert.executeUpdate();
+            if (ProjectBiddingDeadlineStore.insertBidIfOpen(conn, bidId, projectId,
+                    enterpriseId, bidderUuid, bidderType, bidAmount, isConsortium,
+                    String.join(",", members), now) != 1) {
+                KsPluginBridge.sendJson(exchange, 409,
+                        "{\"error\":\"项目状态或截止时间已变更，投标未写入\"}");
+                return;
             }
             Map<String, Object> bid = new LinkedHashMap<>();
             bid.put("id", bidId); bid.put("projectId", projectId);
@@ -3669,7 +4240,8 @@ public final class EcoWebHandler implements HttpHandler {
             conn.setAutoCommit(false);
             expireOverdueDeposits(conn);
             // 获取项目信息（用完立即关闭 Statement/ResultSet，避免在同一连接上堆叠未关闭的游标导致 SQLITE_BUSY_SNAPSHOT）
-            String publisherType, publisherUuid; double budget, prepayRatio, depositRatio; int depositDeadlineHours;
+            String publisherType, publisherUuid; double budget, prepayRatio, depositRatio;
+            int depositDeadlineHours; long projectDeadline;
             try (var st = conn.createStatement();
                  var rsProj = st.executeQuery("SELECT * FROM ks_ent_projects WHERE id='" + projectId.replace("'", "''") + "'")) {
                 if (!rsProj.next()) { KsPluginBridge.sendJson(exchange, 404, "{\"error\":\"项目不存在\"}"); return; }
@@ -3679,9 +4251,16 @@ public final class EcoWebHandler implements HttpHandler {
                 prepayRatio = rsProj.getDouble("prepayment_ratio");
                 depositRatio = rsProj.getDouble("deposit_ratio");
                 depositDeadlineHours = rsProj.getInt("deposit_deadline_hours");
+                projectDeadline = rsProj.getLong("deadline");
                 if (!"OPEN".equals(rsProj.getString("status"))) {
                     KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"项目已不是开放状态（可能已评标或处于待缴保证金阶段）\"}"); return;
                 }
+            }
+            if (!ProjectBiddingDeadlineStore.acceptsAward(projectDeadline,
+                    System.currentTimeMillis() / 1000)) {
+                KsPluginBridge.sendJson(exchange, 409,
+                        "{\"error\":\"投标尚未截止，评标必须在截止时间后进行\"}");
+                return;
             }
             // 权限校验：官方/国企招标仅管理员可评标；企业招标须为该企业所有者；个人招标须为发布人本人
             if ("OFFICIAL".equalsIgnoreCase(publisherType) || "STATE_OWNED".equalsIgnoreCase(publisherType)) {
@@ -3697,7 +4276,7 @@ public final class EcoWebHandler implements HttpHandler {
                     KsPluginBridge.sendJson(exchange, 403, "{\"error\":\"只有发布人本人才能评标\"}"); return;
                 }
             }
-            double prepayment = budget * prepayRatio;
+            double maximumPrepayment = budget * prepayRatio;
 
             // 获取所有待处理投标
             List<Map<String, Object>> candidates = new ArrayList<>();
@@ -3801,6 +4380,10 @@ public final class EcoWebHandler implements HttpHandler {
             String winBidderUuid = (String) winner.get("bidder_uuid");
             String winBidderType = (String) winner.get("bidder_type");
             double winBidAmount = (double) winner.get("bid_amount");
+            double prepayment = winBidAmount * prepayRatio;
+            if (prepayment > maximumPrepayment + 0.000001d) {
+                KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"中标金额超过项目托管预算，无法发放预付款\"}"); return;
+            }
 
             long awardNow = System.currentTimeMillis() / 1000;
             Map<String, Object> result = new LinkedHashMap<>();
@@ -3813,15 +4396,45 @@ public final class EcoWebHandler implements HttpHandler {
                 result.put("score_details", scoreDetails);
             }
 
+            if ("PLAYER".equalsIgnoreCase(winBidderType) && depositRatio <= 0.0d && prepayment > 0.0d) {
+                ProjectWalletSettlementStore.Settlement settlement =
+                        ProjectWalletSettlementService.prepareDirectAward(conn, projectId, winBidId,
+                                UUID.fromString(winBidderUuid), prepayment, awardNow);
+                conn.commit();
+                ProjectSettlementResult outcome = processPersonalProjectPrepayment(settlement);
+                result.put("settlementId", outcome.settlementId());
+                result.put("prepayment", prepayment);
+                result.put("status", outcome.success() ? "AWARDED"
+                        : outcome.reviewRequired() ? "REVIEW_REQUIRED" : "OPEN");
+                result.put("message", outcome.message());
+                if (outcome.success()) {
+                    auditLog("PROJECT_AWARD", session.playerUuid.toString(), session.playerName,
+                            "project", projectId, "个人中标预付款已通过持久结算发放");
+                }
+                KsPluginBridge.sendJson(exchange, outcome.success() ? 200 : outcome.reviewRequired() ? 202 : 409,
+                        gson.toJson(result));
+                return;
+            }
+
             if (depositRatio > 0) {
                 // ===== 需先缴纳保证金才能确认中标，此时不发放预付款、不淘汰其余投标 =====
                 double depositAmount = winBidAmount * depositRatio;
                 long depositDeadline = awardNow + depositDeadlineHours * 3600L;
-                conn.createStatement().executeUpdate(
-                    "UPDATE ks_ent_bids SET status='PENDING_DEPOSIT', deposit_amount=" + depositAmount +
-                    ", deposit_deadline=" + depositDeadline + " WHERE id='" + winBidId.replace("'", "''") + "'");
-                conn.createStatement().executeUpdate(
-                    "UPDATE ks_ent_projects SET status='PENDING_DEPOSIT' WHERE id='" + projectId.replace("'", "''") + "'");
+                if (ProjectBiddingDeadlineStore.claimProjectForAward(
+                        conn, projectId, "PENDING_DEPOSIT", awardNow) != 1) {
+                    throw new java.sql.SQLException("Project award window or status changed");
+                }
+                try (var bidClaim = conn.prepareStatement(
+                        "UPDATE ks_ent_bids SET status='PENDING_DEPOSIT',deposit_amount=?,deposit_deadline=? "
+                                + "WHERE id=? AND project_id=? AND status='PENDING'")) {
+                    bidClaim.setDouble(1, depositAmount);
+                    bidClaim.setLong(2, depositDeadline);
+                    bidClaim.setString(3, winBidId);
+                    bidClaim.setString(4, projectId);
+                    if (bidClaim.executeUpdate() != 1) {
+                        throw new java.sql.SQLException("Project bid changed before deposit claim");
+                    }
+                }
                 conn.commit();
                 auditLog("PROJECT_AWARD_PENDING_DEPOSIT", session.playerUuid.toString(), session.playerName, "project", projectId,
                     "模式: " + awardMode + " | 拟中标方: " + winBidderType + " | 金额: " + String.format("%.2f", winBidAmount) +
@@ -3843,8 +4456,8 @@ public final class EcoWebHandler implements HttpHandler {
             conn.createStatement().executeUpdate(
                 "UPDATE ks_ent_bids SET status='REJECTED' WHERE project_id='" + projectId.replace("'", "''") +
                 "' AND status='PENDING' AND id<>'" + winBidId.replace("'", "''") + "'");
-            if (conn.createStatement().executeUpdate(
-                "UPDATE ks_ent_projects SET status='AWARDED' WHERE id='" + projectId.replace("'", "''") + "' AND status='OPEN'") != 1) {
+            if (ProjectBiddingDeadlineStore.claimProjectForAward(
+                    conn, projectId, "AWARDED", awardNow) != 1) {
                 throw new java.sql.SQLException("Project was already awarded");
             }
 
@@ -3877,20 +4490,19 @@ public final class EcoWebHandler implements HttpHandler {
             if (ps.executeUpdate() != 1) throw new java.sql.SQLException("Project prepayment is not funded by escrow");
         }
         if ("ENTERPRISE".equals(winBidderType) && winEntId != null && !winEntId.isEmpty()) {
-            conn.createStatement().executeUpdate(
-                "INSERT OR IGNORE INTO ks_ent_corporate_accounts (enterprise_id, bank_id, balance, updated_at) VALUES ('" +
-                winEntId.replace("'", "''") + "', '" + CORP_BANK_ID + "', 0, " + now + ")");
-            conn.createStatement().executeUpdate(
+            ensureCorporateAccount(conn, winEntId, CORP_BANK_ID, 0, now);
+            int accountUpdated = conn.createStatement().executeUpdate(
                 "UPDATE ks_ent_corporate_accounts SET balance = balance + " + prepayment + ", updated_at = " + now +
                 " WHERE enterprise_id='" + winEntId.replace("'", "''") + "'");
-            conn.createStatement().executeUpdate(
+            int enterpriseUpdated = conn.createStatement().executeUpdate(
                 "UPDATE ks_ent_enterprises SET current_assets = current_assets + " + prepayment +
                 " WHERE id='" + winEntId.replace("'", "''") + "'");
-            conn.createStatement().executeUpdate(
+            int bankUpdated = conn.createStatement().executeUpdate(
                 "UPDATE ks_bank_banks SET total_assets = total_assets + " + prepayment +
                 " WHERE id=(SELECT bank_id FROM ks_ent_corporate_accounts WHERE enterprise_id='" + winEntId.replace("'", "''") + "')");
-            auditLog("CORPORATE_DEPOSIT", session.playerUuid.toString(), session.playerName, "enterprise", winEntId,
-                "项目中标预付款 | 项目: " + projectId + " | +" + String.format("%.2f", prepayment));
+            if (accountUpdated != 1 || enterpriseUpdated != 1 || bankUpdated != 1) {
+                throw new java.sql.SQLException("Project prepayment accounting rows are incomplete");
+            }
         } else if (winBidderUuid != null && !winBidderUuid.isEmpty()) {
             if (!depositWallet(UUID.fromString(winBidderUuid), prepayment)) {
                 throw new java.sql.SQLException("Project prepayment wallet payout failed");
@@ -3910,17 +4522,448 @@ public final class EcoWebHandler implements HttpHandler {
             ps.setDouble(4, amount);
             if (ps.executeUpdate() != 1) return false;
         }
-        try (var ps = conn.prepareStatement("UPDATE ks_ent_enterprises SET current_assets=current_assets-? WHERE id=?")) {
+        try (var ps = conn.prepareStatement(
+                "UPDATE ks_ent_enterprises SET current_assets=current_assets-? WHERE id=? AND current_assets>=?")) {
             ps.setDouble(1, amount);
             ps.setString(2, enterpriseId);
-            ps.executeUpdate();
+            ps.setDouble(3, amount);
+            if (ps.executeUpdate() != 1) throw new java.sql.SQLException("Enterprise asset balance is inconsistent");
         }
-        try (var ps = conn.prepareStatement("UPDATE ks_bank_banks SET total_assets=total_assets-? WHERE id=?")) {
+        try (var ps = conn.prepareStatement(
+                "UPDATE ks_bank_banks SET total_assets=total_assets-? WHERE id=? AND total_assets>=?")) {
             ps.setDouble(1, amount);
             ps.setString(2, bankId);
-            ps.executeUpdate();
+            ps.setDouble(3, amount);
+            if (ps.executeUpdate() != 1) throw new java.sql.SQLException("Corporate bank asset balance is inconsistent");
         }
         return true;
+    }
+
+    private ProjectSettlementResult processPersonalProjectPrepayment(
+            ProjectWalletSettlementStore.Settlement settlement) {
+        String expected = ProjectWalletSettlementStore.DEPOSIT_HELD.equals(settlement.status())
+                ? ProjectWalletSettlementStore.DEPOSIT_HELD
+                : ProjectWalletSettlementStore.PREPAYMENT_READY;
+        try {
+            boolean claimed = projectTransaction(connection ->
+                    ProjectWalletSettlementService.claimPrepayment(connection, settlement.id(), expected, projectNow()));
+            if (!claimed) return ProjectSettlementResult.failed(settlement.id(),
+                    "项目预付款已被其他请求处理，请刷新状态");
+        } catch (SQLException exception) {
+            return ProjectSettlementResult.failed(settlement.id(), "无法认领项目预付款: " + exception.getMessage());
+        }
+
+        final boolean paid;
+        try {
+            paid = depositWallet(settlement.playerUuid(), settlement.prepaymentAmount());
+        } catch (IOException unknown) {
+            markProjectSettlementReview(settlement.id(), ProjectWalletSettlementStore.PREPAYMENT_CLAIMED,
+                    "prepayment wallet outcome unknown: " + unknown.getMessage());
+            return ProjectSettlementResult.review(settlement.id(), "预付款钱包结果未知，已进入人工复核");
+        }
+
+        if (!paid) {
+            try {
+                if (ProjectWalletSettlementStore.DIRECT_AWARD.equals(settlement.kind())) {
+                    projectTransaction(connection -> {
+                        ProjectWalletSettlementService.rollbackRejectedExternalCall(connection, settlement,
+                                ProjectWalletSettlementStore.PREPAYMENT_CLAIMED,
+                                "prepayment payout rejected", projectNow());
+                        return null;
+                    });
+                } else {
+                    projectTransaction(connection -> {
+                        if (!ProjectWalletSettlementStore.transition(connection, settlement.id(),
+                                ProjectWalletSettlementStore.PREPAYMENT_CLAIMED,
+                                ProjectWalletSettlementStore.PREPAYMENT_READY,
+                                "prepayment payout rejected", projectNow())) {
+                            throw new SQLException("prepayment retry state changed concurrently");
+                        }
+                        return null;
+                    });
+                }
+            } catch (SQLException exception) {
+                markProjectSettlementReview(settlement.id(), ProjectWalletSettlementStore.PREPAYMENT_CLAIMED,
+                        "payout rejected but rollback failed: " + exception.getMessage());
+                return ProjectSettlementResult.review(settlement.id(), "预付款失败后的回滚状态不确定，已进入人工复核");
+            }
+            return ProjectSettlementResult.failed(settlement.id(),
+                    ProjectWalletSettlementStore.DIRECT_AWARD.equals(settlement.kind())
+                            ? "预付款入账失败，项目已恢复开放"
+                            : "预付款入账失败，保证金仍在托管，可重新尝试发放");
+        }
+
+        try {
+            projectTransaction(connection -> {
+                ProjectWalletSettlementService.finalizePayout(connection, settlement, projectNow());
+                return null;
+            });
+            return ProjectSettlementResult.success(settlement.id(), "个人预付款已发放，项目已正式中标");
+        } catch (SQLException exception) {
+            markProjectSettlementReview(settlement.id(), ProjectWalletSettlementStore.PREPAYMENT_CLAIMED,
+                    "wallet paid but SQL finalization failed: " + exception.getMessage());
+            return ProjectSettlementResult.review(settlement.id(), "预付款可能已到账，但项目终态提交失败，已进入人工复核");
+        }
+    }
+
+    private ProjectSettlementResult processPersonalProjectDeposit(
+            ProjectWalletSettlementStore.Settlement settlement) {
+        try {
+            boolean claimed = projectTransaction(connection ->
+                    ProjectWalletSettlementService.claimDepositCharge(connection, settlement.id(), projectNow()));
+            if (!claimed) return ProjectSettlementResult.failed(settlement.id(),
+                    "保证金已被其他请求处理，请刷新状态");
+        } catch (SQLException exception) {
+            return ProjectSettlementResult.failed(settlement.id(), "无法认领个人保证金: " + exception.getMessage());
+        }
+
+        final boolean charged;
+        try {
+            charged = withdrawWallet(settlement.playerUuid(), settlement.depositAmount());
+        } catch (IOException unknown) {
+            markProjectSettlementReview(settlement.id(), ProjectWalletSettlementStore.DEPOSIT_CHARGE_CLAIMED,
+                    "deposit wallet outcome unknown: " + unknown.getMessage());
+            return ProjectSettlementResult.review(settlement.id(), "保证金扣款结果未知，已进入人工复核");
+        }
+        if (!charged) {
+            try {
+                projectTransaction(connection -> {
+                    ProjectWalletSettlementService.rollbackRejectedExternalCall(connection, settlement,
+                            ProjectWalletSettlementStore.DEPOSIT_CHARGE_CLAIMED,
+                            "deposit charge rejected", projectNow());
+                    return null;
+                });
+                return ProjectSettlementResult.failed(settlement.id(), "个人保证金扣款失败，投标仍可重新缴纳");
+            } catch (SQLException exception) {
+                markProjectSettlementReview(settlement.id(), ProjectWalletSettlementStore.DEPOSIT_CHARGE_CLAIMED,
+                        "charge rejected but rollback failed: " + exception.getMessage());
+                return ProjectSettlementResult.review(settlement.id(), "保证金失败后的回滚状态不确定，已进入人工复核");
+            }
+        }
+
+        try {
+            projectTransaction(connection -> {
+                ProjectWalletSettlementService.recordDepositHeld(connection, settlement, projectNow());
+                return null;
+            });
+        } catch (SQLException exception) {
+            markProjectSettlementReview(settlement.id(), ProjectWalletSettlementStore.DEPOSIT_CHARGE_CLAIMED,
+                    "wallet charged but deposit hold failed: " + exception.getMessage());
+            return ProjectSettlementResult.review(settlement.id(), "保证金已可能扣除，但托管提交失败，已进入人工复核");
+        }
+
+        ProjectWalletSettlementStore.Settlement held = new ProjectWalletSettlementStore.Settlement(
+                settlement.id(), settlement.kind(), settlement.projectId(), settlement.bidId(),
+                settlement.playerUuid(), settlement.depositAmount(), settlement.prepaymentAmount(),
+                ProjectWalletSettlementStore.DEPOSIT_HELD, "", "");
+        if (held.prepaymentAmount() > 0.0d) return processPersonalProjectPrepayment(held);
+        try {
+            projectTransaction(connection -> {
+                ProjectWalletSettlementService.finalizeDepositWithoutPayout(connection, held, projectNow());
+                return null;
+            });
+            return ProjectSettlementResult.success(settlement.id(), "个人保证金已托管，项目已正式中标");
+        } catch (SQLException exception) {
+            markProjectSettlementReview(settlement.id(), ProjectWalletSettlementStore.DEPOSIT_HELD,
+                    "deposit held but finalization failed: " + exception.getMessage());
+            return ProjectSettlementResult.review(settlement.id(), "保证金已托管，但项目终态提交失败，已进入人工复核");
+        }
+    }
+
+    private void markProjectSettlementReview(String id, String expected, String error) {
+        try {
+            projectTransaction(connection -> {
+                if (!ProjectWalletSettlementStore.transition(connection, id, expected,
+                        ProjectWalletSettlementStore.REVIEW_REQUIRED, error, projectNow())) {
+                    throw new SQLException("project settlement state changed before review mark");
+                }
+                return null;
+            });
+        } catch (SQLException exception) {
+            plugin.getLogger().severe("[项目结算] 无法标记人工复核 " + id + ": " + exception.getMessage());
+        }
+    }
+
+    private <T> T projectTransaction(ProjectSqlTransaction<T> transaction) throws SQLException {
+        try (var connection = plugin.ksCore().dataStore().getConnection()) {
+            if (connection == null) throw new SQLException("database unavailable");
+            connection.setAutoCommit(false);
+            try {
+                ProjectWalletSettlementStore.initialize(connection);
+                T result = transaction.run(connection);
+                connection.commit();
+                return result;
+            } catch (SQLException | RuntimeException failure) {
+                try { connection.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+                throw failure;
+            } finally {
+                try { connection.setAutoCommit(true); } catch (SQLException ignored) { }
+            }
+        }
+    }
+
+    private static long projectNow() {
+        return System.currentTimeMillis() / 1000;
+    }
+
+    void startProjectSettlementRecovery() {
+        try {
+            plugin.asyncWorkPool().executeDatabase(this::recoverProjectWalletSettlements);
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            plugin.getLogger().severe("[Project settlement] Startup recovery queue rejected");
+        }
+    }
+
+    private void recoverProjectWalletSettlements() {
+        List<ProjectWalletSettlementStore.Settlement> recoverable;
+        int reviews;
+        try (var connection = plugin.ksCore().dataStore().getConnection()) {
+            if (connection == null) return;
+            ProjectWalletSettlementStore.initialize(connection);
+            reviews = ProjectWalletSettlementStore.markInterruptedClaimsForReview(connection, projectNow());
+            recoverable = ProjectWalletSettlementStore.recoverable(connection);
+        } catch (SQLException failure) {
+            plugin.getLogger().severe("[Project settlement] Startup scan failed: " + failure.getMessage());
+            return;
+        }
+        if (reviews > 0) {
+            plugin.getLogger().severe("[Project settlement] " + reviews
+                    + " external wallet outcomes are unknown and require administrator review");
+        }
+        for (ProjectWalletSettlementStore.Settlement settlement : recoverable) {
+            ProjectSettlementResult result = ProjectWalletSettlementStore.DEPOSIT_CHARGE_READY.equals(settlement.status())
+                    ? processPersonalProjectDeposit(settlement)
+                    : processPersonalProjectPrepayment(settlement);
+            if (!result.success()) {
+                plugin.getLogger().warning("[Project settlement] Startup recovery did not finish "
+                        + settlement.id() + ": " + result.message());
+            }
+        }
+    }
+
+    private void handleSettlementReviewList(HttpExchange exchange) throws IOException {
+        if (requireAdminAuth(exchange) == null) return;
+        try (var connection = plugin.ksCore().dataStore().getConnection()) {
+            if (connection == null) {
+                KsPluginBridge.sendJson(exchange, 503, gson.toJson(Map.of("error", "database unavailable")));
+                return;
+            }
+            ProjectWalletSettlementStore.initialize(connection);
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (ProjectWalletSettlementStore.Settlement settlement
+                    : ProjectWalletSettlementStore.reviewRequired(connection)) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("type", "PROJECT_WALLET");
+                row.put("id", settlement.id());
+                row.put("projectId", settlement.projectId());
+                row.put("bidId", settlement.bidId());
+                row.put("playerUuid", settlement.playerUuid().toString());
+                row.put("depositAmount", settlement.depositAmount());
+                row.put("prepaymentAmount", settlement.prepaymentAmount());
+                row.put("reviewStage", settlement.reviewStage());
+                row.put("lastError", settlement.lastError());
+                rows.add(row);
+            }
+            PropertyMarketSettlementStore.initialize(connection);
+            for (PropertyMarketSettlementStore.Settlement settlement
+                    : PropertyMarketSettlementStore.reviewRequired(connection)) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("type", "PROPERTY_MARKET");
+                row.put("id", settlement.id());
+                row.put("listingId", settlement.listingId());
+                row.put("houseId", settlement.houseId());
+                row.put("buyerUuid", settlement.buyerUuid().toString());
+                row.put("sellerUuid", settlement.sellerUuid().toString());
+                row.put("saleAmount", settlement.saleAmount());
+                row.put("taxAmount", settlement.taxAmount());
+                row.put("totalCharge", settlement.totalCharge());
+                row.put("reviewStage", settlement.reviewStage());
+                row.put("lastError", settlement.lastError());
+                rows.add(row);
+            }
+            MarketPurchaseSettlementStore.initialize(connection);
+            for (MarketPurchaseSettlementStore.Settlement settlement
+                    : MarketPurchaseSettlementStore.reviewRequired(connection)) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("type", "MARKET_PURCHASE");
+                row.put("id", settlement.id());
+                row.put("listingId", settlement.listingId());
+                row.put("storageId", settlement.storageId());
+                row.put("buyerUuid", settlement.buyerUuid().toString());
+                row.put("sellerUuid", settlement.sellerUuid().toString());
+                row.put("totalCost", settlement.totalCost());
+                row.put("tax", settlement.tax());
+                row.put("totalCharge", settlement.totalCharge());
+                row.put("reviewStage", settlement.reviewStage());
+                row.put("lastError", settlement.lastError());
+                rows.add(row);
+            }
+            BankAccessProvider bankProvider = plugin.bankAccessProvider();
+            if (bankProvider != null) {
+                for (BankAccessProvider.SettlementReview settlement
+                        : bankProvider.listLoanRepaymentReviews()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("type", "BANK_LOAN_REPAYMENT");
+                    row.put("id", settlement.id());
+                    row.put("loanId", settlement.loanId());
+                    row.put("borrowerUuid", settlement.borrowerUuid().toString());
+                    row.put("bankId", settlement.bankId());
+                    row.put("amount", settlement.amount());
+                    row.put("expectedRemaining", settlement.expectedRemaining());
+                    row.put("reviewStage", settlement.reviewStage());
+                    row.put("lastError", settlement.lastError());
+                    rows.add(row);
+                }
+            }
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("settlements", rows)));
+        } catch (SQLException failure) {
+            KsPluginBridge.sendJson(exchange, 500, gson.toJson(Map.of("error", failure.getMessage())));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleSettlementReviewResolve(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session admin = requireAdminAuth(exchange);
+        if (admin == null) return;
+        Map<String, Object> request = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        String id = request == null ? null : Objects.toString(request.get("id"), null);
+        String action = request == null ? null : Objects.toString(request.get("action"), null);
+        String type = request == null ? "PROJECT_WALLET"
+                : Objects.toString(request.get("type"), "PROJECT_WALLET").trim().toUpperCase(Locale.ROOT);
+        if (id == null || id.isBlank() || action == null || action.isBlank()) {
+            KsPluginBridge.sendJson(exchange, 400, gson.toJson(Map.of("error", "id and action are required")));
+            return;
+        }
+        try {
+            if ("PROPERTY_MARKET".equals(type)) {
+                MarketManager.PropertyReviewResolution resolution = plugin.marketManager()
+                        .resolvePropertyReview(id, action.trim().toUpperCase(Locale.ROOT));
+                auditLog("PROPERTY_SETTLEMENT_REVIEW_RESOLVED", admin.playerUuid.toString(), admin.playerName,
+                        "property_settlement", id, "action=" + action + ", status=" + resolution.status());
+                KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of(
+                        "id", id, "type", type, "status", resolution.status(), "action", action)));
+                return;
+            }
+            if ("MARKET_PURCHASE".equals(type)) {
+                MarketManager.MarketReviewResolution resolution = plugin.marketManager()
+                        .resolveMarketReview(id, action.trim().toUpperCase(Locale.ROOT));
+                auditLog("MARKET_SETTLEMENT_REVIEW_RESOLVED", admin.playerUuid.toString(), admin.playerName,
+                        "market_settlement", id, "action=" + action + ", status=" + resolution.status());
+                KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of(
+                        "id", id, "type", type, "status", resolution.status(), "action", action)));
+                return;
+            }
+            if ("BANK_LOAN_REPAYMENT".equals(type)) {
+                BankAccessProvider bankProvider = plugin.bankAccessProvider();
+                if (bankProvider == null) throw new SQLException("bank module is unavailable");
+                BankAccessProvider.SettlementResolution resolution = bankProvider
+                        .resolveLoanRepaymentReview(id, action.trim().toUpperCase(Locale.ROOT));
+                auditLog("BANK_LOAN_REPAYMENT_REVIEW_RESOLVED", admin.playerUuid.toString(), admin.playerName,
+                        "bank_loan_repayment", id,
+                        "action=" + action + ", status=" + resolution.status());
+                KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of(
+                        "id", id, "type", type, "status", resolution.status(),
+                        "reviewStage", resolution.reviewStage(), "action", action,
+                        "message", resolution.message())));
+                return;
+            }
+            if (!"PROJECT_WALLET".equals(type)) throw new SQLException("unsupported settlement type");
+            ProjectWalletSettlementStore.Settlement settlement = projectTransaction(connection -> {
+                ProjectWalletSettlementStore.Settlement current = ProjectWalletSettlementStore.find(connection, id);
+                if (current == null || !ProjectWalletSettlementStore.REVIEW_REQUIRED.equals(current.status())) {
+                    throw new SQLException("settlement is not awaiting review");
+                }
+                resolveProjectSettlementReview(connection, current, action.trim().toUpperCase(Locale.ROOT));
+                return ProjectWalletSettlementStore.find(connection, id);
+            });
+            if ("CONFIRM_CHARGE_SUCCEEDED".equalsIgnoreCase(action)
+                    && ProjectWalletSettlementStore.DEPOSIT_HELD.equals(settlement.status())
+                    && settlement.prepaymentAmount() > 0.0d) {
+                processPersonalProjectPrepayment(settlement);
+                settlement = projectTransaction(connection -> ProjectWalletSettlementStore.find(connection, id));
+            }
+            auditLog("PROJECT_SETTLEMENT_REVIEW_RESOLVED", admin.playerUuid.toString(), admin.playerName,
+                    "project_settlement", id, "action=" + action + ", status=" + settlement.status());
+            KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of(
+                    "id", id, "status", settlement.status(), "action", action)));
+        } catch (SQLException failure) {
+            KsPluginBridge.sendJson(exchange, 409, gson.toJson(Map.of("error", failure.getMessage())));
+        }
+    }
+
+    private void resolveProjectSettlementReview(java.sql.Connection connection,
+                                                ProjectWalletSettlementStore.Settlement settlement,
+                                                String action) throws SQLException {
+        String stage = settlement.reviewStage();
+        long now = projectNow();
+        switch (action) {
+            case "CONFIRM_CHARGE_SUCCEEDED" -> {
+                requireReviewStage(stage, ProjectWalletSettlementStore.DEPOSIT_CHARGE_CLAIMED);
+                requireReviewResolution(ProjectWalletSettlementStore.resolveReview(connection, settlement.id(), stage,
+                        ProjectWalletSettlementStore.DEPOSIT_CHARGE_CLAIMED, "administrator confirmed charge", now));
+                ProjectWalletSettlementService.recordDepositHeld(connection, settlement, now);
+                if (settlement.prepaymentAmount() <= 0.0d) {
+                    ProjectWalletSettlementService.finalizeDepositWithoutPayout(connection, settlement, now);
+                }
+            }
+            case "CONFIRM_CHARGE_FAILED" -> {
+                requireReviewStage(stage, ProjectWalletSettlementStore.DEPOSIT_CHARGE_CLAIMED);
+                requireReviewResolution(ProjectWalletSettlementStore.resolveReview(connection, settlement.id(), stage,
+                        ProjectWalletSettlementStore.DEPOSIT_CHARGE_CLAIMED, "administrator rejected charge", now));
+                ProjectWalletSettlementService.rollbackRejectedExternalCall(connection, settlement,
+                        ProjectWalletSettlementStore.DEPOSIT_CHARGE_CLAIMED,
+                        "administrator confirmed charge failed", now);
+            }
+            case "CONFIRM_PAYOUT_SUCCEEDED" -> {
+                requireReviewStage(stage, ProjectWalletSettlementStore.PREPAYMENT_CLAIMED);
+                requireReviewResolution(ProjectWalletSettlementStore.resolveReview(connection, settlement.id(), stage,
+                        ProjectWalletSettlementStore.PREPAYMENT_CLAIMED, "administrator confirmed payout", now));
+                ProjectWalletSettlementService.finalizePayout(connection, settlement, now);
+            }
+            case "CONFIRM_PAYOUT_FAILED" -> {
+                requireReviewStage(stage, ProjectWalletSettlementStore.PREPAYMENT_CLAIMED);
+                if (ProjectWalletSettlementStore.DIRECT_AWARD.equals(settlement.kind())) {
+                    requireReviewResolution(ProjectWalletSettlementStore.resolveReview(connection, settlement.id(), stage,
+                            ProjectWalletSettlementStore.PREPAYMENT_CLAIMED, "administrator rejected payout", now));
+                    ProjectWalletSettlementService.rollbackRejectedExternalCall(connection, settlement,
+                            ProjectWalletSettlementStore.PREPAYMENT_CLAIMED,
+                            "administrator confirmed payout failed", now);
+                } else {
+                    requireReviewResolution(ProjectWalletSettlementStore.resolveReview(connection, settlement.id(), stage,
+                            ProjectWalletSettlementStore.DEPOSIT_HELD,
+                            "administrator confirmed payout failed; ready to retry", now));
+                }
+            }
+            default -> throw new SQLException("unsupported review action");
+        }
+    }
+
+    private static void requireReviewStage(String actual, String expected) throws SQLException {
+        if (!expected.equals(actual)) throw new SQLException("review stage does not allow this action");
+    }
+
+    private static void requireReviewResolution(boolean resolved) throws SQLException {
+        if (!resolved) throw new SQLException("settlement review changed concurrently");
+    }
+
+    @FunctionalInterface
+    private interface ProjectSqlTransaction<T> {
+        T run(java.sql.Connection connection) throws SQLException;
+    }
+
+    private record ProjectSettlementResult(boolean success, boolean reviewRequired,
+                                           String settlementId, String message) {
+        static ProjectSettlementResult success(String id, String message) {
+            return new ProjectSettlementResult(true, false, id, message);
+        }
+
+        static ProjectSettlementResult failed(String id, String message) {
+            return new ProjectSettlementResult(false, false, id, message);
+        }
+
+        static ProjectSettlementResult review(String id, String message) {
+            return new ProjectSettlementResult(false, true, id, message);
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -3931,10 +4974,6 @@ public final class EcoWebHandler implements HttpHandler {
         if (req == null) { KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"无效请求\"}"); return; }
         String bidId = (String) req.get("bidId");
         if (bidId == null) { KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"缺少 bidId\"}"); return; }
-        boolean corporateDepositCharged = false;
-        String chargedEnterpriseId = null;
-        UUID walletDepositCharged = null;
-        double chargedDepositAmount = 0;
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) { KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"数据库未连接\"}"); return; }
             conn.setAutoCommit(false);
@@ -3952,11 +4991,13 @@ public final class EcoWebHandler implements HttpHandler {
                 depositDeadline = rs.getLong("deposit_deadline");
                 status = rs.getString("status");
             }
-            if (!"PENDING_DEPOSIT".equals(status)) {
+            boolean resumePersonalPayout = "PLAYER".equalsIgnoreCase(bidderType)
+                    && "PREPAYMENT_SETTLING".equals(status);
+            if (!"PENDING_DEPOSIT".equals(status) && !resumePersonalPayout) {
                 KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"该投标当前不处于待缴保证金状态（可能已超时流标或已处理）\"}"); return;
             }
             long now = System.currentTimeMillis() / 1000;
-            if (depositDeadline > 0 && now > depositDeadline) {
+            if (!resumePersonalPayout && depositDeadline > 0 && now > depositDeadline) {
                 KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"保证金缴纳已超时，该中标资格已失效\"}"); return;
             }
             // 权限校验：企业投标须为企业所有者/管理员，个人投标须为本人
@@ -3967,28 +5008,61 @@ public final class EcoWebHandler implements HttpHandler {
             } else if (!session.isAdmin && !session.playerUuid.toString().equals(bidderUuid)) {
                 KsPluginBridge.sendJson(exchange, 403, "{\"error\":\"只有中标方本人才能缴纳保证金\"}"); return;
             }
+            double prepayRatio;
+            try (var ps = conn.prepareStatement(
+                    "SELECT prepayment_ratio FROM ks_ent_projects WHERE id=?")) {
+                ps.setString(1, projectId);
+                try (var rsP = ps.executeQuery()) {
+                    if (!rsP.next()) throw new java.sql.SQLException("Project disappeared during deposit settlement");
+                    prepayRatio = rsP.getDouble(1);
+                }
+            }
+            double prepayment = bidAmount * prepayRatio;
+
+            if (resumePersonalPayout) {
+                ProjectWalletSettlementStore.initialize(conn);
+                ProjectWalletSettlementStore.Settlement settlement =
+                        ProjectWalletSettlementStore.findOpenByBid(conn, bidId);
+                if (settlement == null || (!ProjectWalletSettlementStore.DEPOSIT_HELD.equals(settlement.status())
+                        && !ProjectWalletSettlementStore.PREPAYMENT_READY.equals(settlement.status()))) {
+                    KsPluginBridge.sendJson(exchange, 409,
+                            "{\"error\":\"未找到可重试的个人预付款结算\"}"); return;
+                }
+                conn.commit();
+                ProjectSettlementResult outcome = processPersonalProjectPrepayment(settlement);
+                KsPluginBridge.sendJson(exchange, outcome.success() ? 200 : outcome.reviewRequired() ? 202 : 409,
+                        gson.toJson(Map.of("id", bidId, "projectId", projectId,
+                                "settlementId", outcome.settlementId(),
+                                "status", outcome.success() ? "AWARDED"
+                                        : outcome.reviewRequired() ? "REVIEW_REQUIRED" : "PREPAYMENT_SETTLING",
+                                "message", outcome.message())));
+                return;
+            }
+
+            if (!"ENTERPRISE".equalsIgnoreCase(bidderType)) {
+                ProjectWalletSettlementStore.Settlement settlement =
+                        ProjectWalletSettlementService.prepareDepositAward(conn, projectId, bidId,
+                                UUID.fromString(bidderUuid), depositAmount, prepayment, now);
+                conn.commit();
+                ProjectSettlementResult outcome = processPersonalProjectDeposit(settlement);
+                KsPluginBridge.sendJson(exchange, outcome.success() ? 200 : outcome.reviewRequired() ? 202 : 409,
+                        gson.toJson(Map.of("id", bidId, "projectId", projectId,
+                                "settlementId", outcome.settlementId(), "depositAmount", depositAmount,
+                                "prepayment", prepayment,
+                                "status", outcome.success() ? "AWARDED"
+                                        : outcome.reviewRequired() ? "REVIEW_REQUIRED" : "PENDING_DEPOSIT",
+                                "message", outcome.message())));
+                return;
+            }
             // 扣款
             if ("ENTERPRISE".equals(bidderType) && enterpriseId != null && !enterpriseId.isEmpty()) {
-                double corpBal = getCorporateBalance(enterpriseId);
+                double corpBal = getCorporateBalance(conn, enterpriseId);
                 if (corpBal < depositAmount) {
                     KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"企业公户余额不足（余额: " + String.format("%.2f", corpBal) + "，需缴保证金: " + String.format("%.2f", depositAmount) + "）\"}"); return;
                 }
-                if (!withdrawCorporate(enterpriseId, depositAmount, "项目投标保证金 | 项目: " + projectId)) {
+                if (!reserveCorporateProjectEscrow(conn, enterpriseId, depositAmount)) {
                     KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"扣款失败\"}"); return;
                 }
-                corporateDepositCharged = true;
-                chargedEnterpriseId = enterpriseId;
-                chargedDepositAmount = depositAmount;
-            } else {
-                UUID bidderId = UUID.fromString(bidderUuid);
-                if (!hasWalletBalance(bidderId, depositAmount)) {
-                    KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"个人余额不足，需缴保证金: " + String.format("%.2f", depositAmount) + "\"}"); return;
-                }
-                if (!withdrawWallet(bidderId, depositAmount)) {
-                    KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"个人保证金扣款失败\"}"); return;
-                }
-                walletDepositCharged = bidderId;
-                chargedDepositAmount = depositAmount;
             }
             // 保证金计入托管台账
             String depId = UUID.randomUUID().toString().substring(0, 8);
@@ -4011,13 +5085,6 @@ public final class EcoWebHandler implements HttpHandler {
                 throw new java.sql.SQLException("Project deposit was already processed");
             }
             // 发放预付款
-            double prepayRatio;
-            try (var st = conn.createStatement();
-                 var rsP = st.executeQuery("SELECT prepayment_ratio FROM ks_ent_projects WHERE id='" + projectId.replace("'", "''") + "'")) {
-                rsP.next();
-                prepayRatio = rsP.getDouble("prepayment_ratio");
-            }
-            double prepayment = bidAmount * prepayRatio;
             payProjectPrepayment(conn, enterpriseId, bidderUuid, bidderType, prepayment, projectId, session, now);
             conn.commit();
             auditLog("PROJECT_DEPOSIT_PAID", session.playerUuid.toString(), session.playerName, "project", projectId,
@@ -4028,11 +5095,6 @@ public final class EcoWebHandler implements HttpHandler {
             result.put("message", "保证金已缴纳，中标确认，预付款 " + String.format("%.2f", prepayment) + " 已发放");
             KsPluginBridge.sendJson(exchange, 200, gson.toJson(result));
         } catch (java.sql.SQLException | IOException e) {
-            if (corporateDepositCharged && chargedEnterpriseId != null) {
-                depositCorporate(chargedEnterpriseId, chargedDepositAmount, "保证金处理失败退回");
-            } else if (walletDepositCharged != null) {
-                try { depositWallet(walletDepositCharged, chargedDepositAmount); } catch (IOException ignored) {}
-            }
             KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"缴纳保证金失败: " + e.getMessage() + "\"}");
         }
     }
@@ -4149,10 +5211,19 @@ public final class EcoWebHandler implements HttpHandler {
                 payout.executeBatch();
             }
             // 记录分红税收
-            try {
-                conn.createStatement().executeUpdate(
-                    "INSERT INTO ks_tax_records (payer_uuid, payer_name, category, base_amount, tax_rate, tax_amount, description, collected_at) VALUES ('" +
-                    enterpriseId.replace("'", "''") + "', '企业分红', 'DIVIDEND_TAX', " + amount + ", " + taxRate + ", " + taxPaid + ", '企业 " + enterpriseId + " 分红纳税', " + now + ")");
+            try (var tax = conn.prepareStatement(
+                    "INSERT INTO ks_tax_records (id,payer_uuid,payer_name,category,base_amount,tax_rate,"
+                            + "tax_amount,description,collected_at) VALUES (?,?,?,?,?,?,?,?,?)")) {
+                tax.setString(1, "TAX-" + UUID.randomUUID());
+                tax.setString(2, enterpriseId);
+                tax.setString(3, "企业分红");
+                tax.setString(4, "DIVIDEND_TAX");
+                tax.setDouble(5, amount);
+                tax.setDouble(6, taxRate);
+                tax.setDouble(7, taxPaid);
+                tax.setString(8, "企业 " + enterpriseId + " 分红纳税");
+                tax.setLong(9, now);
+                tax.executeUpdate();
             } catch (java.sql.SQLException ignored) {}
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("message", "分红已发放"); resp.put("dividendId", divId);
@@ -4482,9 +5553,7 @@ public final class EcoWebHandler implements HttpHandler {
                 " WHERE id='" + buyerBankId.replace("'", "''") + "'");
             // 付款给供应方
             if ("ENTERPRISE".equals(supplierType) && supplierEntId != null && !supplierEntId.isEmpty()) {
-                conn.createStatement().executeUpdate(
-                    "INSERT OR IGNORE INTO ks_ent_corporate_accounts (enterprise_id, bank_id, balance, updated_at) VALUES ('" +
-                    supplierEntId.replace("'", "''") + "', '" + CORP_BANK_ID + "', 0, " + now + ")");
+                ensureCorporateAccount(conn, supplierEntId, CORP_BANK_ID, 0, now);
                 conn.createStatement().executeUpdate(
                     "UPDATE ks_ent_corporate_accounts SET balance = balance + " + totalPrice + ", updated_at = " + now +
                     " WHERE enterprise_id='" + supplierEntId.replace("'", "''") + "'");
@@ -4710,8 +5779,7 @@ public final class EcoWebHandler implements HttpHandler {
             if ("ACCEPT".equals(action)) {
                 if (entId != null) {
                     // 加入企业成员
-                    try { conn.createStatement().executeUpdate(
-                        "CREATE TABLE IF NOT EXISTS ks_ent_members (enterprise_id TEXT, player_uuid TEXT, player_name TEXT, role TEXT DEFAULT 'EMPLOYEE', salary REAL DEFAULT 0, joined_at INTEGER DEFAULT (strftime('%s','now')), PRIMARY KEY(enterprise_id, player_uuid))");
+                    try { EcoWebBusinessSchema.ensureEnterpriseMembers(conn);
                     } catch (java.sql.SQLException ignored) {}
                     int maxMembers = (int) getEconomicSetting("enterprise_max_members", 50);
                     var count = conn.createStatement().executeQuery(
@@ -4719,13 +5787,10 @@ public final class EcoWebHandler implements HttpHandler {
                     if (count.next() && count.getInt(1) >= maxMembers) {
                         KsPluginBridge.sendJson(exchange, 409, gson.toJson(Map.of("error", "企业成员名额已满"))); return;
                     }
-                    conn.createStatement().executeUpdate(
-                        "INSERT OR REPLACE INTO ks_ent_members (enterprise_id, player_uuid, player_name, role) VALUES ('" +
-                        entId.replace("'", "''") + "', '" + session.playerUuid.toString() + "', '" +
-                        session.playerName.replace("'", "''") + "', 'MEMBER')");
+                    upsertEnterpriseMember(conn, entId, session.playerUuid.toString(), session.playerName,
+                            "MEMBER", 0, now, true);
                 } else if (bankId != null) {
-                    try { conn.createStatement().executeUpdate(
-                        "CREATE TABLE IF NOT EXISTS ks_bank_members (bank_id TEXT, player_uuid TEXT, player_name TEXT, role TEXT DEFAULT 'MEMBER', joined_at INTEGER DEFAULT (strftime('%s','now')), PRIMARY KEY(bank_id, player_uuid))");
+                    try { EcoWebBusinessSchema.ensureBankMembers(conn);
                     } catch (java.sql.SQLException ignored) {}
                     int maxMembers = (int) getEconomicSetting("enterprise_max_members", 50);
                     var count = conn.createStatement().executeQuery(
@@ -4733,10 +5798,8 @@ public final class EcoWebHandler implements HttpHandler {
                     if (count.next() && count.getInt(1) >= maxMembers) {
                         KsPluginBridge.sendJson(exchange, 409, gson.toJson(Map.of("error", "银行成员名额已满"))); return;
                     }
-                    conn.createStatement().executeUpdate(
-                        "INSERT OR REPLACE INTO ks_bank_members (bank_id, player_uuid, player_name, role) VALUES ('" +
-                        bankId.replace("'", "''") + "', '" + session.playerUuid.toString() + "', '" +
-                        session.playerName.replace("'", "''") + "', 'MEMBER')");
+                    upsertBankMember(conn, bankId, session.playerUuid.toString(), session.playerName,
+                            "MEMBER", now, true);
                 }
             }
             conn.createStatement().executeUpdate(
@@ -4816,12 +5879,8 @@ public final class EcoWebHandler implements HttpHandler {
                 KsPluginBridge.sendJson(exchange, 403, "{\"error\":\"不能授予自己不拥有的权限\"}"); return;
             }
             if (enabled) {
-                try (var ps = conn.prepareStatement("INSERT OR REPLACE INTO ks_ent_permissions (enterprise_id, player_uuid, permission, granted_by, granted_at) VALUES (?,?,?,?,?)")) {
-                    ps.setString(1, enterpriseId); ps.setString(2, targetUuid.toString());
-                    ps.setString(3, permission);
-                    ps.setString(4, session.playerUuid.toString()); ps.setLong(5, System.currentTimeMillis() / 1000);
-                    ps.executeUpdate();
-                }
+                upsertEnterprisePermission(conn, enterpriseId, targetUuid.toString(), permission,
+                        session.playerUuid.toString(), System.currentTimeMillis() / 1000);
             } else {
                 try (var ps = conn.prepareStatement("DELETE FROM ks_ent_permissions WHERE enterprise_id=? AND player_uuid=? AND permission=?")) {
                     ps.setString(1, enterpriseId); ps.setString(2, targetUuid.toString());
@@ -4981,20 +6040,46 @@ public final class EcoWebHandler implements HttpHandler {
         double baseAmount = toDouble(req.get("baseAmount"), 0);
         String reason = (String) req.getOrDefault("reason", "");
         if (targetUuid == null) { KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"缺少 targetUuid\"}"); return; }
-        // 直接写入 DB
-        String penId = UUID.randomUUID().toString().substring(0, 8);
+        try { UUID.fromString(targetUuid); }
+        catch (IllegalArgumentException invalid) {
+            KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"targetUuid 无效\"}"); return;
+        }
+        targetName = targetName == null ? "" : targetName.trim();
+        penaltyType = penaltyType == null ? "TAX_EVASION" : penaltyType.trim().toUpperCase(Locale.ROOT);
+        reason = reason == null ? "" : reason.trim();
+        if (!penaltyType.matches("[A-Z0-9_]{1,64}") || targetName.length() > 64 || reason.length() > 512
+                || !Double.isFinite(baseAmount) || baseAmount <= 0.0d || baseAmount > 1_000_000_000_000d) {
+            KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"罚单参数无效\"}"); return;
+        }
+        String penId = "PEN-" + UUID.randomUUID();
         long now = System.currentTimeMillis() / 1000;
         double penaltyRate = 0.20;
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) { KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"数据库未连接\"}"); return; }
-            try { penaltyRate = conn.createStatement().executeQuery("SELECT rate FROM ks_tax_rates WHERE category='TAX_PENALTY'").getDouble("rate"); } catch (Exception ignored) {}
-        } catch (Exception ignored) {}
-        try (var conn = plugin.ksCore().dataStore().getConnection()) {
-            if (conn == null) { KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"数据库未连接\"}"); return; }
-            conn.createStatement().executeUpdate(
-                "INSERT INTO ks_tax_penalties (id, target_uuid, target_name, penalty_type, base_amount, penalty_rate, penalty_amount, reason, paid, issued_at) VALUES ('" +
-                penId + "', '" + targetUuid + "', '" + targetName.replace("'", "''") + "', '" + penaltyType + "', " +
-                baseAmount + ", " + penaltyRate + ", " + (baseAmount * penaltyRate) + ", '" + reason.replace("'", "''") + "', 0, " + now + ")");
+            try (var rate = conn.prepareStatement("SELECT rate FROM ks_tax_rates WHERE category=?")) {
+                rate.setString(1, "TAX_PENALTY");
+                try (var rows = rate.executeQuery()) {
+                    if (rows.next()) penaltyRate = rows.getDouble(1);
+                }
+            }
+            if (!Double.isFinite(penaltyRate) || penaltyRate < 0.0d || penaltyRate > 1.0d
+                    || !Double.isFinite(baseAmount * penaltyRate)) {
+                KsPluginBridge.sendJson(exchange, 409, "{\"error\":\"罚金税率配置无效\"}"); return;
+            }
+            try (var insert = conn.prepareStatement(
+                    "INSERT INTO ks_tax_penalties (id,target_uuid,target_name,penalty_type,base_amount,"
+                            + "penalty_rate,penalty_amount,reason,paid,issued_at) VALUES (?,?,?,?,?,?,?,?,0,?)")) {
+                insert.setString(1, penId);
+                insert.setString(2, targetUuid);
+                insert.setString(3, targetName);
+                insert.setString(4, penaltyType);
+                insert.setDouble(5, baseAmount);
+                insert.setDouble(6, penaltyRate);
+                insert.setDouble(7, baseAmount * penaltyRate);
+                insert.setString(8, reason);
+                insert.setLong(9, now);
+                insert.executeUpdate();
+            }
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("id", penId); resp.put("message", "罚单已发出");
             auditLog("PENALTY_ISSUE", session.playerUuid.toString(), session.playerName, "player", targetUuid,
@@ -5879,6 +6964,46 @@ public final class EcoWebHandler implements HttpHandler {
         KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("plots", out)));
     }
 
+    @SuppressWarnings("unchecked")
+    private void handleReHouseRegister(HttpExchange exchange) throws IOException {
+        KsAuthManager.Session session = requireAdminAuth(exchange);
+        if (session == null) return;
+        Map<String, Object> req = gson.fromJson(KsPluginBridge.readBody(exchange), Map.class);
+        if (req == null) { KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"无效请求\"}"); return; }
+        String plotId = String.valueOf(req.getOrDefault("plotId", ""));
+        String world = String.valueOf(req.getOrDefault("world", "world"));
+        String name = String.valueOf(req.getOrDefault("name", "示范楼栋"));
+        double showcasePrice = toDouble(req.get("showcasePrice"), 0);
+        String showcaseMarker = String.valueOf(req.getOrDefault("showcaseMarker", "CYAN"));
+        int x1 = (int) toDouble(req.get("x1"), 0), y1 = (int) toDouble(req.get("y1"), 0), z1 = (int) toDouble(req.get("z1"), 0);
+        int x2 = (int) toDouble(req.get("x2"), 0), y2 = (int) toDouble(req.get("y2"), 0), z2 = (int) toDouble(req.get("z2"), 0);
+        if (plotId.isBlank() || name.isBlank()) {
+            KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"plotId / name 必填\"}"); return;
+        }
+        Object result = callRealEstate(null, "registerHouseForWeb",
+                new Class[]{String.class, UUID.class, String.class, int.class, int.class, int.class,
+                        int.class, int.class, int.class, String.class},
+                plotId, session.playerUuid, world, x1, y1, z1, x2, y2, z2, name);
+        if (result instanceof Map<?, ?> map) {
+            Map<String, Object> body = toStrMap(map);
+            if (body.get("houseId") != null) {
+                String houseId = String.valueOf(body.get("houseId"));
+                if (showcasePrice > 0) {
+                    Object showcaseSaved = callRealEstate(null, "setHouseShowcase",
+                            new Class[]{String.class, double.class, String.class}, houseId, showcasePrice, showcaseMarker);
+                    if (!Boolean.TRUE.equals(showcaseSaved)) {
+                        body.put("showcaseWarning", "楼栋已登记，但展示售价/标识保存失败");
+                    }
+                }
+                auditLog("RE_HOUSE_REGISTER", session.playerUuid.toString(), session.playerName,
+                        "re_house", houseId, "plot=" + plotId + ",world=" + world);
+                KsPluginBridge.sendJson(exchange, 200, gson.toJson(body));
+            } else KsPluginBridge.sendJson(exchange, 400, gson.toJson(body));
+            return;
+        }
+        KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"房地产模块未加载\"}");
+    }
+
     /** 在售商品房列表（玩家页面"商品房市场"浏览用，纯只读——下单购买仍走游戏内 /market）。 */
     private void handleReHousesForSale(HttpExchange exchange) throws IOException {
         var listings = plugin.listingManager().getActiveListings("SELL", null);
@@ -5901,6 +7026,64 @@ public final class EcoWebHandler implements HttpHandler {
             out.add(entry);
         }
         KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("houses", out, "moduleLoaded", hasExtra("ks-eco-realestate"))));
+    }
+
+    /** 售楼处城区沙盘清单：先返回道路/地块/楼栋骨架，同时后台预热各单栋体素模型。 */
+    private void handleReCityManifest(HttpExchange exchange, String query) throws IOException {
+        KsAuthManager.Session session = requireAuth(exchange);
+        if (session == null) return;
+        Map<String, String> q = KsPluginBridge.parseQuery(query);
+        String zoneId = q.get("zoneId");
+        if (zoneId == null || zoneId.isBlank()) {
+            KsPluginBridge.sendJson(exchange, 400, "{\"error\":\"缺少 zoneId\"}"); return;
+        }
+        Object zoneObject = callRealEstate(null, "getZone", new Class[]{String.class}, zoneId);
+        if (!(zoneObject instanceof Map<?, ?> zoneMap)) {
+            KsPluginBridge.sendJson(exchange, 404, "{\"error\":\"区域不存在或房地产模块未加载\"}"); return;
+        }
+        List<Map<String, Object>> plots = new ArrayList<>();
+        Object plotObject = callRealEstate(null, "listPlots",
+                new Class[]{String.class, String.class, String.class}, zoneId, null, null);
+        if (plotObject instanceof List<?> list) {
+            for (Object item : list) if (item instanceof Map<?, ?> map) plots.add(toStrMap(map));
+        }
+
+        Map<String, Map<String, Object>> listingsByHouse = new HashMap<>();
+        for (var listing : plugin.listingManager().getActiveListings("SELL", null)) {
+            if (!listing.isProperty()) continue;
+            Map<String, Object> market = new LinkedHashMap<>();
+            market.put("listingId", listing.id());
+            market.put("price", listing.unitPrice());
+            market.put("sellerName", listing.sellerName());
+            listingsByHouse.put(listing.assetRef(), market);
+        }
+
+        List<Map<String, Object>> buildings = new ArrayList<>();
+        Object housesObject = callRealEstate(null, "listHousesInZone", new Class[]{String.class}, zoneId);
+        if (housesObject instanceof List<?> list) {
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> map)) continue;
+                Map<String, Object> building = toStrMap(map);
+                String houseId = String.valueOf(building.get("id"));
+                Map<String, Object> market = listingsByHouse.get(houseId);
+                double showcasePrice = toDouble(building.get("showcasePrice"), 0);
+                building.put("saleStatus", market != null ? "FOR_SALE" : (showcasePrice > 0 ? "SHOWCASE" : "OWNED"));
+                if (market != null) building.put("market", market);
+                building.put("modelUrl", "/api/realestate/house/voxels?houseId=" +
+                        java.net.URLEncoder.encode(houseId, java.nio.charset.StandardCharsets.UTF_8));
+                buildings.add(building);
+                callRealEstate(null, "prewarmHouseVoxels", new Class[]{String.class}, houseId);
+            }
+        }
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("zone", toStrMap(zoneMap));
+        response.put("plots", plots);
+        response.put("buildings", buildings);
+        response.put("renderMode", "BUILDING_ASSEMBLY");
+        response.put("preRendered", true);
+        response.put("async", true);
+        KsPluginBridge.sendJson(exchange, 200, gson.toJson(response));
     }
 
     /** 导出某房屋的体素数据，供网页 3D 查看器渲染（只读，无需登录）。 */
@@ -6050,9 +7233,7 @@ public final class EcoWebHandler implements HttpHandler {
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
             long now = System.currentTimeMillis() / 1000;
-            conn.createStatement().executeUpdate(
-                "INSERT OR IGNORE INTO ks_ent_corporate_accounts (enterprise_id, bank_id, balance, updated_at) VALUES ('" +
-                enterpriseId.replace("'", "''") + "', '" + CORP_BANK_ID + "', 0, " + now + ")");
+            ensureCorporateAccount(conn, enterpriseId, CORP_BANK_ID, 0, now);
         } catch (java.sql.SQLException ignored) {}
     }
 
@@ -6386,7 +7567,7 @@ public final class EcoWebHandler implements HttpHandler {
         Map<String, String> params = KsPluginBridge.parseQuery(query);
         String q = params.getOrDefault("q", "").trim().toLowerCase(Locale.ROOT);
         try {
-            List<Map<String, Object>> results = Bukkit.getScheduler().callSyncMethod(plugin, () -> {
+            List<Map<String, Object>> results = plugin.scheduler().callGlobal(() -> {
                 List<Map<String, Object>> matches = new ArrayList<>();
                 for (org.bukkit.OfflinePlayer player : Bukkit.getOfflinePlayers()) {
                     String name = player.getName();
@@ -6402,7 +7583,7 @@ public final class EcoWebHandler implements HttpHandler {
                     }
                 }
                 return matches;
-            }).get(3, TimeUnit.SECONDS);
+            }, Duration.ofSeconds(3));
             KsPluginBridge.sendJson(exchange, 200, gson.toJson(Map.of("players", results, "count", results.size())));
         } catch (Exception e) {
             KsPluginBridge.sendJson(exchange, 503, "{\"error\":\"玩家搜索暂时不可用\"}");
@@ -6476,7 +7657,7 @@ public final class EcoWebHandler implements HttpHandler {
             double price = toDouble(p.get("buyPrice"), -1);
             if (mat != null && plugin.priceEngine().setOfficialBuyPrice(mat, price)) saved++;
         }
-        plugin.priceEngine().refreshAllPrices();
+        plugin.refreshPricesCoordinated();
         KsPluginBridge.sendJson(exchange, 200, "{\"message\":\"已保存 " + saved + " 条官方价格，市场价格已刷新\"}");
     }
 
@@ -6513,12 +7694,12 @@ public final class EcoWebHandler implements HttpHandler {
                 if (rs.next()) baseRate = rs.getDouble("base_rate");
                 try {
                     var rs2 = conn.createStatement().executeQuery(
-                        "SELECT key, value FROM ks_bank_cb_config WHERE key IN ('rate_adjust_limit','rate_min','rate_max')");
+                        "SELECT config_key, config_value FROM ks_bank_cb_config WHERE config_key IN ('rate_adjust_limit','rate_min','rate_max')");
                     while (rs2.next()) {
-                        switch (rs2.getString("key")) {
-                            case "rate_adjust_limit" -> adjustLimit = rs2.getDouble("value");
-                            case "rate_min" -> rateMin = rs2.getDouble("value");
-                            case "rate_max" -> rateMax = rs2.getDouble("value");
+                        switch (rs2.getString("config_key")) {
+                            case "rate_adjust_limit" -> adjustLimit = rs2.getDouble("config_value");
+                            case "rate_min" -> rateMin = rs2.getDouble("config_value");
+                            case "rate_max" -> rateMax = rs2.getDouble("config_value");
                         }
                     }
                 } catch (java.sql.SQLException ignored) {}
@@ -6547,12 +7728,9 @@ public final class EcoWebHandler implements HttpHandler {
         // 保存到数据库
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn != null) {
-                conn.createStatement().executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS ks_bank_rates (bank_id TEXT PRIMARY KEY, loan_rate REAL DEFAULT 0.05, deposit_rate REAL DEFAULT 0.01, updated_at INTEGER DEFAULT (strftime('%s','now')))");
-                if (loanRate >= 0) conn.createStatement().executeUpdate(
-                    "INSERT OR REPLACE INTO ks_bank_rates (bank_id, loan_rate, deposit_rate) VALUES ('" + bankId.replace("'", "''") + "', " + loanRate + ", COALESCE((SELECT deposit_rate FROM ks_bank_rates WHERE bank_id='" + bankId.replace("'", "''") + "'), 0.01))");
-                if (depositRate >= 0) conn.createStatement().executeUpdate(
-                    "INSERT OR REPLACE INTO ks_bank_rates (bank_id, loan_rate, deposit_rate) VALUES ('" + bankId.replace("'", "''") + "', COALESCE((SELECT loan_rate FROM ks_bank_rates WHERE bank_id='" + bankId.replace("'", "''") + "'), 0.05), " + depositRate + ")");
+                EcoWebBusinessSchema.ensureBankRates(conn);
+                upsertBankRate(conn, bankId, loanRate >= 0 ? loanRate : null,
+                        depositRate >= 0 ? depositRate : null, System.currentTimeMillis() / 1000);
                 // 同步写 ks_bank_banks —— 放贷（loan_rate）和利息结算（interest_rate）
                 // 实际读的是 banks 表；ks_bank_rates 只为兼容旧前端展示而保留
                 if (loanRate >= 0) conn.createStatement().executeUpdate(
@@ -6599,8 +7777,8 @@ public final class EcoWebHandler implements HttpHandler {
                     resp.put("reserveRequirement", rs.getDouble("reserve_requirement"));
                 }
                 try {
-                    var rs2 = conn.createStatement().executeQuery("SELECT value FROM ks_bank_cb_config WHERE key='rate_adjust_limit'");
-                    if (rs2.next()) resp.put("adjustLimit", rs2.getDouble("value"));
+                    var rs2 = conn.createStatement().executeQuery("SELECT config_value FROM ks_bank_cb_config WHERE config_key='rate_adjust_limit'");
+                    if (rs2.next()) resp.put("adjustLimit", rs2.getDouble("config_value"));
                     else resp.put("adjustLimit", 0.02);
                 } catch (java.sql.SQLException ignored) {
                     resp.put("adjustLimit", 0.02);
@@ -6625,8 +7803,7 @@ public final class EcoWebHandler implements HttpHandler {
                 KsPluginBridge.sendJson(exchange, 403, "{\"error\":\"只有银行所有者或经理可查看成员\"}"); return;
             }
             {
-                conn.createStatement().executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS ks_bank_members (bank_id TEXT, player_uuid TEXT, player_name TEXT, role TEXT DEFAULT 'MEMBER', joined_at INTEGER DEFAULT (strftime('%s','now')), PRIMARY KEY(bank_id, player_uuid))");
+                EcoWebBusinessSchema.ensureBankMembers(conn);
                 ensureBankOwnerMembers(conn, bankId);
                 var rs = conn.createStatement().executeQuery(
                     "SELECT player_uuid, player_name, role, joined_at FROM ks_bank_members WHERE bank_id='" + bankId.replace("'", "''") + "'");
@@ -6667,13 +7844,11 @@ public final class EcoWebHandler implements HttpHandler {
             if (!canManageBankMembers(conn, bankId, session)) {
                 KsPluginBridge.sendJson(exchange, 403, "{\"error\":\"只有银行所有者或管理员才能添加成员\"}"); return;
             }
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_bank_members (bank_id TEXT, player_uuid TEXT, player_name TEXT, role TEXT DEFAULT 'MEMBER', joined_at INTEGER DEFAULT (strftime('%s','now')), PRIMARY KEY(bank_id, player_uuid))");
+            EcoWebBusinessSchema.ensureBankMembers(conn);
             UUID memberUuid = resolvePlayerReference(playerUuid);
             String canonicalName = resolvePlayerName(memberUuid);
-            try (var ps = conn.prepareStatement("INSERT INTO ks_bank_members (bank_id, player_uuid, player_name, role) VALUES (?,?,?,?) ON CONFLICT(bank_id,player_uuid) DO UPDATE SET player_name=excluded.player_name, role=excluded.role")) {
-                ps.setString(1, bankId); ps.setString(2, memberUuid.toString()); ps.setString(3, canonicalName); ps.setString(4, role); ps.executeUpdate();
-            }
+            upsertBankMember(conn, bankId, memberUuid.toString(), canonicalName, role,
+                    System.currentTimeMillis() / 1000, true);
         } catch (java.sql.SQLException e) {
             KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"添加失败: " + e.getMessage() + "\"}");
             return;
@@ -6782,10 +7957,8 @@ public final class EcoWebHandler implements HttpHandler {
                 }
             }
             if (enabled) {
-                try (var ps = conn.prepareStatement("INSERT OR REPLACE INTO ks_bank_permissions (bank_id,player_uuid,permission,granted_by,granted_at) VALUES (?,?,?,?,?)")) {
-                    ps.setString(1, bankId); ps.setString(2, targetUuid.toString()); ps.setString(3, permission);
-                    ps.setString(4, session.playerUuid.toString()); ps.setLong(5, System.currentTimeMillis() / 1000); ps.executeUpdate();
-                }
+                upsertBankPermission(conn, bankId, targetUuid.toString(), permission,
+                        session.playerUuid.toString(), System.currentTimeMillis() / 1000);
             } else {
                 try (var ps = conn.prepareStatement("DELETE FROM ks_bank_permissions WHERE bank_id=? AND player_uuid=? AND permission=?")) {
                     ps.setString(1, bankId); ps.setString(2, targetUuid.toString()); ps.setString(3, permission); ps.executeUpdate();
@@ -6814,8 +7987,7 @@ public final class EcoWebHandler implements HttpHandler {
                 KsPluginBridge.sendJson(exchange, 403, "{\"error\":\"仅企业创始人或经理可查看成员\"}"); return;
             }
             {
-                conn.createStatement().executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS ks_ent_members (enterprise_id TEXT, player_uuid TEXT, player_name TEXT, role TEXT DEFAULT 'EMPLOYEE', salary REAL DEFAULT 0, joined_at INTEGER DEFAULT (strftime('%s','now')), PRIMARY KEY(enterprise_id, player_uuid))");
+                EcoWebBusinessSchema.ensureEnterpriseMembers(conn);
                 conn.createStatement().executeUpdate("UPDATE ks_ent_members SET role='MEMBER' WHERE enterprise_id='" + enterpriseId.replace("'", "''") + "' AND role='EMPLOYEE'");
                 ensureEnterpriseOwnerMembers(conn, enterpriseId);
                 var rs = conn.createStatement().executeQuery(
@@ -6862,8 +8034,7 @@ public final class EcoWebHandler implements HttpHandler {
             if (!session.isAdmin && !enterprisePermissions.canAssignRole(conn, enterpriseId, session.playerUuid, role)) {
                 KsPluginBridge.sendJson(exchange, 403, "{\"error\":\"当前层级不能授予该岗位\"}"); return;
             }
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_members (enterprise_id TEXT, player_uuid TEXT, player_name TEXT, role TEXT DEFAULT 'EMPLOYEE', salary REAL DEFAULT 0, joined_at INTEGER DEFAULT (strftime('%s','now')), PRIMARY KEY(enterprise_id, player_uuid))");
+            EcoWebBusinessSchema.ensureEnterpriseMembers(conn);
             UUID memberUuid = resolvePlayerReference(playerUuid);
             String canonicalName = resolvePlayerName(memberUuid);
             var existing = conn.createStatement().executeQuery("SELECT COUNT(*) FROM ks_ent_members WHERE enterprise_id='" + enterpriseId.replace("'", "''") + "' AND player_uuid='" + memberUuid + "'");
@@ -6874,9 +8045,8 @@ public final class EcoWebHandler implements HttpHandler {
                     KsPluginBridge.sendJson(exchange, 400, gson.toJson(Map.of("error", "企业成员名额已满，最大人数为 " + maxMembers))); return;
                 }
             }
-            try (var ps = conn.prepareStatement("INSERT INTO ks_ent_members (enterprise_id, player_uuid, player_name, role, salary) VALUES (?,?,?,?,?) ON CONFLICT(enterprise_id,player_uuid) DO UPDATE SET player_name=excluded.player_name, role=excluded.role, salary=excluded.salary")) {
-                ps.setString(1, enterpriseId); ps.setString(2, memberUuid.toString()); ps.setString(3, canonicalName); ps.setString(4, role); ps.setDouble(5, salary); ps.executeUpdate();
-            }
+            upsertEnterpriseMember(conn, enterpriseId, memberUuid.toString(), canonicalName, role, salary,
+                    System.currentTimeMillis() / 1000, true);
             updateEnterpriseMemberCount(conn, enterpriseId);
         } catch (java.sql.SQLException e) {
             KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"添加失败: " + e.getMessage() + "\"}");
@@ -7078,12 +8248,12 @@ public final class EcoWebHandler implements HttpHandler {
         try { return UUID.fromString(reference.trim()); } catch (IllegalArgumentException ignored) {}
         String value = reference.trim();
         try {
-            UUID resolved = Bukkit.getScheduler().callSyncMethod(plugin, () -> {
+            UUID resolved = plugin.scheduler().callGlobal(() -> {
                 for (org.bukkit.OfflinePlayer player : Bukkit.getOfflinePlayers()) {
                     if (player.getName() != null && player.getName().equalsIgnoreCase(value)) return player.getUniqueId();
                 }
                 return null;
-            }).get(3, TimeUnit.SECONDS);
+            }, Duration.ofSeconds(3));
             if (resolved != null) return resolved;
         } catch (Exception e) {
             throw new IllegalArgumentException("无法解析玩家 ID: " + value);
@@ -7093,7 +8263,8 @@ public final class EcoWebHandler implements HttpHandler {
 
     private String resolvePlayerName(UUID playerUuid) {
         try {
-            String name = Bukkit.getScheduler().callSyncMethod(plugin, () -> Bukkit.getOfflinePlayer(playerUuid).getName()).get(3, TimeUnit.SECONDS);
+            String name = plugin.scheduler().callGlobal(
+                    () -> Bukkit.getOfflinePlayer(playerUuid).getName(), Duration.ofSeconds(3));
             return name == null || name.isBlank() ? playerUuid.toString() : name;
         } catch (Exception e) {
             return playerUuid.toString();
@@ -7103,7 +8274,7 @@ public final class EcoWebHandler implements HttpHandler {
     private double getEconomicSetting(String key, double fallback) {
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return fallback;
-            try (var ps = conn.prepareStatement("SELECT value FROM ks_eco_settings WHERE key=?")) {
+            try (var ps = conn.prepareStatement("SELECT config_value FROM ks_eco_settings WHERE config_key=?")) {
                 ps.setString(1, key);
                 var rs = ps.executeQuery();
                 return rs.next() ? Double.parseDouble(rs.getString(1)) : fallback;
@@ -7140,17 +8311,10 @@ public final class EcoWebHandler implements HttpHandler {
         long now = System.currentTimeMillis() / 1000;
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) { KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"数据库未连接\"}"); return; }
-            try (var ps = conn.prepareStatement("INSERT INTO ks_eco_settings (key,value,updated_at) VALUES ('enterprise_min_capital',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at")) {
-                ps.setString(1, Double.toString(enterpriseMin)); ps.setLong(2, now); ps.executeUpdate();
-            }
-            try (var ps = conn.prepareStatement("INSERT INTO ks_bank_cb_config (key,value) VALUES ('bank_min_capital',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")) {
-                ps.setString(1, Double.toString(bankMin)); ps.executeUpdate();
-            }
-            try (var ps = conn.prepareStatement("INSERT INTO ks_eco_settings (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at")) {
-                ps.setString(1, "enterprise_max_owners"); ps.setString(2, Integer.toString(maxOwners)); ps.setLong(3, now); ps.addBatch();
-                ps.setString(1, "enterprise_max_members"); ps.setString(2, Integer.toString(maxMembers)); ps.setLong(3, now); ps.addBatch();
-                ps.executeBatch();
-            }
+            upsertEconomicSetting(conn, "enterprise_min_capital", Double.toString(enterpriseMin), now);
+            upsertBankConfig(conn, "bank_min_capital", Double.toString(bankMin));
+            upsertEconomicSetting(conn, "enterprise_max_owners", Integer.toString(maxOwners), now);
+            upsertEconomicSetting(conn, "enterprise_max_members", Integer.toString(maxMembers), now);
         } catch (java.sql.SQLException e) {
             KsPluginBridge.sendJson(exchange, 500, "{\"error\":\"保存门槛失败\"}"); return;
         }
@@ -7226,22 +8390,17 @@ public final class EcoWebHandler implements HttpHandler {
                     if (ps.executeUpdate() != 1) throw new java.sql.SQLException("企业不存在");
                 }
                 long now = System.currentTimeMillis() / 1000;
-                try (var account = conn.prepareStatement("INSERT INTO ks_ent_corporate_accounts (enterprise_id,bank_id,balance,updated_at) VALUES (?,?,?,?) ON CONFLICT(enterprise_id) DO UPDATE SET balance=excluded.balance,updated_at=excluded.updated_at")) {
-                    account.setString(1, enterpriseId); account.setString(2, bankId == null || bankId.isBlank() ? "CORP-BANK" : bankId);
-                    account.setDouble(3, corporateBalance); account.setLong(4, now); account.executeUpdate();
-                }
+                setCorporateAccountBalance(conn, enterpriseId,
+                        bankId == null || bankId.isBlank() ? "CORP-BANK" : bankId, corporateBalance, now);
                 try (var bank = conn.prepareStatement("UPDATE ks_bank_banks SET total_assets=MAX(total_assets+?,0) WHERE id=?")) {
                     bank.setDouble(1, corporateBalance - oldBalance); bank.setString(2, bankId == null || bankId.isBlank() ? "CORP-BANK" : bankId); bank.executeUpdate();
                 }
                 try (var demote = conn.prepareStatement("UPDATE ks_ent_members SET role='EMPLOYEE' WHERE enterprise_id=? AND role='OWNER'")) {
                     demote.setString(1, enterpriseId); demote.executeUpdate();
                 }
-                try (var member = conn.prepareStatement("INSERT INTO ks_ent_members (enterprise_id,player_uuid,player_name,role,salary,joined_at) VALUES (?,?,?,'OWNER',0,?) ON CONFLICT(enterprise_id,player_uuid) DO UPDATE SET role='OWNER'")) {
-                    for (String owner : owners) {
-                        if ("SYSTEM".equals(owner)) continue;
-                        member.setString(1, enterpriseId); member.setString(2, owner); member.setString(3, owner); member.setLong(4, now); member.addBatch();
-                    }
-                    member.executeBatch();
+                for (String owner : owners) {
+                    if ("SYSTEM".equals(owner)) continue;
+                    upsertEnterpriseMember(conn, enterpriseId, owner, owner, "OWNER", 0, now, false);
                 }
                 try (var clearShares = conn.prepareStatement("DELETE FROM ks_ent_dividend_shares WHERE enterprise_id=?")) {
                     clearShares.setString(1, enterpriseId); clearShares.executeUpdate();
@@ -7269,7 +8428,7 @@ public final class EcoWebHandler implements HttpHandler {
 
     private double getBankSetting(String key, double fallback) {
         try (var conn = plugin.ksCore().dataStore().getConnection();
-             var ps = conn == null ? null : conn.prepareStatement("SELECT value FROM ks_bank_cb_config WHERE key=?")) {
+             var ps = conn == null ? null : conn.prepareStatement("SELECT config_value FROM ks_bank_cb_config WHERE config_key=?")) {
             if (ps == null) return fallback;
             ps.setString(1, key);
             var rs = ps.executeQuery();
@@ -7279,19 +8438,143 @@ public final class EcoWebHandler implements HttpHandler {
         }
     }
 
+    private static void upsertBankConfig(java.sql.Connection conn, String key, String value) throws java.sql.SQLException {
+        PortableSqlMutation.upsert(conn,
+                "UPDATE ks_bank_cb_config SET config_value=? WHERE config_key=?",
+                ps -> { ps.setString(1, value); ps.setString(2, key); },
+                "INSERT INTO ks_bank_cb_config (config_key,config_value) VALUES (?,?)",
+                ps -> { ps.setString(1, key); ps.setString(2, value); });
+    }
+
+    private static void upsertEconomicSetting(
+            java.sql.Connection conn, String key, String value, long updatedAt) throws java.sql.SQLException {
+        PortableSqlMutation.upsert(conn,
+                "UPDATE ks_eco_settings SET config_value=?,updated_at=? WHERE config_key=?",
+                ps -> { ps.setString(1, value); ps.setLong(2, updatedAt); ps.setString(3, key); },
+                "INSERT INTO ks_eco_settings (config_key,config_value,updated_at) VALUES (?,?,?)",
+                ps -> { ps.setString(1, key); ps.setString(2, value); ps.setLong(3, updatedAt); });
+    }
+
+    private static boolean ensureCorporateAccount(
+            java.sql.Connection conn, String enterpriseId, String bankId, double balance, long updatedAt)
+            throws java.sql.SQLException {
+        return PortableSqlMutation.insertIfAbsent(conn,
+                "SELECT 1 FROM ks_ent_corporate_accounts WHERE enterprise_id=?",
+                ps -> ps.setString(1, enterpriseId),
+                "INSERT INTO ks_ent_corporate_accounts (enterprise_id,bank_id,balance,updated_at) VALUES (?,?,?,?)",
+                ps -> {
+                    ps.setString(1, enterpriseId); ps.setString(2, bankId);
+                    ps.setDouble(3, balance); ps.setLong(4, updatedAt);
+                });
+    }
+
+    private static void setCorporateAccountBalance(
+            java.sql.Connection conn, String enterpriseId, String bankId, double balance, long updatedAt)
+            throws java.sql.SQLException {
+        PortableSqlMutation.upsert(conn,
+                "UPDATE ks_ent_corporate_accounts SET balance=?,updated_at=? WHERE enterprise_id=?",
+                ps -> { ps.setDouble(1, balance); ps.setLong(2, updatedAt); ps.setString(3, enterpriseId); },
+                "INSERT INTO ks_ent_corporate_accounts (enterprise_id,bank_id,balance,updated_at) VALUES (?,?,?,?)",
+                ps -> {
+                    ps.setString(1, enterpriseId); ps.setString(2, bankId);
+                    ps.setDouble(3, balance); ps.setLong(4, updatedAt);
+                });
+    }
+
+    private static void upsertEnterpriseMember(java.sql.Connection conn, String enterpriseId, String playerUuid,
+            String playerName, String role, double salary, long joinedAt, boolean updateProfile)
+            throws java.sql.SQLException {
+        String updateSql = updateProfile
+                ? "UPDATE ks_ent_members SET player_name=?,role=?,salary=? WHERE enterprise_id=? AND player_uuid=?"
+                : "UPDATE ks_ent_members SET role=? WHERE enterprise_id=? AND player_uuid=?";
+        PortableSqlMutation.upsert(conn,
+                updateSql,
+                updateProfile
+                        ? ps -> {
+                            ps.setString(1, playerName); ps.setString(2, role); ps.setDouble(3, salary);
+                            ps.setString(4, enterpriseId); ps.setString(5, playerUuid);
+                        }
+                        : ps -> { ps.setString(1, role); ps.setString(2, enterpriseId); ps.setString(3, playerUuid); },
+                "INSERT INTO ks_ent_members (enterprise_id,player_uuid,player_name,role,salary,joined_at) VALUES (?,?,?,?,?,?)",
+                ps -> {
+                    ps.setString(1, enterpriseId); ps.setString(2, playerUuid); ps.setString(3, playerName);
+                    ps.setString(4, role); ps.setDouble(5, salary); ps.setLong(6, joinedAt);
+                });
+    }
+
+    private static void upsertBankMember(java.sql.Connection conn, String bankId, String playerUuid,
+            String playerName, String role, long joinedAt, boolean updateProfile) throws java.sql.SQLException {
+        String updateSql = updateProfile
+                ? "UPDATE ks_bank_members SET player_name=?,role=? WHERE bank_id=? AND player_uuid=?"
+                : "UPDATE ks_bank_members SET role=? WHERE bank_id=? AND player_uuid=?";
+        PortableSqlMutation.upsert(conn,
+                updateSql,
+                updateProfile
+                        ? ps -> {
+                            ps.setString(1, playerName); ps.setString(2, role);
+                            ps.setString(3, bankId); ps.setString(4, playerUuid);
+                        }
+                        : ps -> { ps.setString(1, role); ps.setString(2, bankId); ps.setString(3, playerUuid); },
+                "INSERT INTO ks_bank_members (bank_id,player_uuid,player_name,role,joined_at) VALUES (?,?,?,?,?)",
+                ps -> {
+                    ps.setString(1, bankId); ps.setString(2, playerUuid); ps.setString(3, playerName);
+                    ps.setString(4, role); ps.setLong(5, joinedAt);
+                });
+    }
+
+    private static void upsertEnterprisePermission(java.sql.Connection conn, String enterpriseId, String playerUuid,
+            String permission, String grantedBy, long grantedAt) throws java.sql.SQLException {
+        PortableSqlMutation.upsert(conn,
+                "UPDATE ks_ent_permissions SET granted_by=?,granted_at=? WHERE enterprise_id=? AND player_uuid=? AND permission=?",
+                ps -> {
+                    ps.setString(1, grantedBy); ps.setLong(2, grantedAt); ps.setString(3, enterpriseId);
+                    ps.setString(4, playerUuid); ps.setString(5, permission);
+                },
+                "INSERT INTO ks_ent_permissions (enterprise_id,player_uuid,permission,granted_by,granted_at) VALUES (?,?,?,?,?)",
+                ps -> {
+                    ps.setString(1, enterpriseId); ps.setString(2, playerUuid); ps.setString(3, permission);
+                    ps.setString(4, grantedBy); ps.setLong(5, grantedAt);
+                });
+    }
+
+    private static void upsertBankPermission(java.sql.Connection conn, String bankId, String playerUuid,
+            String permission, String grantedBy, long grantedAt) throws java.sql.SQLException {
+        PortableSqlMutation.upsert(conn,
+                "UPDATE ks_bank_permissions SET granted_by=?,granted_at=? WHERE bank_id=? AND player_uuid=? AND permission=?",
+                ps -> {
+                    ps.setString(1, grantedBy); ps.setLong(2, grantedAt); ps.setString(3, bankId);
+                    ps.setString(4, playerUuid); ps.setString(5, permission);
+                },
+                "INSERT INTO ks_bank_permissions (bank_id,player_uuid,permission,granted_by,granted_at) VALUES (?,?,?,?,?)",
+                ps -> {
+                    ps.setString(1, bankId); ps.setString(2, playerUuid); ps.setString(3, permission);
+                    ps.setString(4, grantedBy); ps.setLong(5, grantedAt);
+                });
+    }
+
+    private static void upsertBankRate(java.sql.Connection conn, String bankId, Double loanRate,
+            Double depositRate, long updatedAt) throws java.sql.SQLException {
+        if (loanRate != null) {
+            PortableSqlMutation.upsert(conn,
+                    "UPDATE ks_bank_rates SET loan_rate=?,updated_at=? WHERE bank_id=?",
+                    ps -> { ps.setDouble(1, loanRate); ps.setLong(2, updatedAt); ps.setString(3, bankId); },
+                    "INSERT INTO ks_bank_rates (bank_id,loan_rate,deposit_rate,updated_at) VALUES (?,?,?,?)",
+                    ps -> { ps.setString(1, bankId); ps.setDouble(2, loanRate); ps.setDouble(3, 0.01d); ps.setLong(4, updatedAt); });
+        }
+        if (depositRate != null) {
+            PortableSqlMutation.upsert(conn,
+                    "UPDATE ks_bank_rates SET deposit_rate=?,updated_at=? WHERE bank_id=?",
+                    ps -> { ps.setDouble(1, depositRate); ps.setLong(2, updatedAt); ps.setString(3, bankId); },
+                    "INSERT INTO ks_bank_rates (bank_id,loan_rate,deposit_rate,updated_at) VALUES (?,?,?,?)",
+                    ps -> { ps.setString(1, bankId); ps.setDouble(2, 0.05d); ps.setDouble(3, depositRate); ps.setLong(4, updatedAt); });
+        }
+    }
+
     private void ensureEnterpriseOwnerMembers(java.sql.Connection conn, String enterpriseId, List<UUID> owners, long now) throws java.sql.SQLException {
-        try (var ps = conn.prepareStatement(
-                "INSERT INTO ks_ent_members (enterprise_id, player_uuid, player_name, role, salary, joined_at) VALUES (?,?,?,?,0,?) ON CONFLICT(enterprise_id,player_uuid) DO UPDATE SET role='OWNER'")) {
-            for (UUID owner : owners) {
-                var player = Bukkit.getOfflinePlayer(owner);
-                ps.setString(1, enterpriseId);
-                ps.setString(2, owner.toString());
-                ps.setString(3, player.getName() == null ? owner.toString() : player.getName());
-                ps.setString(4, "OWNER");
-                ps.setLong(5, now);
-                ps.addBatch();
-            }
-            ps.executeBatch();
+        for (UUID owner : owners) {
+            var player = Bukkit.getOfflinePlayer(owner);
+            String playerName = player.getName() == null ? owner.toString() : player.getName();
+            upsertEnterpriseMember(conn, enterpriseId, owner.toString(), playerName, "OWNER", 0, now, false);
         }
         updateEnterpriseMemberCount(conn, enterpriseId);
     }
@@ -7310,15 +8593,11 @@ public final class EcoWebHandler implements HttpHandler {
             ps.setString(1, bankId);
             var rs = ps.executeQuery();
             if (!rs.next()) return;
-            try (var insert = conn.prepareStatement(
-                    "INSERT INTO ks_bank_members (bank_id, player_uuid, player_name, role, joined_at) VALUES (?,?,?,?,?) ON CONFLICT(bank_id,player_uuid) DO UPDATE SET role='OWNER'")) {
-                for (UUID owner : parseOwnerList(rs.getString(1))) {
-                    var player = Bukkit.getOfflinePlayer(owner);
-                    insert.setString(1, bankId); insert.setString(2, owner.toString());
-                    insert.setString(3, player.getName() == null ? owner.toString() : player.getName());
-                    insert.setString(4, "OWNER"); insert.setLong(5, System.currentTimeMillis() / 1000); insert.addBatch();
-                }
-                insert.executeBatch();
+            long now = System.currentTimeMillis() / 1000;
+            for (UUID owner : parseOwnerList(rs.getString(1))) {
+                var player = Bukkit.getOfflinePlayer(owner);
+                String playerName = player.getName() == null ? owner.toString() : player.getName();
+                upsertBankMember(conn, bankId, owner.toString(), playerName, "OWNER", now, false);
             }
         }
     }

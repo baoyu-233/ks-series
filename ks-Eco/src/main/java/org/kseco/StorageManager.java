@@ -1,10 +1,13 @@
 package org.kseco;
 
+import org.bukkit.Bukkit;
+import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -18,7 +21,10 @@ public final class StorageManager {
     private final KsEco plugin;
     private final Queue<PendingStore> pendingStores = new ConcurrentLinkedQueue<>();
     private final AtomicBoolean flushScheduled = new AtomicBoolean(false);
+    private final AtomicBoolean retryScheduled = new AtomicBoolean(false);
     private static final int WRITE_BATCH_SIZE = 64;
+    private static final long RETRY_DELAY_TICKS = 20L;
+    private static final String MARKET_PENDING_PATTERN = "MARKET_PENDING:%";
 
     public StorageManager(KsEco plugin) {
         this.plugin = plugin;
@@ -27,22 +33,48 @@ public final class StorageManager {
 
     private boolean enqueueStore(String id, UUID ownerUuid, byte[] data, String material,
                                  int quantity, String source, long storedAt) {
-        pendingStores.add(new PendingStore(id, ownerUuid.toString(), data, material, quantity, source, storedAt));
+        if (ownerUuid == null || data == null || data.length == 0 || material == null || material.isBlank()
+                || quantity <= 0) return false;
+        pendingStores.add(new PendingStore(id, ownerUuid.toString(), data.clone(), material, quantity,
+                normalizeSource(source), storedAt));
         scheduleFlush();
         return true;
     }
 
     private void scheduleFlush() {
         if (!flushScheduled.compareAndSet(false, true)) return;
-        plugin.asyncWorkPool().executeDatabase(() -> {
-            boolean drained = false;
-            try {
-                drained = flushQueuedStores();
-            } finally {
-                flushScheduled.set(false);
-                if (drained && !pendingStores.isEmpty()) scheduleFlush();
-            }
-        });
+        try {
+            plugin.asyncWorkPool().executeDatabase(() -> {
+                boolean drained = false;
+                try {
+                    drained = flushQueuedStores();
+                } finally {
+                    flushScheduled.set(false);
+                    if (!pendingStores.isEmpty()) {
+                        if (drained) scheduleFlush();
+                        else scheduleFlushRetry();
+                    }
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            flushScheduled.set(false);
+            plugin.getLogger().warning("Storage write queue rejected; queued items will be retried");
+            scheduleFlushRetry();
+        }
+    }
+
+    private void scheduleFlushRetry() {
+        if (!retryScheduled.compareAndSet(false, true)) return;
+        try {
+            plugin.scheduler().runGlobalLater(() -> {
+                retryScheduled.set(false);
+                if (!pendingStores.isEmpty()) scheduleFlush();
+            }, RETRY_DELAY_TICKS);
+        } catch (RuntimeException schedulingFailure) {
+            retryScheduled.set(false);
+            plugin.getLogger().warning("Storage write retry could not be scheduled: "
+                    + schedulingFailure.getMessage());
+        }
     }
 
     private boolean flushQueuedStores() {
@@ -99,7 +131,10 @@ public final class StorageManager {
     }
 
     public void flushPending() {
-        flushQueuedStores();
+        if (!flushQueuedStores() && !pendingStores.isEmpty()) {
+            plugin.getLogger().severe("Storage shutdown flush failed; " + pendingStores.size()
+                    + " queued item(s) remain unpersisted");
+        }
     }
 
     private void createTable() {
@@ -108,7 +143,7 @@ public final class StorageManager {
             try (Statement stmt = conn.createStatement()) {
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS ks_eco_storage (
-                        id TEXT PRIMARY KEY,
+                        id VARCHAR(64) PRIMARY KEY,
                         owner_uuid TEXT NOT NULL,
                         item_data BLOB NOT NULL,
                         item_material TEXT NOT NULL,
@@ -127,7 +162,7 @@ public final class StorageManager {
      * 存储物品到暂存箱。
      */
     public void storeItem(UUID ownerUuid, ItemStack item, String source) {
-        if (item == null || item.getType().isAir() || item.getAmount() <= 0) {
+        if (ownerUuid == null || item == null || item.getType().isAir() || item.getAmount() <= 0) {
             plugin.getLogger().warning("storeItem: 拒绝存储空/无效物品 (owner=" + ownerUuid + ")");
             return;
         }
@@ -146,7 +181,7 @@ public final class StorageManager {
                 ps.setBytes(3, data);
                 ps.setString(4, item.getType().name());
                 ps.setInt(5, item.getAmount());
-                ps.setString(6, source);
+                ps.setString(6, normalizeSource(source));
                 ps.setLong(7, now);
                 ps.executeUpdate();
             }
@@ -169,7 +204,7 @@ public final class StorageManager {
                 ps.setBytes(3, item.serializeAsBytes());
                 ps.setString(4, item.getType().name());
                 ps.setInt(5, item.getAmount());
-                ps.setString(6, source == null ? "UNKNOWN" : source);
+                ps.setString(6, normalizeSource(source));
                 ps.setLong(7, System.currentTimeMillis() / 1000);
                 ps.executeUpdate();
                 return id;
@@ -182,12 +217,9 @@ public final class StorageManager {
 
     public boolean deleteStoredItem(UUID ownerUuid, String storageId) {
         if (ownerUuid == null || storageId == null || storageId.isBlank()) return false;
-        try (Connection conn = plugin.ksCore().dataStore().getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                     "DELETE FROM ks_eco_storage WHERE id=? AND owner_uuid=?")) {
-            ps.setString(1, storageId);
-            ps.setString(2, ownerUuid.toString());
-            return ps.executeUpdate() == 1;
+        try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
+            if (conn == null) return false;
+            return deleteVisible(conn, ownerUuid, storageId);
         } catch (SQLException e) {
             plugin.getLogger().warning("删除暂存物品失败: " + e.getMessage());
             return false;
@@ -199,12 +231,14 @@ public final class StorageManager {
      */
     public List<StoredItem> getPlayerItems(UUID ownerUuid) {
         List<StoredItem> result = new ArrayList<>();
+        if (ownerUuid == null) return result;
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return result;
             try (PreparedStatement ps = conn.prepareStatement(
                     "SELECT id, item_data, item_material, quantity, source, stored_at " +
-                    "FROM ks_eco_storage WHERE owner_uuid=? ORDER BY stored_at ASC")) {
+                    "FROM ks_eco_storage WHERE owner_uuid=? AND source NOT LIKE ? ORDER BY stored_at ASC")) {
                 ps.setString(1, ownerUuid.toString());
+                ps.setString(2, MARKET_PENDING_PATTERN);
                 ResultSet rs = ps.executeQuery();
                 while (rs.next()) {
                     byte[] data = rs.getBytes("item_data");
@@ -219,7 +253,7 @@ public final class StorageManager {
                     ));
                 }
             }
-        } catch (SQLException e) {
+        } catch (SQLException | IllegalArgumentException e) {
             plugin.getLogger().warning("查询暂存箱失败: " + e.getMessage());
         }
         return result;
@@ -229,39 +263,55 @@ public final class StorageManager {
      * 从暂存箱提取物品到玩家背包。
      */
     public boolean withdrawItem(UUID playerUuid, String storageId, org.bukkit.entity.Player player) {
+        if (playerUuid == null || storageId == null || storageId.isBlank() || player == null
+                || !playerUuid.equals(player.getUniqueId()) || !plugin.scheduler().isEntityThread(player)) return false;
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return false;
 
             // 查询并删除
             try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT item_data, quantity FROM ks_eco_storage WHERE id=? AND owner_uuid=?")) {
+                    "SELECT item_data, quantity FROM ks_eco_storage WHERE id=? AND owner_uuid=? "
+                            + "AND source NOT LIKE ?")) {
                 ps.setString(1, storageId);
                 ps.setString(2, playerUuid.toString());
+                ps.setString(3, MARKET_PENDING_PATTERN);
                 ResultSet rs = ps.executeQuery();
                 if (!rs.next()) return false;
 
                 byte[] data = rs.getBytes("item_data");
+                int quantity = rs.getInt("quantity");
+                rs.close();
+                if (data == null || data.length == 0 || quantity <= 0) return false;
                 ItemStack item = ItemStack.deserializeBytes(data);
-                item.setAmount(rs.getInt("quantity"));
+                item.setAmount(quantity);
 
                 // 检查背包空间
-                if (player.getInventory().firstEmpty() == -1) {
+                if (!canFit(player.getInventory(), item)) {
                     player.sendMessage("§c背包已满，请清理后再提取。");
                     return false;
                 }
 
                 // 删除记录
                 try (PreparedStatement del = conn.prepareStatement(
-                        "DELETE FROM ks_eco_storage WHERE id=?")) {
+                        "DELETE FROM ks_eco_storage WHERE id=? AND owner_uuid=? AND source NOT LIKE ?")) {
                     del.setString(1, storageId);
-                    del.executeUpdate();
+                    del.setString(2, playerUuid.toString());
+                    del.setString(3, MARKET_PENDING_PATTERN);
+                    if (del.executeUpdate() != 1) return false;
                 }
 
                 // 给予物品
-                player.getInventory().addItem(item);
+                Map<Integer, ItemStack> leftovers = player.getInventory().addItem(item);
+                if (!leftovers.isEmpty()) {
+                    plugin.getLogger().severe("Storage capacity changed during withdrawal: " + storageId);
+                    for (ItemStack leftover : leftovers.values()) {
+                        storeItem(playerUuid, leftover, "WITHDRAW_OVERFLOW:" + storageId);
+                    }
+                    return false;
+                }
             }
             return true;
-        } catch (SQLException e) {
+        } catch (SQLException | IllegalArgumentException e) {
             plugin.getLogger().warning("提取物品失败: " + e.getMessage());
             return false;
         }
@@ -277,10 +327,8 @@ public final class StorageManager {
         long cutoff = System.currentTimeMillis() / 1000 - maxDays * 86400L;
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "DELETE FROM ks_eco_storage WHERE stored_at < ?")) {
-                ps.setLong(1, cutoff);
-                int deleted = ps.executeUpdate();
+            {
+                int deleted = deleteExpiredVisible(conn, cutoff);
                 if (deleted > 0) {
                     plugin.getLogger().info("清理了 " + deleted + " 件过期暂存物品。");
                 }
@@ -296,10 +344,7 @@ public final class StorageManager {
     public int totalStoredItems() {
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return 0;
-            try (Statement stmt = conn.createStatement();
-                 ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM ks_eco_storage")) {
-                return rs.next() ? rs.getInt(1) : 0;
-            }
+            return countVisible(conn);
         } catch (SQLException e) {
             return 0;
         }
@@ -308,6 +353,54 @@ public final class StorageManager {
     // ---- 数据类 ----
 
     public record StoredItem(String id, ItemStack item, String material, int quantity, String source, long storedAt) {}
+
+    static boolean canFit(Inventory inventory, ItemStack item) {
+        if (inventory == null || item == null || item.getType().isAir() || item.getAmount() <= 0) return false;
+        int remaining = item.getAmount();
+        int maxStack = Math.max(1, item.getMaxStackSize());
+        for (ItemStack current : inventory.getStorageContents()) {
+            if (current == null || current.getType().isAir()) {
+                remaining -= maxStack;
+            } else if (current.isSimilar(item)) {
+                remaining -= Math.max(0, Math.min(maxStack, current.getMaxStackSize()) - current.getAmount());
+            }
+            if (remaining <= 0) return true;
+        }
+        return false;
+    }
+
+    static boolean deleteVisible(Connection connection, UUID ownerUuid, String storageId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM ks_eco_storage WHERE id=? AND owner_uuid=? AND source NOT LIKE ?")) {
+            statement.setString(1, storageId);
+            statement.setString(2, ownerUuid.toString());
+            statement.setString(3, MARKET_PENDING_PATTERN);
+            return statement.executeUpdate() == 1;
+        }
+    }
+
+    static int deleteExpiredVisible(Connection connection, long cutoff) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM ks_eco_storage WHERE stored_at < ? AND source NOT LIKE ?")) {
+            statement.setLong(1, cutoff);
+            statement.setString(2, MARKET_PENDING_PATTERN);
+            return statement.executeUpdate();
+        }
+    }
+
+    static int countVisible(Connection connection) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT COUNT(*) FROM ks_eco_storage WHERE source NOT LIKE ?")) {
+            statement.setString(1, MARKET_PENDING_PATTERN);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() ? rows.getInt(1) : 0;
+            }
+        }
+    }
+
+    private static String normalizeSource(String source) {
+        return source == null || source.isBlank() ? "UNKNOWN" : source;
+    }
 
     private record PendingStore(String id, String ownerUuid, byte[] data, String material,
                                 int quantity, String source, long storedAt) {}

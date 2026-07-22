@@ -38,6 +38,7 @@ import org.bukkit.plugin.RegisteredListener;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.projectiles.ProjectileSource;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -48,12 +49,17 @@ import java.util.Set;
 
 public final class KsBotGuard extends JavaPlugin implements Listener {
 
+    private static final long LISTENER_RECONCILE_PERIOD_TICKS = 20L;
+
     private final Map<RegisteredListener, WrappedListener> shieldWrappers = new IdentityHashMap<>();
+    private final Map<RegisteredListener, RegisteredListener> wrappersByOriginal = new IdentityHashMap<>();
 
     private boolean shieldMythicLibFromServerBotDamage;
     private boolean shieldMythicLibFromServerBotActions;
     private boolean includeServerBotProjectiles;
     private boolean debug;
+    private BukkitTask listenerReconcileTask;
+    private BukkitTask pendingShieldRefresh;
 
     private record WrappedListener(HandlerList handlerList, RegisteredListener original) {
     }
@@ -63,13 +69,19 @@ public final class KsBotGuard extends JavaPlugin implements Listener {
         saveDefaultConfig();
         reloadLocalConfig();
         getServer().getPluginManager().registerEvents(this, this);
-        getServer().getScheduler().runTask(this, this::installMmoListenerShield);
+        requestMmoListenerShieldRefresh();
+        listenerReconcileTask = getServer().getScheduler().runTaskTimer(
+            this,
+            this::installMmoListenerShield,
+            LISTENER_RECONCILE_PERIOD_TICKS,
+            LISTENER_RECONCILE_PERIOD_TICKS);
         getLogger().info("Enabled. Leaves ServerBot MMO listener shield damage=" + shieldMythicLibFromServerBotDamage
             + " actions=" + shieldMythicLibFromServerBotActions);
     }
 
     @Override
     public void onDisable() {
+        cancelShieldTasks();
         restoreMmoListeners();
     }
 
@@ -142,7 +154,7 @@ public final class KsBotGuard extends JavaPlugin implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPluginEnable(PluginEnableEvent event) {
         if (isProtectedMmoPlugin(event.getPlugin().getName())) {
-            getServer().getScheduler().runTask(this, this::installMmoListenerShield);
+            requestMmoListenerShieldRefresh();
         }
     }
 
@@ -166,6 +178,7 @@ public final class KsBotGuard extends JavaPlugin implements Listener {
     }
 
     private void installMmoListenerShield() {
+        pruneStaleMmoListeners();
         if (!isPluginEnabled("MythicLib") && !isPluginEnabled("MMOCore")) return;
 
         int wrapped = 0;
@@ -177,13 +190,24 @@ public final class KsBotGuard extends JavaPlugin implements Listener {
 
     private int wrapMmoListeners(HandlerList handlerList) {
         List<RegisteredListener> originals = new ArrayList<>();
+        List<RegisteredListener> duplicateOriginals = new ArrayList<>();
         for (RegisteredListener registered : handlerList.getRegisteredListeners()) {
             if (shieldWrappers.containsKey(registered)) continue;
+            RegisteredListener existingWrapper = wrappersByOriginal.get(registered);
+            if (existingWrapper != null) {
+                if (isListenerRegistered(handlerList, existingWrapper)) duplicateOriginals.add(registered);
+                continue;
+            }
             if (!isProtectedMmoPlugin(registered.getPlugin().getName())) continue;
+            if (!registered.getPlugin().isEnabled()) continue;
             originals.add(registered);
         }
 
+        for (RegisteredListener duplicate : duplicateOriginals) handlerList.unregister(duplicate);
+
+        int wrappedCount = 0;
         for (RegisteredListener original : originals) {
+            if (!isListenerRegistered(handlerList, original)) continue;
             handlerList.unregister(original);
             RegisteredListener wrapper = new RegisteredListener(
                 original.getListener(),
@@ -193,8 +217,10 @@ public final class KsBotGuard extends JavaPlugin implements Listener {
                 original.isIgnoringCancelled());
             handlerList.register(wrapper);
             shieldWrappers.put(wrapper, new WrappedListener(handlerList, original));
+            wrappersByOriginal.put(original, wrapper);
+            wrappedCount++;
         }
-        return originals.size();
+        return wrappedCount;
     }
 
     private void callMmoListenerUnlessServerBot(RegisteredListener original, Event event) throws EventException {
@@ -287,12 +313,18 @@ public final class KsBotGuard extends JavaPlugin implements Listener {
     private void restoreMmoListeners() {
         for (Map.Entry<RegisteredListener, WrappedListener> entry : shieldWrappers.entrySet()) {
             WrappedListener wrapped = entry.getValue();
-            wrapped.handlerList().unregister(entry.getKey());
-            if (wrapped.original().getPlugin().isEnabled()) {
+            boolean wrapperRegistered = isListenerRegistered(wrapped.handlerList(), entry.getKey());
+            boolean originalRegistered = isListenerRegistered(wrapped.handlerList(), wrapped.original());
+            if (wrapperRegistered) wrapped.handlerList().unregister(entry.getKey());
+            if (shouldRestoreOriginal(
+                wrapperRegistered,
+                wrapped.original().getPlugin().isEnabled(),
+                originalRegistered)) {
                 wrapped.handlerList().register(wrapped.original());
             }
         }
         shieldWrappers.clear();
+        wrappersByOriginal.clear();
     }
 
     private void discardMmoListeners(Plugin plugin) {
@@ -301,9 +333,60 @@ public final class KsBotGuard extends JavaPlugin implements Listener {
             Map.Entry<RegisteredListener, WrappedListener> entry = iterator.next();
             WrappedListener wrapped = entry.getValue();
             if (wrapped.original().getPlugin() != plugin) continue;
-            wrapped.handlerList().unregister(entry.getKey());
+            if (isListenerRegistered(wrapped.handlerList(), entry.getKey())) {
+                wrapped.handlerList().unregister(entry.getKey());
+            }
+            wrappersByOriginal.remove(wrapped.original());
             iterator.remove();
         }
+    }
+
+    private void pruneStaleMmoListeners() {
+        var iterator = shieldWrappers.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<RegisteredListener, WrappedListener> entry = iterator.next();
+            WrappedListener wrapped = entry.getValue();
+            boolean wrapperRegistered = isListenerRegistered(wrapped.handlerList(), entry.getKey());
+            if (wrapperRegistered && wrapped.original().getPlugin().isEnabled()) continue;
+
+            if (wrapperRegistered) wrapped.handlerList().unregister(entry.getKey());
+            wrappersByOriginal.remove(wrapped.original());
+            iterator.remove();
+        }
+    }
+
+    private void requestMmoListenerShieldRefresh() {
+        if (pendingShieldRefresh != null) return;
+        pendingShieldRefresh = getServer().getScheduler().runTask(this, () -> {
+            pendingShieldRefresh = null;
+            if (isEnabled()) installMmoListenerShield();
+        });
+    }
+
+    private void cancelShieldTasks() {
+        if (pendingShieldRefresh != null) {
+            pendingShieldRefresh.cancel();
+            pendingShieldRefresh = null;
+        }
+        if (listenerReconcileTask != null) {
+            listenerReconcileTask.cancel();
+            listenerReconcileTask = null;
+        }
+    }
+
+    private static boolean isListenerRegistered(HandlerList handlerList, RegisteredListener target) {
+        for (RegisteredListener registered : handlerList.getRegisteredListeners()) {
+            if (registered == target) return true;
+        }
+        return false;
+    }
+
+    static boolean shouldRestoreOriginal(
+        boolean wrapperRegistered,
+        boolean pluginEnabled,
+        boolean originalRegistered
+    ) {
+        return wrapperRegistered && pluginEnabled && !originalRegistered;
     }
 
     private boolean isPluginEnabled(String pluginName) {

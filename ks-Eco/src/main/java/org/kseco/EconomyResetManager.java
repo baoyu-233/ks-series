@@ -1,6 +1,8 @@
 package org.kseco;
 
 import org.bukkit.command.CommandSender;
+import org.kseco.database.DatabaseDialect;
+import org.kseco.database.PortableSqlMutation;
 
 import java.io.File;
 import java.sql.Connection;
@@ -112,6 +114,10 @@ public final class EconomyResetManager {
                 sender.sendMessage("§c数据库未连接，重置已中止。");
                 return deleted;
             }
+            if (DatabaseDialect.detect(conn) != DatabaseDialect.SQLITE) {
+                sender.sendMessage("§c经济重置当前只支持 SQLite 在线备份；远程数据库请使用数据库原生备份后再维护。");
+                return deleted;
+            }
 
             String backupPath = backupDatabase(conn, BACKUP_PREFIX);
             if (backupPath == null) {
@@ -120,19 +126,30 @@ public final class EconomyResetManager {
             }
             sender.sendMessage("§a已备份完整数据库到: " + backupPath);
 
-            Set<String> tables = new LinkedHashSet<>();
-            for (Category cat : categories) tables.addAll(cat.tables);
-
-            for (String table : tables) {
-                try (Statement st = conn.createStatement()) {
-                    int n = st.executeUpdate("DELETE FROM " + table);
-                    deleted.put(table, n);
-                } catch (SQLException e) {
-                    // 表不存在，跳过
+            conn.setAutoCommit(false);
+            try {
+                Set<String> tables = new LinkedHashSet<>();
+                for (Category cat : categories) tables.addAll(cat.tables);
+                for (String table : tables) {
+                    if (!tableExists(conn, table)) continue;
+                    try (Statement st = conn.createStatement()) {
+                        deleted.put(table, st.executeUpdate("DELETE FROM " + table));
+                    }
                 }
+                if (categories.contains(Category.BANK)) reseedBankDefaults(conn);
+                conn.commit();
+            } catch (SQLException failure) {
+                try {
+                    conn.rollback();
+                } catch (SQLException rollbackFailure) {
+                    failure.addSuppressed(rollbackFailure);
+                }
+                deleted.clear();
+                sender.sendMessage("§c重置事务失败，已回滚: " + failure.getMessage());
+                return deleted;
+            } finally {
+                try { conn.setAutoCommit(true); } catch (SQLException ignored) { }
             }
-
-            if (categories.contains(Category.BANK)) reseedBankDefaults(conn);
 
             plugin.getLogger().warning("[ks-Eco] 经济数据已被 " + sender.getName() + " 重置（类别: " +
                     categories.stream().map(Enum::name).reduce((a, b) -> a + "," + b).orElse("") +
@@ -175,6 +192,10 @@ public final class EconomyResetManager {
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) {
                 sender.sendMessage("§c数据库未连接，回档已中止。");
+                return null;
+            }
+            if (DatabaseDialect.detect(conn) != DatabaseDialect.SQLITE) {
+                sender.sendMessage("§c内置回档只支持 SQLite；远程数据库必须使用数据库原生恢复工具。");
                 return null;
             }
 
@@ -235,15 +256,34 @@ public final class EconomyResetManager {
     }
 
     /** 重新种入清空银行表后仍需立即可用的默认行（无需重启） */
-    private void reseedBankDefaults(Connection conn) {
-        try (Statement st = conn.createStatement()) {
-            long now = System.currentTimeMillis() / 1000;
-            st.executeUpdate("INSERT OR IGNORE INTO ks_bank_banks (id, name, type, owner_uuids, total_assets, created_at) VALUES ('" +
-                    CORP_BANK_ID + "', '企业商业银行', 'COMMERCIAL', 'SYSTEM', 1000000000, " + now + ")");
-            st.executeUpdate("INSERT OR IGNORE INTO ks_bank_members (bank_id, player_uuid, player_name, role) VALUES ('" +
-                    CORP_BANK_ID + "', 'SYSTEM', '官方', 'OWNER')");
-        } catch (SQLException e) {
-            plugin.getLogger().warning("[ks-Eco] 重置后重建默认数据失败: " + e.getMessage());
+    private void reseedBankDefaults(Connection conn) throws SQLException {
+        long now = System.currentTimeMillis() / 1000;
+        PortableSqlMutation.insertIfAbsent(conn,
+                "SELECT 1 FROM ks_bank_banks WHERE id=?", ps -> ps.setString(1, CORP_BANK_ID),
+                "INSERT INTO ks_bank_banks (id,name,type,owner_uuids,total_assets,created_at) VALUES (?,?,?,?,?,?)",
+                ps -> {
+                    ps.setString(1, CORP_BANK_ID); ps.setString(2, "企业商业银行");
+                    ps.setString(3, "COMMERCIAL"); ps.setString(4, "SYSTEM");
+                    ps.setDouble(5, 1_000_000_000D); ps.setLong(6, now);
+                });
+        PortableSqlMutation.insertIfAbsent(conn,
+                "SELECT 1 FROM ks_bank_members WHERE bank_id=? AND player_uuid=?",
+                ps -> { ps.setString(1, CORP_BANK_ID); ps.setString(2, "SYSTEM"); },
+                "INSERT INTO ks_bank_members (bank_id,player_uuid,player_name,role,joined_at) VALUES (?,?,?,?,?)",
+                ps -> {
+                    ps.setString(1, CORP_BANK_ID); ps.setString(2, "SYSTEM"); ps.setString(3, "官方");
+                    ps.setString(4, "OWNER"); ps.setLong(5, now);
+                });
+    }
+
+    private static boolean tableExists(Connection connection, String tableName) throws SQLException {
+        var metadata = connection.getMetaData();
+        for (String candidate : List.of(tableName, tableName.toUpperCase(), tableName.toLowerCase())) {
+            try (ResultSet tables = metadata.getTables(connection.getCatalog(), connection.getSchema(), candidate,
+                    new String[]{"TABLE"})) {
+                if (tables.next()) return true;
+            }
         }
+        return false;
     }
 }

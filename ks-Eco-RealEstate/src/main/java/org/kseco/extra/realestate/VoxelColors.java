@@ -15,6 +15,15 @@ final class VoxelColors {
     private VoxelColors() {}
 
     private static final Map<Material, Integer> MAP = new HashMap<>();
+    private static final Map<String, Integer> DYE_COLORS = Map.ofEntries(
+            Map.entry("WHITE", 0xE9ECEC), Map.entry("LIGHT_GRAY", 0x9D9D97),
+            Map.entry("GRAY", 0x474F52), Map.entry("BLACK", 0x1D1D21),
+            Map.entry("BROWN", 0x835432), Map.entry("RED", 0xB02E26),
+            Map.entry("ORANGE", 0xF9801D), Map.entry("YELLOW", 0xFED83D),
+            Map.entry("LIME", 0x80C71F), Map.entry("GREEN", 0x5E7C16),
+            Map.entry("CYAN", 0x169C9C), Map.entry("LIGHT_BLUE", 0x3AB3DA),
+            Map.entry("BLUE", 0x3C44AA), Map.entry("PURPLE", 0x8932B8),
+            Map.entry("MAGENTA", 0xC74EBD), Map.entry("PINK", 0xF38BAA));
 
     static {
         put(Material.STONE, 0x7f7f7f);
@@ -38,6 +47,8 @@ final class VoxelColors {
         put(Material.DARK_OAK_PLANKS, 0x4f3a23);
         put(Material.CRIMSON_PLANKS, 0x7a3b4a);
         put(Material.WARPED_PLANKS, 0x288e85);
+        put(Material.CHERRY_PLANKS, 0xE4B4B0);
+        put(Material.BAMBOO_PLANKS, 0xC6B35B);
         put(Material.OAK_LOG, 0x6e5733);
         put(Material.SPRUCE_LOG, 0x3f2e1c);
         put(Material.OAK_DOOR, 0xb08a52);
@@ -69,9 +80,17 @@ final class VoxelColors {
         Integer exact = MAP.get(mat);
         if (exact != null) return exact;
         String n = mat.name();
-        if (n.endsWith("_WOOL") || n.endsWith("_CONCRETE") || n.endsWith("_TERRACOTTA") || n.endsWith("_GLASS")) {
+        if (n.endsWith("_WOOL") || n.endsWith("_CONCRETE") || n.endsWith("_TERRACOTTA")
+                || n.endsWith("_GLASS") || n.endsWith("_GLASS_PANE")) {
+            for (Map.Entry<String, Integer> dye : DYE_COLORS.entrySet()) {
+                if (n.startsWith(dye.getKey() + "_")) return dye.getValue();
+            }
             return 0xb0b0b0;
         }
+        if (n.contains("CHERRY")) return 0xE4B4B0;
+        if (n.contains("QUARTZ") || n.contains("CALCITE")) return 0xE6E2DA;
+        if (n.contains("DEEPSLATE")) return 0x3C3C42;
+        if (n.contains("SEA_LANTERN")) return 0xB7E5D8;
         if (n.contains("LOG") || n.contains("WOOD")) return 0x6e5733;
         if (n.contains("PLANKS")) return 0xb08a52;
         if (n.contains("LEAVES")) return 0x4a7a3a;

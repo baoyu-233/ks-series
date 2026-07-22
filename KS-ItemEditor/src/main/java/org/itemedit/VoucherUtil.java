@@ -21,7 +21,7 @@ public final class VoucherUtil {
     /** 在玩家背包中查找兑换券，返回槽位索引，-1 表示未找到。 */
     public static int findVoucher(Player player, ConfigurationSection config) {
         String mode = config.getString("voucher.mode", "MYTHICMOBS").toUpperCase();
-        int needed = config.getInt("voucher.amount", 1);
+        int needed = voucherAmount(config);
         ItemStack[] contents = player.getInventory().getContents();
 
         for (int i = 0; i < contents.length; i++) {
@@ -41,7 +41,7 @@ public final class VoucherUtil {
     public static boolean consumeVoucher(Player player, ConfigurationSection config) {
         int slot = findVoucher(player, config);
         if (slot < 0) return false;
-        int needed = config.getInt("voucher.amount", 1);
+        int needed = voucherAmount(config);
         ItemStack item = player.getInventory().getItem(slot);
         if (item == null) return false;
         int newAmount = item.getAmount() - needed;
@@ -77,6 +77,10 @@ public final class VoucherUtil {
             return matchesByMaterial(item, config);
         }
         return matchesByMaterial(item, config);
+    }
+
+    private static int voucherAmount(ConfigurationSection config) {
+        return Math.max(1, Math.min(64, config.getInt("voucher.amount", 1)));
     }
 
     private static boolean matchesByMaterial(ItemStack item, ConfigurationSection config) {

@@ -11,7 +11,6 @@ import java.io.IOException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -27,17 +26,21 @@ public final class BankAccessProviderImpl implements BankAccessProvider {
     private static final List<String> ROLES = List.of("DIRECTOR", "MANAGER", "TELLER");
     private static final Set<String> PERMISSIONS = Set.of(
             "MANAGE_MEMBERS", "MANAGE_PERMISSIONS", "VIEW_FINANCE", "SET_RATES",
-            "ISSUE_LOAN", "APPROVE_LOAN");
+            "ISSUE_LOAN", "APPROVE_LOAN", "DECLARE_DIVIDEND");
 
     private final KsEco eco;
+    private final BankManager bankManager;
     private final Gson gson = new Gson();
 
-    public BankAccessProviderImpl(KsEco eco) { this.eco = eco; }
+    public BankAccessProviderImpl(KsEco eco, BankManager bankManager) {
+        this.eco = eco;
+        this.bankManager = bankManager;
+    }
 
     public void init() {
-        try (Connection conn = eco.ksCore().dataStore().getConnection(); Statement stmt = conn.createStatement()) {
-            stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_role_permissions (bank_id TEXT NOT NULL, role TEXT NOT NULL, permission TEXT NOT NULL, PRIMARY KEY(bank_id, role, permission))");
-            stmt.execute("CREATE TABLE IF NOT EXISTS ks_bank_permissions (bank_id TEXT NOT NULL, player_uuid TEXT NOT NULL, permission TEXT NOT NULL, granted_by TEXT, granted_at INTEGER NOT NULL, PRIMARY KEY(bank_id, player_uuid, permission))");
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) throw new java.sql.SQLException("database unavailable");
+            BankSchema.ensureAccessTables(conn);
         } catch (Exception e) {
             eco.getLogger().warning("Bank access schema initialization failed: " + e.getMessage());
         }
@@ -48,6 +51,17 @@ public final class BankAccessProviderImpl implements BankAccessProvider {
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             return conn != null && hasPermission(conn, bankId, playerUuid, permission);
         } catch (Exception ignored) { return false; }
+    }
+
+    @Override
+    public List<SettlementReview> listLoanRepaymentReviews() throws java.sql.SQLException {
+        return bankManager.listLoanRepaymentReviews();
+    }
+
+    @Override
+    public SettlementResolution resolveLoanRepaymentReview(String id, String action)
+            throws java.sql.SQLException {
+        return bankManager.resolveLoanRepaymentReview(id, action);
     }
 
     @Override
@@ -141,10 +155,23 @@ public final class BankAccessProviderImpl implements BankAccessProvider {
                 error(exchange, 403, "Permission grant denied"); return;
             }
             if (enabled) {
-                try (PreparedStatement ps = conn.prepareStatement("INSERT OR REPLACE INTO ks_bank_permissions (bank_id,player_uuid,permission,granted_by,granted_at) VALUES (?,?,?,?,?)")) {
-                    ps.setString(1, bankId); ps.setString(2, targetUuid.toString()); ps.setString(3, permission);
-                    ps.setString(4, session.playerUuid.toString()); ps.setLong(5, System.currentTimeMillis() / 1000); ps.executeUpdate();
-                }
+                long now = System.currentTimeMillis() / 1000;
+                BankSqlMutation.upsert(conn,
+                        "UPDATE ks_bank_permissions SET granted_by=?,granted_at=? "
+                                + "WHERE bank_id=? AND player_uuid=? AND permission=?", update -> {
+                            update.setString(1, session.playerUuid.toString());
+                            update.setLong(2, now);
+                            update.setString(3, bankId);
+                            update.setString(4, targetUuid.toString());
+                            update.setString(5, permission);
+                        }, "INSERT INTO ks_bank_permissions "
+                                + "(bank_id,player_uuid,permission,granted_by,granted_at) VALUES (?,?,?,?,?)", insert -> {
+                            insert.setString(1, bankId);
+                            insert.setString(2, targetUuid.toString());
+                            insert.setString(3, permission);
+                            insert.setString(4, session.playerUuid.toString());
+                            insert.setLong(5, now);
+                        });
             } else {
                 try (PreparedStatement ps = conn.prepareStatement("DELETE FROM ks_bank_permissions WHERE bank_id=? AND player_uuid=? AND permission=?")) {
                     ps.setString(1, bankId); ps.setString(2, targetUuid.toString()); ps.setString(3, permission); ps.executeUpdate();
@@ -186,9 +213,17 @@ public final class BankAccessProviderImpl implements BankAccessProvider {
     }
 
     private void insertTemplatePermissions(Connection conn, String bankId, String role, Set<String> permissions) throws Exception {
-        try (PreparedStatement ps = conn.prepareStatement("INSERT OR IGNORE INTO ks_bank_role_permissions (bank_id,role,permission) VALUES (?,?,?)")) {
-            for (String permission : permissions) { ps.setString(1, bankId); ps.setString(2, role); ps.setString(3, permission); ps.addBatch(); }
-            ps.executeBatch();
+        for (String permission : permissions) {
+            BankSqlMutation.insertIfAbsent(conn,
+                    "SELECT 1 FROM ks_bank_role_permissions WHERE bank_id=? AND role=? AND permission=?", exists -> {
+                        exists.setString(1, bankId);
+                        exists.setString(2, role);
+                        exists.setString(3, permission);
+                    }, "INSERT INTO ks_bank_role_permissions (bank_id,role,permission) VALUES (?,?,?)", insert -> {
+                        insert.setString(1, bankId);
+                        insert.setString(2, role);
+                        insert.setString(3, permission);
+                    });
         }
     }
 

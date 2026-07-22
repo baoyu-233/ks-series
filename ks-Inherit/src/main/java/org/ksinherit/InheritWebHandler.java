@@ -584,7 +584,7 @@ function render(){
    var id='item_'+item.id;
    var badge='badge-'+(item.status||'PENDING').toLowerCase();
 
-   h+='<tr class="detail-row" onclick="toggleDetail(\''+id+'\')">';
+   h+='<tr class="detail-row" onclick="toggleDetail(\\''+id+'\\')">';
    h+='<td><input type="checkbox" '+(selected.has(item.id)?'checked':'')+' onclick="event.stopPropagation();toggleSelect('+item.id+')"></td>';
    h+='<td>'+item.id+'</td>';
    h+='<td><span title="'+he(item.player_uuid||'')+'">'+he(item.player_name||'?')+'</span></td>';
@@ -791,7 +791,7 @@ function render(){
    var badge='badge-'+(item.status||'PENDING').toLowerCase();
    var statusText={PENDING:'待审',APPROVED:'已批准',REJECTED:'已拒绝',DELIVERED:'已发放'}[item.status]||item.status;
    var time=item.submitted_at?new Date(item.submitted_at*1000).toLocaleString('zh-CN'):'-';
-   h+='<tr class="detail-row" onclick="toggleDetail(\''+id+'\')">';
+   h+='<tr class="detail-row" onclick="toggleDetail(\\''+id+'\\')">';
    h+='<td>'+item.id+'</td>';
    h+='<td>'+he(item.display_name_plain||item.item_name||item.item_type||'?')+'</td>';
    h+='<td style="font-size:11px">'+summaryHtml(item)+'</td>';

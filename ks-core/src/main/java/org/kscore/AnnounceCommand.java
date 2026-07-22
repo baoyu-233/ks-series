@@ -8,6 +8,8 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import org.bukkit.plugin.Plugin;
+import org.kscore.scheduler.KsScheduler;
 
 import java.util.List;
 import java.util.Map;
@@ -20,8 +22,10 @@ public final class AnnounceCommand implements CommandExecutor {
 
     private final AnnouncementManager announcementManager;
     private final KsConfig ksConfig;
+    private final Plugin plugin;
 
-    public AnnounceCommand(AnnouncementManager announcementManager, KsConfig ksConfig) {
+    public AnnounceCommand(Plugin plugin, AnnouncementManager announcementManager, KsConfig ksConfig) {
+        this.plugin = plugin;
         this.announcementManager = announcementManager;
         this.ksConfig = ksConfig;
     }
@@ -33,8 +37,14 @@ public final class AnnounceCommand implements CommandExecutor {
             return true;
         }
 
-        List<Map<String, Object>> all = announcementManager.list(null);
+        KsScheduler.runAsync(plugin, () -> {
+            List<Map<String, Object>> all = announcementManager.list(null);
+            KsScheduler.runEntity(plugin, player, () -> render(player, all), () -> { });
+        });
+        return true;
+    }
 
+    private void render(Player player, List<Map<String, Object>> all) {
         Component header = Component.text()
             .append(Component.text("═══════ 📢 城邦公告栏 ═══════", NamedTextColor.AQUA))
             .build();
@@ -82,7 +92,6 @@ public final class AnnounceCommand implements CommandExecutor {
         player.sendMessage(webLink);
         player.sendMessage(Component.text("══════════════════════════════════", NamedTextColor.AQUA));
 
-        return true;
     }
 
     private Component announceLine(Map<String, Object> a, NamedTextColor accentColor) {

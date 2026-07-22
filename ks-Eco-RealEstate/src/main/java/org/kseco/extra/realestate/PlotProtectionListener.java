@@ -40,6 +40,10 @@ public final class PlotProtectionListener implements Listener {
     }
 
     private void deny(Player player, Map<String, Object> plotOrHouse) {
+        if ("cache-unavailable".equals(plotOrHouse.get("ownerId"))) {
+            player.sendMessage("§c地产保护缓存暂时不可用，操作已被拦截。");
+            return;
+        }
         String ownerType = (String) plotOrHouse.get("ownerType");
         String who = RealEstateManager.OWNER_ENTERPRISE.equals(ownerType) ? "某个企业" : "别人";
         player.sendMessage("§c这是" + who + "的私有土地，你没有权限。");
@@ -51,6 +55,13 @@ public final class PlotProtectionListener implements Listener {
      * @return null 表示放行（未落在任何地块/房屋内，或有权限）
      */
     private Map<String, Object> checkAccess(String world, int x, int y, int z, UUID actor, String kind) {
+        if (!mgr.protectionCachesHealthy()) {
+            // Fail closed while any protection cache is stale/unavailable.
+            Map<String, Object> denied = new java.util.LinkedHashMap<>();
+            denied.put("ownerType", RealEstateManager.OWNER_PLAYER);
+            denied.put("ownerId", "cache-unavailable");
+            return denied;
+        }
         Map<String, Object> house = mgr.findHouseAt(world, x, y, z);
         if (house != null) {
             return mgr.canAccessHouse(house, actor, kind) ? null : house;

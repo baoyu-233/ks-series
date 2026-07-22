@@ -12,6 +12,8 @@ qualification checks.
 - Ordinary members may leave with confirmation, managers may remove members, and owners must resolve ownership first.
 - A confirmed single-owner dissolution is blocked by active/overdue loans or pending loan requests.
 - Distribute dividends with normalized fractional or legacy percentage tax rates and write batch, recipient, and tax logs.
+- Recover dividend settlement through `PENDING`, `PAID`, `COMPENSATED`, and `COMPENSATION_REQUIRED` states; uncertain
+  results block additional dividends.
 - Apply administrator-managed enterprise levels to blind-box eligibility and enterprise land bonuses.
 - Publish projects with budget, advance ratio, penalty ratio, deadline, and location.
 - Submit bids when registered capital is at least 75% of the project budget.
@@ -23,7 +25,7 @@ Tables include `ks_ent_enterprises`, `ks_ent_members`, `ks_ent_join_requests`, `
 `ks_ent_dividends`, and `ks_ent_dividend_payouts`. Join, leave, removal, and dissolution paths maintain request and
 member-count state; dividend tax also writes the core tax ledger.
 
-The current version has passed compilation and desktop Web regression checks. Join approval, dividend settlement,
-leave, and dissolution still require in-game acceptance testing after deployment.
+Java 21 test/package passed on 2026-07-18; the module currently has no automated test source. No JAR was deployed, and
+join approval, dividend compensation, leave, and dissolution still require in-game acceptance testing.
 
 Build with `cd ks-Eco-enterprise && mvn clean package`, then place the JAR in `plugins/ks-Eco/extra/`.

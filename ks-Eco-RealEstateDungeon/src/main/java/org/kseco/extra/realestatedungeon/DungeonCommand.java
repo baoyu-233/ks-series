@@ -6,6 +6,7 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.kseco.KsEco;
+import org.kseries.instanceworld.api.InstanceWorldApi;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -30,16 +31,16 @@ public final class DungeonCommand implements CommandExecutor {
 
     private final KsEco eco;
     private final DungeonInstanceManager instanceManager;
-    private final DungeonGridAllocator gridAllocator;
+    private final InstanceWorldApi instanceWorld;
     private final DungeonPartyManager partyManager;
     private final DungeonDeathHandler deathHandler;
 
     public DungeonCommand(KsEco eco, DungeonInstanceManager instanceManager,
-                          DungeonGridAllocator gridAllocator, DungeonPartyManager partyManager,
+                          InstanceWorldApi instanceWorld, DungeonPartyManager partyManager,
                           DungeonDeathHandler deathHandler) {
         this.eco = eco;
         this.instanceManager = instanceManager;
-        this.gridAllocator = gridAllocator;
+        this.instanceWorld = instanceWorld;
         this.partyManager = partyManager;
         this.deathHandler = deathHandler;
     }
@@ -129,9 +130,17 @@ public final class DungeonCommand implements CommandExecutor {
         if (denyMsg != null) { player.sendMessage("§c" + denyMsg); return true; }
 
         player.sendMessage("§6[副本] §7开启中（门票 " + price + "，队伍 " + n + " 人）...");
-        String instanceId = instanceManager.createInstanceForParty(templateId, uuid, player.getName(), online);
-        if (instanceId == null) { player.sendMessage("§c开本失败（余额不足/网格已满/模板异常）"); return true; }
-        if (leader != null) partyManager.disband(leader);
+        UUID partyLeader = leader;
+        instanceManager.createInstanceForPartyAsync(templateId, uuid, player.getName(), online)
+                .whenComplete((instanceId, failure) -> {
+                    Player currentPlayer = Bukkit.getPlayer(uuid);
+                    if (failure != null || instanceId == null) {
+                        if (currentPlayer != null) currentPlayer.sendMessage(
+                                "§c开本失败（余额不足/成员已有副本/模板或数据库异常）");
+                        return;
+                    }
+                    if (partyLeader != null) partyManager.disband(partyLeader);
+                });
         // 世界异步就绪后统一传送全队（见 DungeonInstanceManager.activateAndTeleportAll）
         return true;
     }
@@ -151,15 +160,30 @@ public final class DungeonCommand implements CommandExecutor {
     private boolean cmdRevive(Player player, UUID uuid) {
         String active = instanceManager.getPlayerActiveInstance(uuid);
         if (active == null) { player.sendMessage("§c你不在任何副本中"); return true; }
-        double result = deathHandler.revive(active, uuid);
+        player.sendMessage("§7正在确认付费复活，请勿重复提交……");
+        deathHandler.reviveAsync(active, uuid).whenComplete((result, failure) ->
+                instanceManager.runOnServerThread(() -> sendReviveResult(player, result, failure)));
+        return true;
+    }
+
+    private void sendReviveResult(Player player, Double asyncResult, Throwable failure) {
+        double result = failure == null && asyncResult != null ? asyncResult : DungeonDeathHandler.ERR_PERSIST;
         if (result < 0) {
-            String msg = result == -1 ? "达到复活上限" : result == -2 ? "Vault 不可用" :
-                         result == -3 ? "余额不足" : "扣款失败";
+            String msg = switch ((int) result) {
+                case (int) DungeonDeathHandler.ERR_LIMIT -> "达到复活上限";
+                case (int) DungeonDeathHandler.ERR_VAULT -> "Vault 不可用";
+                case (int) DungeonDeathHandler.ERR_BALANCE -> "余额不足";
+                case (int) DungeonDeathHandler.ERR_WITHDRAW -> "扣款失败";
+                case (int) DungeonDeathHandler.ERR_INSTANCE -> "副本不存在、已结束或不属于你";
+                case (int) DungeonDeathHandler.ERR_NOT_DEAD -> "当前状态不可复活";
+                case (int) DungeonDeathHandler.ERR_PERSIST -> "复活记录失败，已尝试退款";
+                case (int) DungeonDeathHandler.ERR_OFFLINE -> "玩家必须在线才能实际回场";
+                default -> "复活失败";
+            };
             player.sendMessage("§c复活失败: " + msg);
         } else {
             player.sendMessage("§a复活成功，扣费 §e" + result);
         }
-        return true;
     }
 
     private void showPanel(Player player, UUID uuid) {
@@ -183,7 +207,7 @@ public final class DungeonCommand implements CommandExecutor {
         }
         String active = instanceManager.getPlayerActiveInstance(uuid);
         player.sendMessage(active != null ? "§e▸ 当前副本: §f" + active : "§7你当前不在副本内");
-        player.sendMessage("§7剩余网格: §f" + gridAllocator.getFreeCount());
+        player.sendMessage("§7剩余网格: §f" + instanceWorld.freeGridCount());
         player.sendMessage("§7指令: §f/dungeon invite <玩家> | accept | party | start <模板> | leave | revive");
         player.sendMessage("§6§l==============================");
     }

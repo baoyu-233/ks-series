@@ -1,6 +1,8 @@
 package org.kseco.extra.enterprise;
 
 import org.kseco.KsEco;
+import org.kseco.database.BusinessSchemaDialect;
+import org.kseco.database.PortableSqlMutation;
 
 import java.sql.*;
 import java.util.*;
@@ -13,13 +15,20 @@ import java.util.*;
 public final class EnterpriseManager {
 
     private final KsEco eco;
+    private final ServerThreadVaultGateway vault;
 
     public EnterpriseManager(KsEco eco) {
+        this(eco, new ServerThreadVaultGateway(eco));
+    }
+
+    EnterpriseManager(KsEco eco, ServerThreadVaultGateway vault) {
         this.eco = eco;
+        this.vault = vault;
     }
 
     public void init() {
         createTables();
+        recoverInterruptedDividendSettlements();
     }
 
     private void createTables() {
@@ -29,12 +38,12 @@ public final class EnterpriseManager {
                 // 企业表
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS ks_ent_enterprises (
-                        id TEXT PRIMARY KEY,
+                        id VARCHAR(64) PRIMARY KEY,
                         name TEXT NOT NULL,
                         type TEXT NOT NULL DEFAULT 'PRIVATE',
                         owner_uuids TEXT NOT NULL,
-                        registered_capital REAL NOT NULL,
-                        current_assets REAL DEFAULT 0.0,
+                        registered_capital DOUBLE NOT NULL,
+                        current_assets DOUBLE DEFAULT 0.0,
                         employee_count INTEGER DEFAULT 0,
                         region TEXT,
                         status TEXT DEFAULT 'ACTIVE',
@@ -44,19 +53,19 @@ public final class EnterpriseManager {
                 // 企业成员表
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS ks_ent_members (
-                        enterprise_id TEXT NOT NULL,
-                        player_uuid TEXT NOT NULL,
+                        enterprise_id VARCHAR(64) NOT NULL,
+                        player_uuid VARCHAR(64) NOT NULL,
                         role TEXT DEFAULT 'EMPLOYEE',
-                        salary REAL DEFAULT 0.0,
+                        salary DOUBLE DEFAULT 0.0,
                         joined_at INTEGER NOT NULL,
                         PRIMARY KEY (enterprise_id, player_uuid)
                     )
                 """);
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS ks_ent_join_requests (
-                        id TEXT PRIMARY KEY,
-                        enterprise_id TEXT NOT NULL,
-                        applicant_uuid TEXT NOT NULL,
+                        id VARCHAR(64) PRIMARY KEY,
+                        enterprise_id VARCHAR(64) NOT NULL,
+                        applicant_uuid VARCHAR(64) NOT NULL,
                         applicant_name TEXT DEFAULT '',
                         status TEXT NOT NULL DEFAULT 'PENDING',
                         created_at INTEGER NOT NULL,
@@ -65,17 +74,16 @@ public final class EnterpriseManager {
                         UNIQUE (enterprise_id, applicant_uuid)
                     )
                 """);
-                stmt.execute("CREATE INDEX IF NOT EXISTS idx_ent_join_requests_status ON ks_ent_join_requests (enterprise_id, status, created_at)");
                 // 招投标项目表
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS ks_ent_projects (
-                        id TEXT PRIMARY KEY,
+                        id VARCHAR(64) PRIMARY KEY,
                         title TEXT NOT NULL,
                         publisher_uuid TEXT NOT NULL,
                         publisher_type TEXT NOT NULL DEFAULT 'OFFICIAL',
-                        budget REAL NOT NULL,
-                        prepayment_ratio REAL DEFAULT 0.3,
-                        penalty_ratio REAL DEFAULT 0.1,
+                        budget DOUBLE NOT NULL,
+                        prepayment_ratio DOUBLE DEFAULT 0.3,
+                        penalty_ratio DOUBLE DEFAULT 0.1,
                         deadline INTEGER NOT NULL,
                         location TEXT,
                         allow_subcontract INTEGER DEFAULT 1,
@@ -87,10 +95,10 @@ public final class EnterpriseManager {
                 // 投标记录表
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS ks_ent_bids (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL,
-                        enterprise_id TEXT NOT NULL,
-                        bid_amount REAL NOT NULL,
+                        id VARCHAR(64) PRIMARY KEY,
+                        project_id VARCHAR(64) NOT NULL,
+                        enterprise_id VARCHAR(64) NOT NULL,
+                        bid_amount DOUBLE NOT NULL,
                         is_consortium INTEGER DEFAULT 0,
                         consortium_members TEXT,
                         status TEXT DEFAULT 'PENDING',
@@ -100,42 +108,42 @@ public final class EnterpriseManager {
                 """);
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS ks_ent_capital_injections (
-                        id TEXT PRIMARY KEY,
-                        enterprise_id TEXT NOT NULL,
-                        contributor_uuid TEXT NOT NULL,
-                        amount REAL NOT NULL,
+                        id VARCHAR(64) PRIMARY KEY,
+                        enterprise_id VARCHAR(64) NOT NULL,
+                        contributor_uuid VARCHAR(64) NOT NULL,
+                        amount DOUBLE NOT NULL,
                         injected_at INTEGER NOT NULL
                     )
                 """);
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS ks_ent_dividend_shares (
-                        enterprise_id TEXT NOT NULL,
-                        owner_uuid TEXT NOT NULL,
-                        share_percent REAL NOT NULL,
+                        enterprise_id VARCHAR(64) NOT NULL,
+                        owner_uuid VARCHAR(64) NOT NULL,
+                        share_percent DOUBLE NOT NULL,
                         updated_at INTEGER NOT NULL,
                         PRIMARY KEY (enterprise_id, owner_uuid)
                     )
                 """);
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS ks_ent_dividend_payouts (
-                        id TEXT PRIMARY KEY,
-                        dividend_id TEXT NOT NULL,
-                        enterprise_id TEXT NOT NULL,
-                        recipient_uuid TEXT NOT NULL,
-                        share_percent REAL NOT NULL,
-                        gross_amount REAL NOT NULL,
-                        tax_amount REAL NOT NULL,
-                        net_amount REAL NOT NULL,
+                        id VARCHAR(64) PRIMARY KEY,
+                        dividend_id VARCHAR(64) NOT NULL,
+                        enterprise_id VARCHAR(64) NOT NULL,
+                        recipient_uuid VARCHAR(64) NOT NULL,
+                        share_percent DOUBLE NOT NULL,
+                        gross_amount DOUBLE NOT NULL,
+                        tax_amount DOUBLE NOT NULL,
+                        net_amount DOUBLE NOT NULL,
                         paid_at INTEGER NOT NULL
                     )
                 """);
                 // Older installations already have the enterprise table, so this migration must be idempotent.
-                try {
-                    stmt.execute("ALTER TABLE ks_ent_enterprises ADD COLUMN dividend_rate REAL NOT NULL DEFAULT 0");
-                } catch (SQLException ignored) {
-                    // The column already exists.
-                }
             }
+            BusinessSchemaDialect.createIndexIfMissing(conn, "idx_ent_join_requests_status",
+                    "ks_ent_join_requests", "enterprise_id", "status", "created_at");
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_ent_enterprises", "dividend_rate",
+                    "DOUBLE NOT NULL DEFAULT 0");
+            DividendSettlementJournal.createSchema(conn);
         } catch (SQLException e) {
             eco.getLogger().warning("[企业] 创建表失败: " + e.getMessage());
         }
@@ -162,22 +170,22 @@ public final class EnterpriseManager {
         // 国企（STATE/STATE_OWNED）为官方注资，不从玩家扣款。
         boolean deductFromOwners = !"STATE_OWNED".equalsIgnoreCase(type) && !"STATE".equalsIgnoreCase(type);
         if (deductFromOwners) {
-            if (!eco.vaultHook().isAvailable()) {
+            if (!vault.isAvailable()) {
                 eco.getLogger().warning("[企业] Vault 不可用，拒绝注册（注册资本无法扣除）");
                 return null;
             }
             double share = registeredCapital / ownerUuids.size();
             for (UUID uuid : ownerUuids) {
-                if (!eco.vaultHook().has(org.bukkit.Bukkit.getOfflinePlayer(uuid), share)) {
+                if (!vault.has(uuid, share)) {
                     eco.getLogger().info("[企业] 注册被拒：所有者 " + uuid + " 余额不足（需 " + share + "）");
                     return null;
                 }
             }
             for (UUID uuid : ownerUuids) {
-                if (!eco.vaultHook().withdraw(org.bukkit.Bukkit.getOfflinePlayer(uuid), share)) {
+                if (!vault.withdraw(uuid, share)) {
                     for (UUID charged : ownerUuids) {
                         if (charged.equals(uuid)) break;
-                        eco.vaultHook().deposit(org.bukkit.Bukkit.getOfflinePlayer(charged), share);
+                        vault.deposit(charged, share);
                     }
                     return null;
                 }
@@ -188,7 +196,7 @@ public final class EnterpriseManager {
             if (conn == null) {
                 if (deductFromOwners) {
                     double share = registeredCapital / ownerUuids.size();
-                    for (UUID uuid : ownerUuids) eco.vaultHook().deposit(org.bukkit.Bukkit.getOfflinePlayer(uuid), share);
+                    for (UUID uuid : ownerUuids) vault.deposit(uuid, share);
                 }
                 return null;
             }
@@ -208,13 +216,12 @@ public final class EnterpriseManager {
             // 注册资本注入企业公户（与 web 端 handleEnterpriseRegister 保持一致的记账：
             // 公户余额 ↔ current_assets ↔ CORP-BANK total_assets 镜像同步）。
             // 不建公户的话，企业后续一旦发生公户操作会以 0 余额建户，注销按公户派发时注册资本就丢了。
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "INSERT OR IGNORE INTO ks_ent_corporate_accounts (enterprise_id, bank_id, balance, updated_at) " +
-                    "VALUES (?, 'CORP-BANK', ?, ?)")) {
-                ps.setString(1, id);
-                ps.setDouble(2, registeredCapital);
-                ps.setLong(3, now);
-                ps.executeUpdate();
+            try {
+                PortableSqlMutation.insertIfAbsent(conn,
+                        "SELECT 1 FROM ks_ent_corporate_accounts WHERE enterprise_id=?",
+                        ps -> ps.setString(1, id),
+                        "INSERT INTO ks_ent_corporate_accounts (enterprise_id,bank_id,balance,updated_at) VALUES (?,'CORP-BANK',?,?)",
+                        ps -> { ps.setString(1, id); ps.setDouble(2, registeredCapital); ps.setLong(3, now); });
             } catch (SQLException corpEx) {
                 eco.getLogger().warning("[企业] 公户初始化失败（表未就绪？）: " + corpEx.getMessage());
             }
@@ -229,8 +236,7 @@ public final class EnterpriseManager {
             // 回滚注册资本（只有真扣过款才退）
             if (deductFromOwners) {
                 for (UUID uuid : ownerUuids) {
-                    var player = org.bukkit.Bukkit.getOfflinePlayer(uuid);
-                    eco.vaultHook().deposit(player, registeredCapital / ownerUuids.size());
+                    vault.deposit(uuid, registeredCapital / ownerUuids.size());
                 }
             }
             return null;
@@ -294,21 +300,26 @@ public final class EnterpriseManager {
                 if (member.executeQuery().next()) return result(false, "你已经是该企业成员。", null);
             }
             String requestId = UUID.randomUUID().toString();
-            try (PreparedStatement request = conn.prepareStatement("""
-                    INSERT INTO ks_ent_join_requests
-                    (id,enterprise_id,applicant_uuid,applicant_name,status,created_at,reviewed_by,reviewed_at)
-                    VALUES (?,?,?,?,'PENDING',?,NULL,0)
-                    ON CONFLICT(enterprise_id,applicant_uuid) DO UPDATE SET
-                    id=excluded.id, applicant_name=excluded.applicant_name, status='PENDING',
-                    created_at=excluded.created_at, reviewed_by=NULL, reviewed_at=0
-                    WHERE ks_ent_join_requests.status IN ('REJECTED','CANCELLED')
-                    """)) {
+            String normalizedName = applicantName == null ? applicantUuid.toString() : applicantName;
+            int reopened;
+            try (PreparedStatement request = conn.prepareStatement(
+                    "UPDATE ks_ent_join_requests SET id=?,applicant_name=?,status='PENDING',created_at=?,reviewed_by=NULL,reviewed_at=0 " +
+                            "WHERE enterprise_id=? AND applicant_uuid=? AND status IN ('REJECTED','CANCELLED')")) {
                 request.setString(1, requestId);
-                request.setString(2, enterpriseId);
-                request.setString(3, applicantUuid.toString());
-                request.setString(4, applicantName == null ? applicantUuid.toString() : applicantName);
-                request.setLong(5, now);
-                if (request.executeUpdate() == 0) return result(false, "你已有一条待审批申请。", null);
+                request.setString(2, normalizedName);
+                request.setLong(3, now);
+                request.setString(4, enterpriseId);
+                request.setString(5, applicantUuid.toString());
+                reopened = request.executeUpdate();
+            }
+            if (reopened == 0) {
+                boolean inserted = PortableSqlMutation.insertIfAbsent(conn,
+                        "SELECT 1 FROM ks_ent_join_requests WHERE enterprise_id=? AND applicant_uuid=?",
+                        ps -> { ps.setString(1, enterpriseId); ps.setString(2, applicantUuid.toString()); },
+                        "INSERT INTO ks_ent_join_requests (id,enterprise_id,applicant_uuid,applicant_name,status,created_at,reviewed_by,reviewed_at) VALUES (?,?,?,?,'PENDING',?,NULL,0)",
+                        ps -> { ps.setString(1, requestId); ps.setString(2, enterpriseId);
+                            ps.setString(3, applicantUuid.toString()); ps.setString(4, normalizedName); ps.setLong(5, now); });
+                if (!inserted) return result(false, "你已有一条待审批申请。", null);
             }
             return result(true, "加入申请已提交，等待企业管理者审批。", Map.of("requestId", requestId));
         } catch (SQLException e) {
@@ -345,7 +356,7 @@ public final class EnterpriseManager {
                 if (approve) {
                     int maxMembers = 50;
                     try (PreparedStatement setting = conn.prepareStatement(
-                            "SELECT value FROM ks_eco_settings WHERE key='enterprise_max_members'")) {
+                            "SELECT config_value FROM ks_eco_settings WHERE config_key='enterprise_max_members'")) {
                         try (ResultSet rs = setting.executeQuery()) {
                             if (rs.next()) maxMembers = Math.max(1, Integer.parseInt(rs.getString(1)));
                         } catch (NumberFormatException ignored) {}
@@ -357,14 +368,14 @@ public final class EnterpriseManager {
                             if (rs.next() && rs.getInt(1) >= maxMembers) throw new IllegalStateException("企业成员已达到上限。");
                         }
                     }
-                    try (PreparedStatement member = conn.prepareStatement(
-                            "INSERT INTO ks_ent_members (enterprise_id,player_uuid,player_name,role,joined_at) VALUES (?,?,?,'EMPLOYEE',?) ON CONFLICT(enterprise_id,player_uuid) DO NOTHING")) {
-                        member.setString(1, enterpriseId);
-                        member.setString(2, applicantUuid);
-                        member.setString(3, applicantName);
-                        member.setLong(4, System.currentTimeMillis() / 1000);
-                        if (member.executeUpdate() != 1) throw new IllegalStateException("申请人已经是企业成员。");
-                    }
+                    long joinedAt = System.currentTimeMillis() / 1000;
+                    boolean inserted = PortableSqlMutation.insertIfAbsent(conn,
+                            "SELECT 1 FROM ks_ent_members WHERE enterprise_id=? AND player_uuid=?",
+                            ps -> { ps.setString(1, enterpriseId); ps.setString(2, applicantUuid); },
+                            "INSERT INTO ks_ent_members (enterprise_id,player_uuid,player_name,role,joined_at) VALUES (?,?,?,'EMPLOYEE',?)",
+                            ps -> { ps.setString(1, enterpriseId); ps.setString(2, applicantUuid);
+                                ps.setString(3, applicantName); ps.setLong(4, joinedAt); });
+                    if (!inserted) throw new IllegalStateException("申请人已经是企业成员。");
                 }
                 try (PreparedStatement request = conn.prepareStatement(
                         "UPDATE ks_ent_join_requests SET status=?,reviewed_by=?,reviewed_at=? WHERE id=? AND enterprise_id=? AND status='PENDING'")) {
@@ -506,8 +517,7 @@ public final class EnterpriseManager {
         if (payout > 0) {
             double share = payout / ent.ownerUuids().size();
             for (UUID uuid : ent.ownerUuids()) {
-                var player = org.bukkit.Bukkit.getOfflinePlayer(uuid);
-                eco.vaultHook().deposit(player, share);
+                vault.deposit(uuid, share);
             }
         }
         return true;
@@ -518,15 +528,14 @@ public final class EnterpriseManager {
      */
     public Map<String, Object> injectCapital(String enterpriseId, UUID contributorUuid, double amount) {
         if (!isValidAmount(amount)) return result(false, "注资金额必须大于 0。", null);
-        if (!eco.vaultHook().isAvailable()) return result(false, "Vault 经济未连接。", null);
+        if (!vault.isAvailable()) return result(false, "Vault 经济未连接。", null);
 
-        var contributor = org.bukkit.Bukkit.getOfflinePlayer(contributorUuid);
-        if (!eco.vaultHook().has(contributor, amount)) return result(false, "余额不足。", null);
-        if (!eco.vaultHook().withdraw(contributor, amount)) return result(false, "扣款失败。", null);
+        if (!vault.has(contributorUuid, amount)) return result(false, "余额不足。", null);
+        if (!vault.withdraw(contributorUuid, amount)) return result(false, "扣款失败。", null);
 
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) {
-                eco.vaultHook().deposit(contributor, amount);
+                vault.deposit(contributorUuid, amount);
                 return result(false, "数据库未连接，已退还资金。", null);
             }
             conn.setAutoCommit(false);
@@ -544,12 +553,11 @@ public final class EnterpriseManager {
                 }
 
                 long now = System.currentTimeMillis() / 1000;
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT OR IGNORE INTO ks_ent_corporate_accounts (enterprise_id, bank_id, balance, updated_at) VALUES (?, 'CORP-BANK', 0, ?)")) {
-                    ps.setString(1, enterpriseId);
-                    ps.setLong(2, now);
-                    ps.executeUpdate();
-                }
+                PortableSqlMutation.insertIfAbsent(conn,
+                        "SELECT 1 FROM ks_ent_corporate_accounts WHERE enterprise_id=?",
+                        ps -> ps.setString(1, enterpriseId),
+                        "INSERT INTO ks_ent_corporate_accounts (enterprise_id,bank_id,balance,updated_at) VALUES (?,'CORP-BANK',0,?)",
+                        ps -> { ps.setString(1, enterpriseId); ps.setLong(2, now); });
                 try (PreparedStatement ps = conn.prepareStatement(
                         "UPDATE ks_ent_enterprises SET registered_capital=registered_capital+?, current_assets=current_assets+? WHERE id=? AND status='ACTIVE'")) {
                     ps.setDouble(1, amount);
@@ -578,13 +586,13 @@ public final class EnterpriseManager {
                 return result(true, "已向企业公户注资 " + formatAmount(amount) + "。", Map.of("amount", amount));
             } catch (Exception e) {
                 conn.rollback();
-                eco.vaultHook().deposit(contributor, amount);
+                vault.deposit(contributorUuid, amount);
                 return result(false, messageOf(e, "注资失败，已退还资金。"), null);
             } finally {
                 try { conn.setAutoCommit(true); } catch (SQLException ignored) {}
             }
         } catch (SQLException e) {
-            eco.vaultHook().deposit(contributor, amount);
+            vault.deposit(contributorUuid, amount);
             return result(false, "注资失败，已退还资金。", null);
         }
     }
@@ -616,9 +624,13 @@ public final class EnterpriseManager {
                     debit.setDouble(1, salary); debit.setLong(2, now); debit.setString(3, enterpriseId); debit.setDouble(4, salary);
                     if (debit.executeUpdate() != 1) throw new SQLException("公户余额已变化");
                 }
-                try (PreparedStatement credit = conn.prepareStatement("INSERT OR IGNORE INTO ks_bank_accounts (id,bank_id,player_uuid,balance,interest_earned,opened_at) VALUES (?,?,?,?,0,?)")) {
-                    credit.setString(1, bankId + ":" + employeeUuid); credit.setString(2, bankId); credit.setString(3, employeeUuid.toString()); credit.setDouble(4, 0); credit.setLong(5, now); credit.executeUpdate();
-                }
+                String accountId = bankId + ":" + employeeUuid;
+                PortableSqlMutation.insertIfAbsent(conn,
+                        "SELECT 1 FROM ks_bank_accounts WHERE id=?",
+                        ps -> ps.setString(1, accountId),
+                        "INSERT INTO ks_bank_accounts (id,bank_id,player_uuid,balance,interest_earned,opened_at) VALUES (?,?,?,?,0,?)",
+                        ps -> { ps.setString(1, accountId); ps.setString(2, bankId);
+                            ps.setString(3, employeeUuid.toString()); ps.setDouble(4, 0); ps.setLong(5, now); });
                 try (PreparedStatement credit = conn.prepareStatement("UPDATE ks_bank_accounts SET balance=balance+? WHERE id=? AND bank_id=?")) {
                     credit.setDouble(1, salary); credit.setString(2, bankId + ":" + employeeUuid); credit.setString(3, bankId);
                     if (credit.executeUpdate() != 1) throw new SQLException("员工银行账户入账失败");
@@ -719,7 +731,7 @@ public final class EnterpriseManager {
 
     /** 按企业设定的发放比例及所有者分配比例从企业公户发放一次分红。 */
     public Map<String, Object> distributeDividend(String enterpriseId, UUID ownerUuid) {
-        if (!eco.vaultHook().isAvailable()) return result(false, "Vault 经济未连接。", null);
+        if (!vault.isAvailable()) return result(false, "Vault 经济未连接。", null);
         List<UUID> owners;
         Map<UUID, Double> ownerShares;
         double grossAmount;
@@ -727,6 +739,7 @@ public final class EnterpriseManager {
         double taxPaid;
         double netAmount;
         Map<UUID, double[]> payoutSnapshot = new LinkedHashMap<>();
+        String dividendId = UUID.randomUUID().toString().substring(0, 8);
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return result(false, "数据库未连接。", null);
             conn.setAutoCommit(false);
@@ -744,6 +757,9 @@ public final class EnterpriseManager {
                     balance = rs.getDouble("balance");
                 }
                 if (!hasEnterprisePermission(enterpriseId, ownerUuid, "DECLARE_DIVIDEND")) throw new IllegalArgumentException("需要企业分红声明权限。");
+                if (DividendSettlementJournal.hasUnresolved(conn, enterpriseId)) {
+                    throw new IllegalStateException("该企业存在待处理的 Vault 分红结算，请先由管理员核对。");
+                }
                 owners = parseOwners(ownerUuids);
                 if (owners.isEmpty()) throw new IllegalArgumentException("企业没有有效的所有者记录。");
                 ownerShares = loadDividendShares(conn, enterpriseId, owners);
@@ -769,9 +785,8 @@ public final class EnterpriseManager {
                 taxPaid = grossAmount * taxRate;
                 netAmount = grossAmount - taxPaid;
                 long now = System.currentTimeMillis() / 1000;
-                String dividendId = UUID.randomUUID().toString().substring(0, 8);
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT INTO ks_ent_dividends (id, enterprise_id, amount, declared_at, tax_rate, tax_paid, status) VALUES (?,?,?,?,?,?, 'PAID')")) {
+                        "INSERT INTO ks_ent_dividends (id, enterprise_id, amount, declared_at, tax_rate, tax_paid, status) VALUES (?,?,?,?,?,?, 'SETTLING')")) {
                     ps.setString(1, dividendId);
                     ps.setString(2, enterpriseId);
                     ps.setDouble(3, grossAmount);
@@ -781,7 +796,7 @@ public final class EnterpriseManager {
                     ps.executeUpdate();
                 }
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT INTO ks_ent_dividend_payouts (id,dividend_id,enterprise_id,recipient_uuid,share_percent,gross_amount,tax_amount,net_amount,paid_at) VALUES (?,?,?,?,?,?,?,?,?)")) {
+                        "INSERT INTO ks_ent_dividend_payouts (id,dividend_id,enterprise_id,recipient_uuid,share_percent,gross_amount,tax_amount,net_amount,paid_at,settlement_status) VALUES (?,?,?,?,?,?,?,?,?,'PENDING')")) {
                     double remainingGross = grossAmount;
                     double remainingNet = netAmount;
                     for (int i = 0; i < owners.size(); i++) {
@@ -791,13 +806,16 @@ public final class EnterpriseManager {
                         double net = i == owners.size() - 1 ? remainingNet : netAmount * share / 100.0;
                         remainingGross -= gross; remainingNet -= net;
                         payoutSnapshot.put(owner, new double[]{gross, gross - net, net, share});
-                        ps.setString(1, UUID.randomUUID().toString()); ps.setString(2, dividendId); ps.setString(3, enterpriseId);
+                        String settlementId = UUID.randomUUID().toString();
+                        ps.setString(1, settlementId); ps.setString(2, dividendId); ps.setString(3, enterpriseId);
                         ps.setString(4, owner.toString()); ps.setDouble(5, share); ps.setDouble(6, gross);
                         ps.setDouble(7, gross - net); ps.setDouble(8, net); ps.setLong(9, now); ps.addBatch();
+                        DividendSettlementJournal.insertPending(conn, new DividendSettlementJournal.Settlement(
+                                settlementId, dividendId, enterpriseId, owner, share, gross, gross - net, net, now));
                     }
                     ps.executeBatch();
                 }
-                insertDividendTaxRecord(conn, enterpriseId, grossAmount, taxRate, taxPaid, now);
+                stampDividendOwnership(conn, dividendId);
                 conn.commit();
             } catch (Exception e) {
                 conn.rollback();
@@ -809,14 +827,10 @@ public final class EnterpriseManager {
             return result(false, "分红失败。", null);
         }
 
-        Map<String, Object> paidShares = new LinkedHashMap<>();
-        for (UUID owner : owners) {
-            double payout = payoutSnapshot.get(owner)[2];
-            eco.vaultHook().deposit(org.bukkit.Bukkit.getOfflinePlayer(owner), payout);
-            paidShares.put(owner.toString(), payout);
-        }
-        return result(true, "已按设定比例发放分红。", Map.of(
-                "amount", grossAmount, "taxPaid", taxPaid, "netAmount", netAmount, "payouts", paidShares));
+        Map<UUID, Double> netPayouts = new LinkedHashMap<>();
+        payoutSnapshot.forEach((uuid, payout) -> netPayouts.put(uuid, payout[2]));
+        return finalizeDividendSettlement(enterpriseId, dividendId, grossAmount, taxRate, payoutSnapshot,
+                vault.depositAll(netPayouts), false);
     }
 
     /**
@@ -825,13 +839,14 @@ public final class EnterpriseManager {
     public Map<String, Object> distributeCustomDividend(String enterpriseId, UUID ownerUuid, double grossAmount,
                                                          Map<String, Object> requestedShares) {
         if (!isValidAmount(grossAmount)) return result(false, "分红总额必须大于 0。", null);
-        if (!eco.vaultHook().isAvailable()) return result(false, "Vault 经济未连接。", null);
+        if (!vault.isAvailable()) return result(false, "Vault 经济未连接。", null);
         List<UUID> recipients;
         Map<UUID, Double> shares;
         double taxRate = 0.10;
         double taxPaid;
         double netAmount;
         Map<UUID, double[]> payoutSnapshot = new LinkedHashMap<>();
+        String dividendId = UUID.randomUUID().toString().substring(0, 8);
 
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return result(false, "数据库未连接。", null);
@@ -848,6 +863,9 @@ public final class EnterpriseManager {
                     balance = rs.getDouble("balance");
                 }
                 if (!hasEnterprisePermission(enterpriseId, ownerUuid, "DECLARE_DIVIDEND")) throw new IllegalArgumentException("需要企业分红声明权限。");
+                if (DividendSettlementJournal.hasUnresolved(conn, enterpriseId)) {
+                    throw new IllegalStateException("该企业存在待处理的 Vault 分红结算，请先由管理员核对。");
+                }
                 if (grossAmount > balance) throw new IllegalArgumentException("企业公户余额不足。");
 
                 Set<UUID> eligible = new LinkedHashSet<>(parseOwners(ownerUuids));
@@ -881,14 +899,13 @@ public final class EnterpriseManager {
                 taxRate = readDividendTaxRate(conn);
                 taxPaid = grossAmount * taxRate;
                 netAmount = grossAmount - taxPaid;
-                String dividendId = UUID.randomUUID().toString().substring(0, 8);
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT INTO ks_ent_dividends (id, enterprise_id, amount, declared_at, tax_rate, tax_paid, status) VALUES (?,?,?,?,?,?, 'PAID')")) {
+                        "INSERT INTO ks_ent_dividends (id, enterprise_id, amount, declared_at, tax_rate, tax_paid, status) VALUES (?,?,?,?,?,?, 'SETTLING')")) {
                     ps.setString(1, dividendId); ps.setString(2, enterpriseId);
                     ps.setDouble(3, grossAmount); ps.setLong(4, now); ps.setDouble(5, taxRate); ps.setDouble(6, taxPaid); ps.executeUpdate();
                 }
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT INTO ks_ent_dividend_payouts (id,dividend_id,enterprise_id,recipient_uuid,share_percent,gross_amount,tax_amount,net_amount,paid_at) VALUES (?,?,?,?,?,?,?,?,?)")) {
+                        "INSERT INTO ks_ent_dividend_payouts (id,dividend_id,enterprise_id,recipient_uuid,share_percent,gross_amount,tax_amount,net_amount,paid_at,settlement_status) VALUES (?,?,?,?,?,?,?,?,?,'PENDING')")) {
                     double remainingGross = grossAmount;
                     double remainingNet = netAmount;
                     for (int i = 0; i < recipients.size(); i++) {
@@ -898,13 +915,16 @@ public final class EnterpriseManager {
                         double net = i == recipients.size() - 1 ? remainingNet : netAmount * share / 100.0;
                         remainingGross -= gross; remainingNet -= net;
                         payoutSnapshot.put(recipient, new double[]{gross, gross - net, net, share});
-                        ps.setString(1, UUID.randomUUID().toString()); ps.setString(2, dividendId); ps.setString(3, enterpriseId);
+                        String settlementId = UUID.randomUUID().toString();
+                        ps.setString(1, settlementId); ps.setString(2, dividendId); ps.setString(3, enterpriseId);
                         ps.setString(4, recipient.toString()); ps.setDouble(5, share); ps.setDouble(6, gross);
                         ps.setDouble(7, gross - net); ps.setDouble(8, net); ps.setLong(9, now); ps.addBatch();
+                        DividendSettlementJournal.insertPending(conn, new DividendSettlementJournal.Settlement(
+                                settlementId, dividendId, enterpriseId, recipient, share, gross, gross - net, net, now));
                     }
                     ps.executeBatch();
                 }
-                insertDividendTaxRecord(conn, enterpriseId, grossAmount, taxRate, taxPaid, now);
+                stampDividendOwnership(conn, dividendId);
                 conn.commit();
             } catch (Exception e) {
                 conn.rollback();
@@ -916,13 +936,162 @@ public final class EnterpriseManager {
             return result(false, "分红失败。", null);
         }
 
-        Map<String, Object> payouts = new LinkedHashMap<>();
-        for (UUID recipient : recipients) {
-            double payout = payoutSnapshot.get(recipient)[2];
-            eco.vaultHook().deposit(org.bukkit.Bukkit.getOfflinePlayer(recipient), payout);
-            payouts.put(recipient.toString(), payout);
+        Map<UUID, Double> netPayouts = new LinkedHashMap<>();
+        payoutSnapshot.forEach((uuid, payout) -> netPayouts.put(uuid, payout[2]));
+        return finalizeDividendSettlement(enterpriseId, dividendId, grossAmount, taxRate, payoutSnapshot,
+                vault.depositAll(netPayouts), true);
+    }
+
+    private Map<String, Object> finalizeDividendSettlement(
+            String enterpriseId, String dividendId, double requestedGross, double taxRate,
+            Map<UUID, double[]> payouts, ServerThreadVaultGateway.BatchDepositResult deposits, boolean custom) {
+        long now = System.currentTimeMillis() / 1000;
+        double paidGross = 0.0;
+        double paidTax = 0.0;
+        double paidNet = 0.0;
+        double refundGross = 0.0;
+        Map<String, Object> paid = new LinkedHashMap<>();
+        List<String> compensated = new ArrayList<>();
+        List<String> review = new ArrayList<>();
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) throw new SQLException("Settlement database unavailable");
+            conn.setAutoCommit(false);
+            try {
+                for (Map.Entry<UUID, double[]> entry : payouts.entrySet()) {
+                    UUID recipient = entry.getKey();
+                    double[] payout = entry.getValue();
+                    ServerThreadVaultGateway.DepositStatus status = deposits.outcomes().getOrDefault(
+                            recipient, ServerThreadVaultGateway.DepositStatus.UNKNOWN);
+                    if (status == ServerThreadVaultGateway.DepositStatus.PAID) {
+                        DividendSettlementJournal.markPaid(conn, dividendId, recipient, now);
+                        updatePayoutSettlementStatus(conn, dividendId, recipient, DividendSettlementJournal.PAID);
+                        paidGross += payout[0]; paidTax += payout[1]; paidNet += payout[2];
+                        paid.put(recipient.toString(), payout[2]);
+                    } else if (status == ServerThreadVaultGateway.DepositStatus.REJECTED) {
+                        DividendSettlementJournal.markCompensated(conn, dividendId, recipient,
+                                "Vault rejected deposit; gross restored to enterprise", now);
+                        deleteDividendPayout(conn, dividendId, recipient);
+                        refundGross += payout[0];
+                        compensated.add(recipient.toString());
+                    } else {
+                        DividendSettlementJournal.markReviewRequired(conn, dividendId, recipient,
+                                deposits.error() == null ? "Vault deposit outcome unknown" : deposits.error(), now);
+                        updatePayoutSettlementStatus(conn, dividendId, recipient,
+                                DividendSettlementJournal.COMPENSATION_REQUIRED);
+                        review.add(recipient.toString());
+                    }
+                }
+                if (refundGross > 0) {
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "UPDATE ks_ent_corporate_accounts SET balance=balance+?,updated_at=? WHERE enterprise_id=?")) {
+                        ps.setDouble(1, refundGross); ps.setLong(2, now); ps.setString(3, enterpriseId);
+                        if (ps.executeUpdate() != 1) throw new SQLException("Corporate compensation failed");
+                    }
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "UPDATE ks_ent_enterprises SET current_assets=current_assets+? WHERE id=?")) {
+                        ps.setDouble(1, refundGross); ps.setString(2, enterpriseId);
+                        if (ps.executeUpdate() != 1) throw new SQLException("Asset compensation failed");
+                    }
+                    adjustCorporateBankAssets(conn, enterpriseId, refundGross);
+                }
+                if (paidGross > 0) insertDividendTaxRecord(conn, enterpriseId, paidGross, taxRate, paidTax, now);
+                String status = !review.isEmpty() ? DividendSettlementJournal.COMPENSATION_REQUIRED
+                        : paid.isEmpty() ? "FAILED" : compensated.isEmpty() ? DividendSettlementJournal.PAID : "PARTIAL";
+                double recordedGross = review.isEmpty() ? paidGross : requestedGross;
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "UPDATE ks_ent_dividends SET amount=?,tax_paid=?,status=? WHERE id=?")) {
+                    ps.setDouble(1, recordedGross); ps.setDouble(2, paidTax); ps.setString(3, status); ps.setString(4, dividendId);
+                    if (ps.executeUpdate() != 1) throw new SQLException("Dividend finalization failed");
+                }
+                conn.commit();
+                Map<String, Object> extras = new LinkedHashMap<>();
+                extras.put("dividendId", dividendId); extras.put("status", status);
+                extras.put("requestedAmount", requestedGross); extras.put("amount", paidGross);
+                extras.put("taxPaid", paidTax); extras.put("netAmount", paidNet); extras.put("payouts", paid);
+                extras.put("compensatedRecipients", compensated); extras.put("reviewRequiredRecipients", review);
+                boolean success = compensated.isEmpty() && review.isEmpty();
+                String message = success ? (custom ? "精确分红已发放。" : "已按设定比例发放分红。")
+                        : !review.isEmpty() ? "Vault 入账结果不确定，已标记人工核对并暂停后续分红。"
+                        : "Vault 拒绝的入账已退回企业公户。";
+                return result(success, message, extras);
+            } catch (Exception e) {
+                conn.rollback();
+                markDividendForReview(dividendId, "Settlement finalization failed: " + messageOf(e, "unknown"));
+                return settlementReviewResult(dividendId, requestedGross);
+            } finally {
+                try { conn.setAutoCommit(true); } catch (SQLException ignored) {}
+            }
+        } catch (SQLException e) {
+            markDividendForReview(dividendId, "Settlement database unavailable: " + e.getMessage());
+            return settlementReviewResult(dividendId, requestedGross);
         }
-        return result(true, "精确分红已发放。", Map.of("amount", grossAmount, "taxPaid", taxPaid, "netAmount", netAmount, "payouts", payouts));
+    }
+
+    private void updatePayoutSettlementStatus(Connection conn, String dividendId, UUID recipient, String status)
+            throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE ks_ent_dividend_payouts SET settlement_status=? WHERE dividend_id=? AND recipient_uuid=?")) {
+            ps.setString(1, status); ps.setString(2, dividendId); ps.setString(3, recipient.toString());
+            if (ps.executeUpdate() != 1) throw new SQLException("Payout settlement state changed");
+        }
+    }
+
+    private void deleteDividendPayout(Connection conn, String dividendId, UUID recipient) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "DELETE FROM ks_ent_dividend_payouts WHERE dividend_id=? AND recipient_uuid=?")) {
+            ps.setString(1, dividendId); ps.setString(2, recipient.toString());
+            if (ps.executeUpdate() != 1) throw new SQLException("Payout compensation state changed");
+        }
+    }
+
+    private void recoverInterruptedDividendSettlements() {
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return;
+            String serverId = null;
+            String instanceId = null;
+            if (eco.ecoDatabase() != null && eco.ecoDatabase().initialized()) {
+                serverId = eco.ecoDatabase().serverId();
+                instanceId = eco.ecoDatabase().instanceId();
+            }
+            List<String> interrupted = DividendSettlementJournal.markInterruptedForReview(
+                    conn, System.currentTimeMillis() / 1000, serverId, instanceId);
+            if (!interrupted.isEmpty()) {
+                eco.getLogger().severe("[Enterprise] Dividend settlements require review after restart: "
+                        + String.join(",", interrupted));
+            }
+        } catch (SQLException e) {
+            eco.getLogger().warning("[Enterprise] Failed to recover dividend settlements: " + e.getMessage());
+        }
+    }
+
+    private void stampDividendOwnership(Connection conn, String dividendId) throws SQLException {
+        if (eco.ecoDatabase() == null || !eco.ecoDatabase().initialized()) return;
+        DividendSettlementJournal.stampOwnership(conn, dividendId,
+                eco.ecoDatabase().serverId(), eco.ecoDatabase().instanceId());
+    }
+
+    private void markDividendForReview(String dividendId, String reason) {
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return;
+            long now = System.currentTimeMillis() / 1000;
+            DividendSettlementJournal.markReviewRequired(conn, dividendId, reason, now);
+            try (PreparedStatement payout = conn.prepareStatement(
+                    "UPDATE ks_ent_dividend_payouts SET settlement_status='COMPENSATION_REQUIRED' WHERE dividend_id=? AND settlement_status='PENDING'")) {
+                payout.setString(1, dividendId); payout.executeUpdate();
+            }
+            try (PreparedStatement header = conn.prepareStatement(
+                    "UPDATE ks_ent_dividends SET status='COMPENSATION_REQUIRED' WHERE id=?")) {
+                header.setString(1, dividendId); header.executeUpdate();
+            }
+        } catch (SQLException e) {
+            eco.getLogger().severe("[Enterprise] Unable to persist settlement review state for " + dividendId
+                    + ": " + e.getMessage());
+        }
+    }
+
+    private static Map<String, Object> settlementReviewResult(String dividendId, double amount) {
+        return result(false, "分红结算需要管理员人工核对。", Map.of(
+                "dividendId", dividendId, "requestedAmount", amount, "status", DividendSettlementJournal.COMPENSATION_REQUIRED));
     }
 
     /** Mirrors enterprise cash movement into the bank currently hosting the corporate account. */
@@ -946,7 +1115,7 @@ public final class EnterpriseManager {
     private double readDividendTaxRate(Connection conn) {
         double rate = eco.getCategoryTaxRate("DIVIDEND_TAX", 0.10);
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT rate FROM ks_tax_rates WHERE category='DIVIDEND_TAX' AND (industry IS NULL OR industry='') ORDER BY updated_at DESC LIMIT 1")) {
+                "SELECT rate FROM ks_tax_rates WHERE category='DIVIDEND_TAX' ORDER BY updated_at DESC LIMIT 1")) {
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) rate = rs.getDouble(1);
             }
@@ -1004,11 +1173,14 @@ public final class EnterpriseManager {
     }
 
     private static boolean tableExists(Connection conn, String table) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")) {
-            ps.setString(1, table);
-            return ps.executeQuery().next();
+        var metadata = conn.getMetaData();
+        for (String candidate : List.of(table, table.toUpperCase(Locale.ROOT),
+                table.toLowerCase(Locale.ROOT))) {
+            try (ResultSet rows = metadata.getTables(conn.getCatalog(), null, candidate, new String[]{"TABLE"})) {
+                if (rows.next()) return true;
+            }
         }
+        return false;
     }
 
     private static boolean isValidAmount(double amount) {

@@ -58,14 +58,33 @@ sub-plugins:
 # database — 数据存储配置
 # ------------------------------------------------------------------
 database:
-  # 数据库类型: sqlite | mysql（MySQL 为跨服预留）
+  # sqlite | mysql | mariadb | postgresql | auto
+  # SQLite remains the zero-configuration, single-server default.
   type: sqlite
+
+  # Optional explicit JDBC settings. With type: auto, the URL selects the dialect.
+  # PostgreSQL requires an explicit jdbc-url. MySQL/MariaDB can also use the
+  # legacy mysql block below when jdbc-url is empty.
+  jdbc-url: ""
+  driver-class-name: ""
+  username: ""
+  # 凭据优先级：password > password-env > password-file > 旧 mysql.password。
+  # password-env/password-file 适合公开仓库和多端部署；修改后需重启服务端。
+  password: ""
+  password-env: ""
+  # 相对路径以 plugins/ks-core/ 为根，也可填写绝对路径。
+  password-file: ""
+
+  # Remote database failures are fatal by default. Enabling this keeps a node
+  # online with local SQLite, but that node no longer shares cross-server data.
+  fallback-to-sqlite: false
 
   sqlite:
     # SQLite 数据库文件路径（相对于 plugins/ks-core/）
     file: "data.db"
+    busy-timeout-ms: 5000
 
-  # MySQL 预留配置
+  # Backward-compatible URL builder for MySQL and MariaDB.
   mysql:
     host: "localhost"
     port: 3306
@@ -74,3 +93,12 @@ database:
     password: ""
     use-ssl: false
     pool-size: 5
+
+  pool:
+    maximum-pool-size: 5
+    minimum-idle: 1
+    connection-timeout-ms: 10000
+    validation-timeout-ms: 5000
+    idle-timeout-ms: 600000
+    max-lifetime-ms: 1800000
+    leak-detection-threshold-ms: 0

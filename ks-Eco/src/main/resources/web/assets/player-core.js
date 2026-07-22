@@ -44,6 +44,17 @@ function ksPreviewApi(path){
   if(path==='/api/bank/guidance')return {available:true,starterAmount:20000,interestRate:.005,termDays:30,totalCap:2000000,claimedTotal:400000,dailyCap:100000,claimedToday:20000,assets:96000000,reserve:12000000,eligible:true};
   if(path==='/api/bank/collateral-auctions')return {auctions:[]};
   if(path==='/api/bank/list')return {banks:[{id:'B-AURORA',name:'曙光发展银行',type:'COMMERCIAL',total_assets:330182382,loan_rate:.02,interest_rate:.012,status:'ACTIVE'},{id:'B-NOVA',name:'新星储备银行',type:'COMMERCIAL',total_assets:210093000,loan_rate:.026,interest_rate:.015,status:'ACTIVE'}]};
+  if(path==='/api/bank/gameplay/dashboard')return {available:true,demandDeposits:608500,termDeposits:50000,totalDeposits:658500,loanOutstanding:84200,netBankPosition:574300,nextPayment:18000,credit:{score:742,tier:'B',tierLabel:'B级',factors:[{label:'按期结清记录',points:35},{label:'当前在贷笔数',points:-8}],nextSteps:['继续按期还款']},termDepositsList:[{id:'TD-DEMO',bank_id:'B-AURORA',bank_name:'曙光发展银行',product_code:'TERM_30',product_name:'三十日定期',principal:50000,fixed_rate:.012,matures_at:1787000000,status:'ACTIVE'}]};
+  if(path.indexOf('/api/bank/deposit-products')===0)return {products:[{product_code:'TERM_7',name:'七日稳盈',term_days:7,fixed_rate:.004,min_amount:100},{product_code:'TERM_30',name:'三十日定期',term_days:30,fixed_rate:.012,min_amount:500},{product_code:'TERM_90',name:'九十日增益',term_days:90,fixed_rate:.025,min_amount:1000}]};
+  if(path==='/api/bank/loan/products')return {products:[{code:'CONSUMER',name:'消费信用贷',minAmount:100,maxAmount:20000,minTermDays:1,maxTermDays:30},{code:'HOME',name:'住房抵押贷',minAmount:5000,maxAmount:50000,minTermDays:30,maxTermDays:90},{code:'BUSINESS',name:'经营周转贷',minAmount:1000,maxAmount:50000,minTermDays:7,maxTermDays:90},{code:'PROJECT',name:'项目履约贷',minAmount:1000,maxAmount:50000,minTermDays:7,maxTermDays:90}]};
+  if(path.indexOf('/api/bank/loan/collateral')===0)return {assets:[{assetType:'HOUSE',assetRef:'H-DEMO',appraisedValue:80000,loanToValue:.75,maxLoan:60000}]};
+  if(path==='/api/bank/equity/portfolio')return {portfolio:[{bank_id:'B-AURORA',name:'曙光发展银行',shares:620000,ownershipPercent:62}]};
+  if(path.indexOf('/api/bank/equity/cap-table')===0)return {success:true,totalIssued:1000000,authorizedShares:10000000,paidInCapital:330000,shareholders:[{shareholder_uuid:'afab46b2-0000-4000-8000-000000000001',shares:620000,ownershipPercent:62,controlling:true},{shareholder_uuid:'afab46b2-0000-4000-8000-000000000002',shares:380000,ownershipPercent:38,controlling:false}]};
+  if(path.indexOf('/api/bank/equity/offerings')===0)return {offerings:[{id:'SO-DEMO',bank_id:'B-AURORA',offer_type:'PRIMARY',seller_uuid:null,shares:50000,price_per_share:1.2,created_by:'afab46b2-0000-4000-8000-000000000002',status:'OPEN'}]};
+  if(path.indexOf('/api/bank/operations')===0)return {success:true,liquidity:300000,totalDeposits:200000,loanAssets:180000,equity:280000,liquidityRatio:1.5,capitalRatio:.58,badDebtRatio:.02,rating:'A',operatingStatus:'NORMAL',realizedLoanInterest:18000,interestExpense:5000,loanLossProvision:1800,dividendsPaid:3000,retainedEarnings:8200};
+  if(path.indexOf('/api/bank/dividends')===0)return {dividends:[{id:'BD-DEMO',amount:3000,recipient_count:2,status:'FINALIZED',declared_at:1784550000}]};
+  if(path.indexOf('/api/bank/loan/restructure/requests')===0)return {requests:[]};
+  if(path==='/api/bank/loan/quote')return {success:true,allowed:true,productName:'消费信用贷',effectiveRate:.036,totalDue:10360,installments:4,tierLabel:'B级',validUntil:Math.floor(Date.now()/1000)+120};
   if(path==='/api/my-enterprises')return {enterprises:[{id:'ENT-NOVA',name:'新星联合工业',level:6,industry:'INDUSTRY',type:'PRIVATE',current_assets:4820000,registered_capital:2500000,corporate_balance:4820000,employee_count:12,myRole:'OWNER',status:'ACTIVE'},{id:'ENT-ORBIT',name:'轨道物流集团',level:3,industry:'OTHER',type:'PRIVATE',current_assets:2360000,registered_capital:1400000,corporate_balance:2360000,employee_count:7,myRole:'MANAGER',status:'ACTIVE'}]};
   if(path==='/api/enterprise/list')return {enterprises:[{id:'ENT-NOVA',name:'新星联合工业',level:6,industry:'INDUSTRY',current_assets:4820000,corporate_balance:4820000,employee_count:12,status:'ACTIVE'},{id:'ENT-AGRI',name:'曙光农业社',level:4,industry:'AGRICULTURE',current_assets:1560000,corporate_balance:1560000,employee_count:18,status:'ACTIVE'}]};
   if(path.indexOf('/api/enterprise/dividends')===0)return {dividends:[{enterprise_id:'ENT-NOVA',amount:120000,tax:12000,declared_at:1783500000,status:'PAID'},{enterprise_id:'ENT-NOVA',amount:98000,tax:9800,declared_at:1783100000,status:'PAID'},{enterprise_id:'ENT-NOVA',amount:150000,tax:15000,declared_at:1783900000,status:'PAID'}]};
@@ -91,7 +102,17 @@ async function api(method,path,body){
     if(method!=='GET'&&Object.keys(previewData).length===0)previewData={message:'测试模式：操作已模拟成功',success:true};
     return ksPreviewApplyScenario(previewData);
   }
-  try{var o={method:method,headers:Object.assign({'Content-Type':'application/json'},H())};if(body)o.body=JSON.stringify(await normalizePlayerRefs(body,''));var r=await fetch(API+path,o);return await r.json();}catch(e){return {error:e.message}}}
+  try{
+    var o={method:method,headers:Object.assign({'Content-Type':'application/json'},H())};
+    if(body)o.body=JSON.stringify(await normalizePlayerRefs(body,''));
+    var r=await fetch(API+path,o),contentType=(r.headers.get('content-type')||'').toLowerCase(),text=await r.text(),data;
+    try{data=text?JSON.parse(text):{};}
+    catch(parseError){
+      throw new Error('服务器返回了非 JSON 响应（HTTP '+r.status+(contentType?' · '+contentType:'')+'），请刷新页面后重试');
+    }
+    if(!r.ok&&!data.error)data.error='请求失败（HTTP '+r.status+'）';
+    return data;
+  }catch(e){return {error:e.message}}}
 function toast(msg,type){
   var b=document.getElementById('toast-box');
   var d=document.createElement('div');d.className='toast toast-'+(type||'info');d.textContent=msg;
@@ -303,7 +324,8 @@ async function loadMyBanks(){
   var activeLoans=0,loanOutstanding=0;
   var t='';(loans.loans||[]).forEach(function(l){
     if(l.status==='ACTIVE'){activeLoans++;loanOutstanding+=Number(l.remaining||0);}
-    t+='<tr><td>'+l.id+'</td><td>'+l.bank_id+'</td><td>'+fmt(l.principal)+'</td><td>'+fmt(l.remaining)+'</td><td>'+pct(l.interest_rate)+'</td><td><span class="badge '+(l.status==='ACTIVE'?'badge-active':'badge-closed')+'">'+l.status+'</span></td><td>'+(l.status==='ACTIVE'?'<button class="btn btn-sm btn-danger" onclick="repayLoan(\''+l.id+'\','+l.remaining+')">还款</button>':'')+'</td></tr>';
+    var serviceable=l.status==='ACTIVE'||l.status==='OVERDUE';
+    t+='<tr><td>'+l.id+'</td><td>'+l.bank_id+'</td><td>'+fmt(l.principal)+'</td><td>'+fmt(l.remaining)+'</td><td>'+pct(l.interest_rate)+'</td><td><span class="badge '+(l.status==='ACTIVE'?'badge-active':'badge-closed')+'">'+l.status+'</span></td><td>'+(serviceable?'<button class="btn btn-sm btn-danger" onclick="repayLoan(\''+l.id+'\','+l.remaining+')">还款</button> <button class="btn btn-sm" onclick="requestLoanRestructure(\''+l.id+'\')">申请展期</button>':'')+'</td></tr>';
   });
   document.getElementById('loanBody').innerHTML=t||'<tr><td colspan="7" style="color:#666;">暂无贷款</td></tr>';
   var reqs=await api('GET','/api/bank/loan/my-requests');
@@ -311,9 +333,9 @@ async function loadMyBanks(){
   var t2='';(reqs.requests||[]).forEach(function(r){
     if(r.status==='PENDING')pendingReqs++;
     var badge=r.status==='PENDING'?'badge-active':(r.status==='APPROVED'?'badge-owner':'badge-closed');
-    t2+='<tr><td>'+r.id+'</td><td>'+r.bank_id+'</td><td>'+fmt(r.principal)+'</td><td>'+r.term_days+'</td><td><span class="badge '+badge+'">'+r.status+'</span></td><td>'+new Date(r.requested_at*1000).toLocaleString('zh-CN')+'</td></tr>';
+    t2+='<tr><td>'+r.id+'</td><td>'+r.bank_id+'</td><td>'+fmt(r.principal)+'</td><td>'+r.term_days+'</td><td><span class="badge '+badge+'">'+r.status+'</span></td><td>'+new Date(r.requested_at*1000).toLocaleString('zh-CN')+'</td><td>'+(r.status==='PENDING'?'<button class="btn btn-sm btn-danger" onclick="cancelMyLoanRequest(\''+escapeAttr(r.id)+'\')">撤销</button>':'')+'</td></tr>';
   });
-  document.getElementById('myLoanReqBody').innerHTML=t2||'<tr><td colspan="6" style="color:#666;">暂无申请</td></tr>';
+  document.getElementById('myLoanReqBody').innerHTML=t2||'<tr><td colspan="7" style="color:#666;">暂无申请</td></tr>';
   ksKpiRow('myBankKpis',[
     {icon:'🏦',label:'银行账户',value:String((d.banks||[]).length)},
     {icon:'💰',label:'存款总额',value:fmt(totalDeposit)},
@@ -325,8 +347,123 @@ async function loadMyBanks(){
     document.getElementById('depBankId').value=d.banks[0].id;
   }
   document.getElementById('playerInfo').textContent='已登录';
+  await populateBankSelectors(d.banks||[]);
+  loadBankGameplay();
   loadGuidanceBank();
   loadCollateralAuctions();
+  loadBankEquityPortfolio();
+}
+async function populateBankSelectors(myBanks){
+  var all=await api('GET','/api/bank/list');
+  var active=(all.banks||[]).filter(function(b){return b.status==='ACTIVE'&&b.type!=='CENTRAL';});
+  var owned=(myBanks||[]).filter(function(b){return b.isOwner||b.owner;});
+  function fill(id,items,label){
+    var el=document.getElementById(id);if(!el)return;
+    var current=el.value;
+    el.innerHTML='<option value="">'+label+'</option>'+items.map(function(b){return '<option value="'+escapeAttr(b.id)+'">'+escapeHtml(b.name)+' · '+escapeHtml(b.id)+'</option>';}).join('');
+    if(items.some(function(b){return b.id===current;}))el.value=current;else if(items.length)el.value=items[0].id;
+  }
+  fill('depBankId',active,'选择存取款银行');
+  fill('termBankId',active,'选择存单银行');
+  fill('equityBankId',active,'选择股份市场');
+  ['mgmtBankId','inviteBankId2','setRateBankId','loanIssueBankId','loanReqBankId','bankOpsBankId'].forEach(function(id){fill(id,owned,'选择我经营的银行');});
+  if(active.length)loadDepositProducts();
+  if(owned.length)loadBankOperations();
+  if(active.length)loadBankEquityMarket();
+}
+async function loadBankGameplay(){
+  var box=document.getElementById('bankGameplayOverview');if(!box)return;
+  var d=await api('GET','/api/bank/gameplay/dashboard');
+  if(d.error||d.available===false){box.innerHTML='<span style="color:#d88;">'+escapeHtml(d.error||d.reason||'读取失败')+'</span>';return;}
+  var c=d.credit||{},factors=(c.factors||[]),steps=(c.nextSteps||[]);
+  var factorHtml=factors.map(function(f){return '<span class="badge '+(Number(f.points)>=0?'badge-owner':'badge-closed')+'" style="margin:2px;">'+escapeHtml(f.label)+' '+(Number(f.points)>0?'+':'')+fmt(f.points)+'</span>';}).join('');
+  box.innerHTML='<div class="stats-row" style="margin:0 0 9px 0;">'
+    +'<div class="stat-card"><div class="stat-val">'+fmt(d.totalDeposits)+'</div><div class="stat-label">存款资产</div></div>'
+    +'<div class="stat-card"><div class="stat-val">'+fmt(d.termDeposits)+'</div><div class="stat-label">定期存单</div></div>'
+    +'<div class="stat-card"><div class="stat-val">'+fmt(d.loanOutstanding)+'</div><div class="stat-label">贷款负债</div></div>'
+    +'<div class="stat-card"><div class="stat-val">'+fmt(d.insuredCoverage)+'</div><div class="stat-label">存款保险覆盖</div></div>'
+    +'<div class="stat-card"><div class="stat-val">'+fmt(d.netBankPosition)+'</div><div class="stat-label">银行净头寸</div></div>'
+    +'<div class="stat-card"><div class="stat-val">'+escapeHtml(c.tierLabel||c.tier||'—')+' · '+fmt(c.score||0)+'</div><div class="stat-label">信用等级</div></div>'
+    +'</div><div><b>征信影响：</b>'+((factorHtml)||'<span style="color:#777;">暂无记录</span>')+'</div>'
+    +(steps.length?'<div style="margin-top:7px;color:#d9a441;"><b>改善建议：</b>'+steps.map(escapeHtml).join('；')+'</div>':'');
+  renderTermDeposits(d.termDepositsList||[]);
+}
+function renderTermDeposits(list){
+  var body=document.getElementById('termDepositBody');if(!body)return;
+  body.innerHTML=list.map(function(d){
+    var active=d.status==='ACTIVE',matured=Number(d.matures_at||0)<=Date.now()/1000;
+    return '<tr><td>'+escapeHtml(d.id)+'</td><td>'+escapeHtml(d.bank_name||d.bank_id)+'<br><small>'+escapeHtml(d.product_name||d.product_code)+'</small></td><td>'+fmt(d.principal)+'</td><td>'+pct(d.fixed_rate)+'</td><td>'+new Date(Number(d.matures_at)*1000).toLocaleString('zh-CN')+'</td><td><span class="badge '+(active?'badge-active':'badge-closed')+'">'+escapeHtml(d.status)+'</span></td><td>'+(active?'<button class="btn btn-sm '+(matured?'btn-success':'btn-danger')+'" onclick="redeemTermDeposit(\''+escapeAttr(d.id)+'\','+matured+')">'+(matured?'到期结清':'提前支取')+'</button>':'')+'</td></tr>';
+  }).join('')||'<tr><td colspan="7" style="color:#666;">暂无定期存单</td></tr>';
+}
+async function loadDepositProducts(){
+  var bankId=document.getElementById('termBankId').value,select=document.getElementById('termProductCode');
+  if(!bankId){select.innerHTML='<option value="">请先选择银行</option>';return;}
+  var d=await api('GET','/api/bank/deposit-products?bankId='+encodeURIComponent(bankId));
+  select.innerHTML=(d.products||[]).map(function(p){return '<option value="'+escapeAttr(p.product_code)+'">'+escapeHtml(p.name)+' · '+p.term_days+'天 · '+pct(p.fixed_rate)+' · 起存 '+fmt(p.min_amount)+'</option>';}).join('')||'<option value="">暂无在售产品</option>';
+}
+async function openTermDeposit(){
+  var bankId=document.getElementById('termBankId').value,productCode=document.getElementById('termProductCode').value,amount=Number(document.getElementById('termDepositAmount').value||0),autoRenew=document.getElementById('termAutoRenew').checked;
+  if(!bankId||!productCode||amount<=0){toast('请选择银行、产品并填写金额','err');return;}
+  if(!confirm('确认从该银行活期账户转入 '+fmt(amount)+'？提前支取可能损失利息。'))return;
+  var d=await api('POST','/api/bank/term/open',{bankId:bankId,productCode:productCode,amount:amount,autoRenew:autoRenew});
+  if(d.success){toast(d.message||'存单已开立','ok');loadMyBanks();}else toast(d.error||'开立失败','err');
+}
+async function redeemTermDeposit(id,matured){
+  if(!confirm(matured?'确认结清到期存单？':'该存单尚未到期，提前支取会损失部分利息。确认继续？'))return;
+  var d=await api('POST','/api/bank/term/redeem',{depositId:id});
+  if(d.success){toast((d.message||'存单已结清')+'，到账 '+fmt(d.payout),'ok');loadMyBanks();}else toast(d.error||'支取失败','err');
+}
+async function loadBankOperations(){
+  var bankId=(document.getElementById('bankOpsBankId')||{}).value,panel=document.getElementById('bankOperationsPanel');if(!panel||!bankId)return;
+  var d=await api('GET','/api/bank/operations?bankId='+encodeURIComponent(bankId));
+  if(d.error){panel.innerHTML='<span style="color:#d88;">'+escapeHtml(d.error)+'</span>';return;}
+  var risk=d.operatingStatus==='NORMAL'?'badge-owner':(d.operatingStatus==='WATCH'?'badge-active':'badge-closed');
+  panel.innerHTML='<div class="stats-row" style="margin:0 0 8px 0;">'
+    +'<div class="stat-card"><div class="stat-val">'+fmt(d.liquidity)+'</div><div class="stat-label">可用流动性</div></div>'
+    +'<div class="stat-card"><div class="stat-val">'+fmt(d.totalDeposits)+'</div><div class="stat-label">客户存款</div></div>'
+    +'<div class="stat-card"><div class="stat-val">'+fmt(d.loanAssets)+'</div><div class="stat-label">贷款资产</div></div>'
+    +'<div class="stat-card"><div class="stat-val">'+fmt(d.equity)+'</div><div class="stat-label">净资产</div></div>'
+    +'<div class="stat-card"><div class="stat-val">'+escapeHtml(d.rating)+'</div><div class="stat-label">银行评级</div></div></div>'
+    +'<div>流动性覆盖率 <b>'+pct(d.liquidityRatio)+'</b> · 资本充足率 <b>'+pct(d.capitalRatio)+'</b> · 坏账率 <b>'+pct(d.badDebtRatio)+'</b> · 状态 <span class="badge '+risk+'">'+escapeHtml(d.operatingStatus)+'</span></div>'
+    +'<div style="margin-top:7px;">已实现贷款利息 <b>'+fmt(d.realizedLoanInterest)+'</b> · 存款利息成本 <b>'+fmt(d.interestExpense)+'</b> · 坏账拨备 <b>'+fmt(d.loanLossProvision)+'</b> · 已分红 <b>'+fmt(d.dividendsPaid)+'</b> · 可分配利润 <b>'+fmt(d.retainedEarnings)+'</b></div>';
+  loadBankDividends(bankId);
+}
+async function loadBankDividends(bankId){
+  var d=await api('GET','/api/bank/dividends?bankId='+encodeURIComponent(bankId)),body=document.getElementById('bankDividendBody');if(!body)return;
+  body.innerHTML=(d.dividends||[]).map(function(x){return '<tr><td>'+escapeHtml(x.id)+'</td><td>'+fmt(x.amount)+'</td><td>'+fmt(x.recipient_count)+'</td><td>'+escapeHtml(x.status)+'</td><td>'+new Date(Number(x.declared_at)*1000).toLocaleString('zh-CN')+'</td></tr>';}).join('')||'<tr><td colspan="5" style="color:#666;">暂无分红记录</td></tr>';
+}
+async function declareBankDividend(){
+  var bankId=document.getElementById('bankOpsBankId').value,amount=Number(document.getElementById('bankDividendAmount').value||0);if(!bankId||amount<=0){toast('请选择银行并填写分红金额','err');return;}
+  if(!confirm('确认从已实现利润中分配 '+fmt(amount)+'？资金将计入各股东在本行的活期账户。'))return;
+  var d=await api('POST','/api/bank/dividend/declare',{bankId:bankId,amount:amount});
+  if(d.success){toast(d.message||'分红已完成','ok');loadBankOperations();loadMyBanks();}else toast(d.error||'分红失败','err');
+}
+async function loadBankEquityPortfolio(){
+  var box=document.getElementById('bankEquityPortfolio');if(!box)return;
+  var d=await api('GET','/api/bank/equity/portfolio');
+  box.innerHTML=(d.portfolio||[]).map(function(x){return '<span class="badge badge-owner" style="margin:2px;">'+escapeHtml(x.name||x.bank_id)+' '+fmt(x.shares)+' 股 · '+fmt(x.ownershipPercent)+'%</span>';}).join('')||'<span style="color:#666;">暂无银行持股</span>';
+}
+async function loadBankEquityMarket(){
+  var bankId=(document.getElementById('equityBankId')||{}).value,cap=document.getElementById('bankEquityCapTable'),body=document.getElementById('bankEquityOfferBody');if(!bankId||!cap||!body)return;
+  var d=await api('GET','/api/bank/equity/cap-table?bankId='+encodeURIComponent(bankId));
+  if(d.error){cap.innerHTML='<span style="color:#d88;">'+escapeHtml(d.error)+'</span>';return;}
+  cap.innerHTML='<b>已发行 '+fmt(d.totalIssued)+' 股</b> · 授权上限 '+fmt(d.authorizedShares)+' · 实缴资本 '+fmt(d.paidInCapital)+'<br>'+(d.shareholders||[]).map(function(x){return '<span class="badge '+(x.controlling?'badge-owner':'badge-active')+'" style="margin:2px;">'+escapeHtml(x.shareholder_uuid)+' '+fmt(x.ownershipPercent)+'%</span>';}).join('');
+  var market=await api('GET','/api/bank/equity/offerings?bankId='+encodeURIComponent(bankId));
+  body.innerHTML=(market.offerings||[]).map(function(x){var mine=x.created_by===myPlayerUuid;return '<tr><td>'+escapeHtml(x.id)+'</td><td>'+escapeHtml(x.offer_type)+'</td><td>'+escapeHtml(x.seller_uuid||'银行增资')+'</td><td>'+fmt(x.shares)+'</td><td>'+fmt(x.price_per_share)+'</td><td>'+fmt(Number(x.shares)*Number(x.price_per_share))+'</td><td>'+(mine?'<button class="btn btn-sm btn-danger" onclick="cancelBankShareOffering(\''+escapeAttr(x.id)+'\')">撤单</button>':'<button class="btn btn-sm btn-success" onclick="acceptBankShareOffering(\''+escapeAttr(x.id)+'\')">认购</button>')+'</td></tr>';}).join('')||'<tr><td colspan="7" style="color:#666;">暂无股份挂牌</td></tr>';
+}
+async function createBankShareOffering(){
+  var bankId=document.getElementById('bankOpsBankId').value,offerType=document.getElementById('bankShareOfferType').value,shares=Number(document.getElementById('bankShareOfferShares').value||0),pricePerShare=Number(document.getElementById('bankShareOfferPrice').value||0);if(!bankId||shares<=0||pricePerShare<=0){toast('请选择银行并填写股份与价格','err');return;}
+  var d=await api('POST','/api/bank/equity/offerings',{bankId:bankId,offerType:offerType,shares:shares,pricePerShare:pricePerShare});
+  if(d.success){toast(d.message||'股份挂牌已发布','ok');document.getElementById('equityBankId').value=bankId;loadBankEquityMarket();}else toast(d.error||'发布失败','err');
+}
+async function acceptBankShareOffering(id){
+  if(!confirm('确认使用该银行活期账户认购此挂牌？'))return;
+  var d=await api('POST','/api/bank/equity/accept',{offeringId:id});
+  if(d.success){toast(d.message||'认购完成','ok');loadMyBanks();}else toast(d.error||'认购失败','err');
+}
+async function cancelBankShareOffering(id){
+  var d=await api('POST','/api/bank/equity/cancel',{offeringId:id});
+  if(d.success){toast(d.message||'撤单完成','ok');loadBankEquityMarket();}else toast(d.error||'撤单失败','err');
 }
 async function loadGuidanceBank(){
   var box=document.getElementById('guidanceBankCard');if(!box)return;
@@ -375,6 +512,16 @@ async function repayLoan(loanId,amount){
   var d=await api('POST','/api/bank/loan/repay',{loanId:loanId,amount:amount});
   if(d.message){toast(d.message,'ok');loadMyBanks();}else toast(d.error,'err');
 }
+async function requestLoanRestructure(loanId){
+  var days=Number(prompt('申请展期天数：仅支持 7、14 或 30 天。每 7 天费用为当前剩余应还的 1%。','7'));if([7,14,30].indexOf(days)<0){if(days)toast('只支持 7、14 或 30 天','err');return;}
+  var d=await api('POST','/api/bank/loan/restructure',{loanId:loanId,requestedDays:days});
+  if(d.success){toast((d.message||'展期申请已提交')+'，预计费用 '+fmt(d.fee),'ok');loadMyBanks();}else toast(d.error||'申请失败','err');
+}
+async function cancelMyLoanRequest(requestId){
+  if(!confirm('确认撤销贷款申请？已占用的抵押物会立即释放。'))return;
+  var d=await api('POST','/api/bank/loan/cancel',{requestId:requestId});
+  if(d.success){toast(d.message||'申请已撤销','ok');loadMyBanks();}else toast(d.error||'撤销失败','err');
+}
 async function createMyBank(){
   var coOwners=document.getElementById('bkCoOwners').value;
   var owners=['__self__']; // placeholder - server will use session UUID
@@ -413,20 +560,45 @@ async function quickDeposit(bankId){
   var d=await api('POST','/api/bank/deposit',{bankId:bankId,amount:parseFloat(amt)||0});
   if(d.message){toast(d.message,'ok');loadMyBanks();}else toast(d.error||'存款失败','err');
 }
-function openLoanApplyModal(bankId){
-  var html='<div class="form-row"><span style="font-size:12px;color:#aaa;">向银行 '+escapeHtml(bankId)+' 申请贷款，提交后等待该行所有者/经理审批。</span></div>'
+async function openLoanApplyModal(bankId){
+  var catalog=await api('GET','/api/bank/loan/products');
+  var options=(catalog.products||[]).map(function(p){return '<option value="'+escapeAttr(p.code)+'">'+escapeHtml(p.name)+' · '+fmt(p.minAmount)+'-'+fmt(p.maxAmount)+' · '+p.minTermDays+'-'+p.maxTermDays+'天</option>';}).join('');
+  var html='<div class="form-row"><span style="font-size:12px;color:#aaa;">向银行 '+escapeHtml(bankId)+' 获取正式报价。报价会结合产品、期限、信用等级和银行流动性，有效期内可锁定提交。</span></div>'
+    +'<div class="form-row"><label>贷款产品<br><select id="mLoanProduct" onchange="loadLoanCollateral()">'+options+'</select></label>'
+    +'<label>还款方式<br><select id="mLoanRepayment"><option value="EQUAL_PAYMENT">等额还款</option><option value="EQUAL_PRINCIPAL">等额本金</option><option value="BULLET">到期还本</option></select></label></div>'
+    +'<div class="form-row" id="mLoanCollateralRow"><label>真实抵押物<br><select id="mLoanCollateral"><option value="">消费贷无需抵押</option></select></label><span style="font-size:11px;color:#888;">住房/经营贷支持本人地块或房屋；项目贷绑定本人已中标合同。</span></div>'
     +'<div class="form-row"><label>本金<br><input id="mLoanAmount" type="number" step="1" value="10000"/></label>'
-    +'<label>期限(天)<br><input id="mLoanTerm" type="number" value="30"/></label></div>'
-    +'<div class="form-row"><button class="btn btn-primary" onclick="submitLoanApply(\''+bankId+'\')">提交申请</button></div>';
-  showModal('💸 申请贷款',html);
+    +'<label>期限(天)<br><input id="mLoanTerm" type="number" value="30"/></label>'
+    +'<label>用途说明<br><input id="mLoanPurpose" maxlength="256" placeholder="消费、购房、经营或项目用途"/></label></div>'
+    +'<div id="mLoanQuote" style="color:#888;font-size:12px;margin:8px 0;">请选择参数后获取报价。</div>'
+    +'<div class="form-row"><button class="btn btn-primary" onclick="previewLoanQuote(\''+escapeAttr(bankId)+'\')">计算正式报价</button></div>';
+  showModal('💸 贷款产品与报价',html);
+  loadLoanCollateral();
 }
-async function submitLoanApply(bankId){
-  var d=await api('POST','/api/bank/loan/apply',{
-    bankId:bankId,
-    principal:parseFloat(document.getElementById('mLoanAmount').value)||0,
-    termDays:parseInt(document.getElementById('mLoanTerm').value)||30
-  });
-  if(d.id){toast('申请已提交: '+d.id,'ok');closeModal();loadMyBanks();}else toast(d.error||'申请失败','err');
+var currentLoanQuote=null;
+async function loadLoanCollateral(){
+  var product=(document.getElementById('mLoanProduct')||{}).value,select=document.getElementById('mLoanCollateral');if(!select)return;
+  if(product==='CONSUMER'){select.innerHTML='<option value="">消费贷无需抵押</option>';select.disabled=true;return;}
+  select.disabled=false;select.innerHTML='<option value="">正在读取可抵押资产...</option>';
+  var d=await api('GET','/api/bank/loan/collateral?productType='+encodeURIComponent(product));
+  select.innerHTML=(d.assets||[]).map(function(x){return '<option value="'+escapeAttr(x.assetType+'|'+x.assetRef)+'">'+escapeHtml(x.assetType+' · '+x.assetRef)+' · 估值 '+fmt(x.appraisedValue)+' · 可贷 '+fmt(x.maxLoan)+'</option>';}).join('')||'<option value="">没有符合条件的未抵押资产</option>';
+}
+async function previewLoanQuote(bankId){
+  var principal=Number(document.getElementById('mLoanAmount').value||0),termDays=Number(document.getElementById('mLoanTerm').value||0),productType=document.getElementById('mLoanProduct').value,repaymentType=document.getElementById('mLoanRepayment').value;
+  var collateral=(document.getElementById('mLoanCollateral').value||'').split('|'),collateralType=collateral[0]||'',collateralRef=collateral.slice(1).join('|')||'';
+  var box=document.getElementById('mLoanQuote');box.textContent='正在计算信用与风险报价...';
+  var d=await api('POST','/api/bank/loan/quote',{bankId:bankId,principal:principal,termDays:termDays,productType:productType,repaymentType:repaymentType,collateralType:collateralType,collateralRef:collateralRef});
+  if(d.error||d.allowed===false){currentLoanQuote=null;box.innerHTML='<span style="color:#d88;">'+escapeHtml(d.error||d.reason||'当前无法提供报价')+'</span>';return;}
+  currentLoanQuote={bankId:bankId,principal:principal,termDays:termDays,productType:productType,repaymentType:repaymentType,effectiveRate:Number(d.effectiveRate),validUntil:Number(d.validUntil),collateralType:collateralType,collateralRef:collateralRef};
+  box.innerHTML='<div class="stats-row" style="margin:0 0 7px 0;"><div class="stat-card"><div class="stat-val">'+escapeHtml(d.productName||productType)+'</div><div class="stat-label">贷款产品</div></div><div class="stat-card"><div class="stat-val">'+pct(d.effectiveRate)+'</div><div class="stat-label">整期固定费率</div></div><div class="stat-card"><div class="stat-val">'+fmt(d.totalDue)+'</div><div class="stat-label">预计总应还</div></div><div class="stat-card"><div class="stat-val">'+fmt(d.installments||1)+'</div><div class="stat-label">计划期数</div></div><div class="stat-card"><div class="stat-val">'+escapeHtml(d.tierLabel||d.tier||'—')+'</div><div class="stat-label">信用等级</div></div></div><div>报价有效至 '+new Date(Number(d.validUntil)*1000).toLocaleTimeString('zh-CN')+'。提交后由银行审批，批准后自动放款。</div><button class="btn btn-success" style="margin-top:8px;" onclick="submitQuotedLoan()">确认报价并提交申请</button>';
+}
+async function submitQuotedLoan(){
+  if(!currentLoanQuote){toast('请先获取有效报价','err');return;}
+  if(Date.now()/1000>currentLoanQuote.validUntil){toast('报价已过期，请重新计算','err');return;}
+  var body={bankId:currentLoanQuote.bankId,principal:currentLoanQuote.principal,termDays:currentLoanQuote.termDays,productType:currentLoanQuote.productType,repaymentType:currentLoanQuote.repaymentType,acceptedRate:currentLoanQuote.effectiveRate,validUntil:currentLoanQuote.validUntil,purpose:document.getElementById('mLoanPurpose').value,collateralType:currentLoanQuote.collateralType,collateralRef:currentLoanQuote.collateralRef};
+  if(!confirm('确认申请 '+fmt(body.principal)+'，整期费率 '+pct(body.acceptedRate)+'？'))return;
+  var d=await api('POST','/api/bank/loan/apply-quoted',body);
+  if(d.success||d.id){toast(d.message||'贷款申请已提交','ok');currentLoanQuote=null;closeModal();loadMyBanks();}else toast(d.error||'申请失败','err');
 }
 async function loadLoanRequests(){
   var bankId=document.getElementById('loanReqBankId').value;
@@ -437,6 +609,16 @@ async function loadLoanRequests(){
       +'<td><button class="btn btn-sm btn-success" onclick="decideLoanRequest(\''+bankId+'\',\''+r.id+'\',true)">✅ 批准</button> <button class="btn btn-sm btn-danger" onclick="decideLoanRequest(\''+bankId+'\',\''+r.id+'\',false)">❌ 拒绝</button></td></tr>';
   });
   document.getElementById('loanReqBody').innerHTML=t||'<tr><td colspan="6" style="color:#666;">暂无待审批申请</td></tr>';
+  loadRestructureRequests();
+}
+async function loadRestructureRequests(){
+  var bankId=document.getElementById('loanReqBankId').value,body=document.getElementById('restructureRequestBody');if(!body||!bankId)return;
+  var d=await api('GET','/api/bank/loan/restructure/requests?bankId='+encodeURIComponent(bankId)+'&status=PENDING');
+  body.innerHTML=(d.requests||[]).map(function(r){return '<tr><td>'+escapeHtml(r.id)+'</td><td>'+escapeHtml(r.loan_id)+'</td><td>'+escapeHtml(r.borrower_uuid)+'</td><td>'+fmt(r.requested_days)+' 天</td><td>'+fmt(r.quoted_fee)+'</td><td>'+new Date(Number(r.requested_at)*1000).toLocaleString('zh-CN')+'</td><td><button class="btn btn-sm btn-success" onclick="decideLoanRestructure(\''+escapeAttr(r.id)+'\',true)">批准</button> <button class="btn btn-sm btn-danger" onclick="decideLoanRestructure(\''+escapeAttr(r.id)+'\',false)">拒绝</button></td></tr>';}).join('')||'<tr><td colspan="7" style="color:#666;">暂无待审批展期申请</td></tr>';
+}
+async function decideLoanRestructure(requestId,approve){
+  var d=await api('POST','/api/bank/loan/restructure/decide',{requestId:requestId,approve:approve});
+  if(d.success){toast(d.message||'展期申请已处理','ok');loadRestructureRequests();loadLoanRequests();}else toast(d.error||'处理失败','err');
 }
 async function decideLoanRequest(bankId,requestId,approve){
   var d=await api('POST','/api/bank/loan/'+(approve?'approve':'reject'),{bankId:bankId,requestId:requestId});
@@ -1434,7 +1616,7 @@ async function openHouseVoxelViewer(houseId){
   document.getElementById('houseVoxelCanvasWrap').innerHTML='';
   try{
     await loadThreeJs();
-    var d=await api('GET','/api/realestate/house/voxels?houseId='+encodeURIComponent(houseId));
+    var d=await fetchHouseVoxelModel('/api/realestate/house/voxels?houseId='+encodeURIComponent(houseId));
     if(!d||!d.blocks){document.getElementById('houseVoxelStatus').textContent='加载失败：房屋不存在或数据异常。';return;}
     if(d.truncated){document.getElementById('houseVoxelStatus').textContent='⚠ 房屋体积过大（超过渲染上限），无法生成3D预览。';return;}
     if(d.blocks.length===0){document.getElementById('houseVoxelStatus').textContent='该房屋范围内没有方块（可能是空地）。';return;}
@@ -1454,30 +1636,64 @@ function prepareRegionVoxelSurface(data){
   var blocks=(data.blocks||[]).filter(function(b){return b.y>=floor;}).map(function(b){return Object.assign({},b,{y:b.y-floor});});
   return Object.assign({},data,{y1:data.y1+floor,blocks:blocks});
 }
+var KS_REGION_3D_MAX_SPAN=384;
 async function openRegionVoxelViewer(selectionOverride){
   var selection=selectionOverride||lastMap3dSelect;
   if(!selection){toast('请先在地图上框选一个区域','err');return;}
-  var width=selection.x2-selection.x1+1,depth=selection.z2-selection.z1+1;
-  if(width>128||depth>128){toast('范围过大，请选择不超过 128 x 128 的区域','err');return;}
-  var modalTitle=document.querySelector('#houseVoxelModal h3');if(modalTitle)modalTitle.textContent='Selected region 3D preview';
-  document.getElementById('houseVoxelModal').style.display='flex';
-  document.getElementById('houseVoxelStatus').textContent='Loading selected region...';
-  document.getElementById('houseVoxelSize').textContent='';
+  var minX=Math.min(Number(selection.x1),Number(selection.x2)),maxX=Math.max(Number(selection.x1),Number(selection.x2));
+  var minZ=Math.min(Number(selection.z1),Number(selection.z2)),maxZ=Math.max(Number(selection.z1),Number(selection.z2));
+  var width=maxX-minX+1,depth=maxZ-minZ+1;
+  if(width>KS_REGION_3D_MAX_SPAN||depth>KS_REGION_3D_MAX_SPAN){toast('当前 '+width+' × '+depth+'，请缩小到 '+KS_REGION_3D_MAX_SPAN+' × '+KS_REGION_3D_MAX_SPAN+' 内','err');return;}
+  closeHouseVoxelViewer();
+  var modal=document.getElementById('houseVoxelModal');
+  modal.classList.add('zone-mode');modal.style.display='flex';document.body.style.overflow='hidden';
+  document.getElementById('houseVoxelCloseBtn').textContent='← 返回 2D 地图';
+  var modalTitle=document.querySelector('#houseVoxelModal h3');if(modalTitle)modalTitle.textContent='所选区域 3D 预览';
+  var tileSize=24,tiles=[];
+  for(var x=minX;x<=maxX;x+=tileSize)for(var z=minZ;z<=maxZ;z+=tileSize){
+    tiles.push({x1:x,z1:z,x2:Math.min(maxX,x+tileSize-1),z2:Math.min(maxZ,z+tileSize-1)});
+  }
+  var centerX=(minX+maxX)/2,centerZ=(minZ+maxZ)/2;
+  tiles.sort(function(a,b){
+    var ad=Math.pow((a.x1+a.x2)/2-centerX,2)+Math.pow((a.z1+a.z2)/2-centerZ,2);
+    var bd=Math.pow((b.x1+b.x2)/2-centerX,2)+Math.pow((b.z1+b.z2)/2-centerZ,2);
+    return ad-bd;
+  });
+  document.getElementById('houseVoxelStatus').textContent='正在建立所选区域场景...';
+  document.getElementById('houseVoxelSize').textContent='区域 '+width+' × '+depth+' · '+tiles.length+' 个渐进分片';
   document.getElementById('houseVoxelCanvasWrap').innerHTML='';
   try{
     await loadThreeJs();
-    var path='/api/realestate/region/voxels?world='+encodeURIComponent(selection.world)+'&x1='+selection.x1+'&z1='+selection.z1+'&x2='+selection.x2+'&z2='+selection.z2;
-    var data=await api('GET',path);
-    if(data.error){document.getElementById('houseVoxelStatus').textContent=data.error;return;}
-    if(data.truncated){document.getElementById('houseVoxelStatus').textContent='Region is too large or too dense. Select a smaller area.';return;}
-    if(!data.blocks||data.blocks.length===0){document.getElementById('houseVoxelStatus').textContent='No non-air blocks in this region.';return;}
-    data=prepareRegionVoxelSurface(data);
-    var sizeX=data.x2-data.x1+1,sizeY=data.y2-data.y1+1,sizeZ=data.z2-data.z1+1;
-    document.getElementById('houseVoxelStatus').textContent='Surface blocks: '+data.blocks.length+' - loading textures...';
-    document.getElementById('houseVoxelSize').textContent='X: '+sizeX+' | Z: '+sizeZ+' | Y: '+sizeY;
-    await renderVoxelScene(data);
-    document.getElementById('houseVoxelStatus').textContent='Surface blocks: '+data.blocks.length;
-  }catch(error){document.getElementById('houseVoxelStatus').textContent='Loading failed: '+error.message;}
+    var state=initZoneVoxelScene({zone:selection,minX:minX,minZ:minZ,maxX:maxX,maxZ:maxZ});
+    var loaded=0,blocks=0,failed=0,reasons={};
+    for(var i=0;i<tiles.length;i++){
+      if(ksZoneSceneState!==state)break;
+      var tile=tiles[i];
+      document.getElementById('houseVoxelStatus').textContent='区域加载 '+(i+1)+' / '+tiles.length+' · 已渲染 '+blocks+' 方块';
+      try{
+        var path='/api/realestate/region/voxels?world='+encodeURIComponent(selection.world||reMapState.world)
+          +'&x1='+tile.x1+'&z1='+tile.z1+'&x2='+tile.x2+'&z2='+tile.z2;
+        var data=await api('GET',path);
+        if(data&&data.blocks&&data.blocks.length&&!data.truncated){
+          data=prepareRegionVoxelSurface(data);
+          await addZoneVoxelChunk(state,data,tile);
+          blocks+=data.blocks.length;loaded++;
+        }else{
+          failed++;
+          var reason=(data&&data.reason)||((data&&data.blocks&&data.blocks.length===0)?'empty':'unknown');
+          reasons[reason]=(reasons[reason]||0)+1;
+        }
+      }catch(tileError){failed++;reasons.request_failed=(reasons.request_failed||0)+1;}
+      await new Promise(function(resolve){requestAnimationFrame(resolve);});
+    }
+    if(ksZoneSceneState===state){
+      var reasonLabels={volume_limit:'扫描体积超限',block_limit:'方块密度超限',height_limit:'高度跨度超限',world_unavailable:'世界不可用',read_failed:'读取失败',request_failed:'请求失败',empty:'空白分片',unknown:'未知错误'};
+      var detail=Object.keys(reasons).map(function(key){return (reasonLabels[key]||key)+' '+reasons[key];}).join('、');
+      document.getElementById('houseVoxelStatus').textContent=loaded
+        ? '区域已加载 · '+loaded+'/'+tiles.length+' 分片 · '+blocks+' 方块'+(failed?' · 未加载：'+detail:'')
+        : '区域没有可显示内容'+(detail?' · '+detail:'');
+    }
+  }catch(error){document.getElementById('houseVoxelStatus').textContent='区域 3D 加载失败: '+error.message;}
 }
 
 function openZoneVoxelViewerById(zoneId){
@@ -1495,52 +1711,121 @@ async function openZoneVoxelViewer(zone){
   if(title)title.textContent=(zone.name||zone.id)+' · 城区 3D 沙盘';
   var minX=Math.min(Number(zone.x1),Number(zone.x2)),maxX=Math.max(Number(zone.x1),Number(zone.x2));
   var minZ=Math.min(Number(zone.z1),Number(zone.z2)),maxZ=Math.max(Number(zone.z1),Number(zone.z2));
-  var tileSize=32,tiles=[];
-  for(var x=minX;x<=maxX;x+=tileSize)for(var z=minZ;z<=maxZ;z+=tileSize){
-    tiles.push({x1:x,z1:z,x2:Math.min(maxX,x+tileSize-1),z2:Math.min(maxZ,z+tileSize-1)});
-  }
-  var cx=(minX+maxX)/2,cz=(minZ+maxZ)/2;
-  tiles.sort(function(a,b){
-    var ad=Math.pow((a.x1+a.x2)/2-cx,2)+Math.pow((a.z1+a.z2)/2-cz,2);
-    var bd=Math.pow((b.x1+b.x2)/2-cx,2)+Math.pow((b.z1+b.z2)/2-cz,2);
-    return ad-bd;
-  });
-  document.getElementById('houseVoxelStatus').textContent='正在建立城区场景...';
-  document.getElementById('houseVoxelSize').textContent='区域 '+(maxX-minX+1)+' × '+(maxZ-minZ+1)+' · '+tiles.length+' 个渐进分片';
+  document.getElementById('houseVoxelStatus').textContent='正在读取城区楼盘清单...';
+  document.getElementById('houseVoxelSize').textContent='区域 '+(maxX-minX+1)+' × '+(maxZ-minZ+1)+' · 道路与地块先行装配';
   try{
+    var manifest=await api('GET','/api/realestate/city/manifest?zoneId='+encodeURIComponent(zone.id));
     await loadThreeJs();
     var state=initZoneVoxelScene({zone:zone,minX:minX,minZ:minZ,maxX:maxX,maxZ:maxZ});
-    var loaded=0,blocks=0,failed=0;
-    for(var i=0;i<tiles.length;i++){
-      if(ksZoneSceneState!==state)break;
-      var tile=tiles[i];
-      document.getElementById('houseVoxelStatus').textContent='城区加载 '+(i+1)+' / '+tiles.length+' · 已渲染 '+blocks+' 方块';
-      try{
-        var path='/api/realestate/region/voxels?world='+encodeURIComponent(zone.world||reMapState.world)
-          +'&x1='+tile.x1+'&z1='+tile.z1+'&x2='+tile.x2+'&z2='+tile.z2;
-        var data=await api('GET',path);
-        if(data&&data.blocks&&data.blocks.length&&!data.truncated){
-          data=prepareRegionVoxelSurface(data);
-          await addZoneVoxelChunk(state,data,tile);
-          blocks+=data.blocks.length;loaded++;
-        }else failed++;
-      }catch(tileError){failed++;}
-      await new Promise(function(resolve){requestAnimationFrame(resolve);});
+    state.yBase=ksCityBaseY(manifest.buildings||[]);
+    addCitySandboxSkeleton(state,manifest);
+    var buildings=manifest.buildings||[],loaded=0,blocks=0,failed=0,next=0;
+    document.getElementById('houseVoxelSize').textContent='城区 '+(maxX-minX+1)+' × '+(maxZ-minZ+1)+' · '+(manifest.plots||[]).length+' 地块 · '+buildings.length+' 栋楼';
+    async function worker(){
+      while(next<buildings.length&&ksZoneSceneState===state){
+        var building=buildings[next++];
+        document.getElementById('houseVoxelStatus').textContent='楼栋异步装配 '+(loaded+failed)+' / '+buildings.length+' · 已渲染 '+blocks+' 外观方块';
+        try{
+          var data=await fetchHouseVoxelModel(building.modelUrl||('/api/realestate/house/voxels?houseId='+encodeURIComponent(building.id)));
+          if(data&&data.status==='READY'&&data.blocks&&data.blocks.length&&!data.truncated){
+            await addCityBuildingModel(state,data,building);blocks+=data.blocks.length;loaded++;
+          }else failed++;
+        }catch(buildingError){failed++;}
+        await new Promise(function(resolve){requestAnimationFrame(resolve);});
+      }
     }
+    await Promise.all(Array.from({length:Math.min(3,Math.max(1,buildings.length))},worker));
     if(ksZoneSceneState===state){
-      document.getElementById('houseVoxelStatus').textContent='城区已加载 · '+loaded+'/'+tiles.length+' 分片 · '+blocks+' 方块'+(failed?' · '+failed+' 分片不可用':'');
+      document.getElementById('houseVoxelStatus').textContent=buildings.length
+        ? '售楼沙盘已就绪 · '+loaded+'/'+buildings.length+' 栋 · '+blocks+' 外观方块'+(failed?' · '+failed+' 栋暂不可用':'')+' · 点击楼栋查看房源'
+        : '城区骨架已就绪 · 暂无已登记楼栋';
     }
   }catch(error){
     document.getElementById('houseVoxelStatus').textContent='城区 3D 加载失败: '+error.message;
   }
 }
 
+function ksCityBaseY(buildings){
+  if(!buildings.length)return 0;
+  return buildings.reduce(function(v,b){return Math.min(v,Number(b.y1)||0);},Number(buildings[0].y1)||0);
+}
+async function fetchHouseVoxelModel(url){
+  for(var attempt=0;attempt<100;attempt++){
+    var data=await api('GET',url);
+    if(!data||data.status!=='PREPARING')return data;
+    await new Promise(function(resolve){setTimeout(resolve,Math.max(100,Number(data.retryAfterMs)||250));});
+  }
+  throw new Error('楼栋预渲染超时');
+}
+
+function addCitySandboxSkeleton(state,manifest){
+  var THREE=window.THREE,b=state.bounds,sizeX=b.maxX-b.minX+1,sizeZ=b.maxZ-b.minZ+1;
+  var base=new THREE.Mesh(new THREE.BoxGeometry(sizeX+12,1.2,sizeZ+12),new THREE.MeshStandardMaterial({color:0x26313A,roughness:.88,metalness:.05}));
+  base.position.set(sizeX/2,-.7,sizeZ/2);state.scene.add(base);
+  var lawn=new THREE.Mesh(new THREE.BoxGeometry(sizeX,0.35,sizeZ),new THREE.MeshStandardMaterial({color:0x466B42,roughness:1}));
+  lawn.position.set(sizeX/2,.02,sizeZ/2);state.scene.add(lawn);
+  var roadMat=new THREE.MeshStandardMaterial({color:0x24272B,roughness:.92}),lineMat=new THREE.MeshBasicMaterial({color:0xE8D89A});
+  [[sizeX+8,5,sizeX/2,-2.7],[sizeX+8,5,sizeX/2,sizeZ+2.7],[5,sizeZ+8,-2.7,sizeZ/2],[5,sizeZ+8,sizeX+2.7,sizeZ/2]].forEach(function(r){
+    var road=new THREE.Mesh(new THREE.BoxGeometry(r[0],.3,r[1]),roadMat);road.position.set(r[2],.28,r[3]);state.scene.add(road);
+  });
+  [[sizeX+8,.15,sizeX/2,-2.7],[sizeX+8,.15,sizeX/2,sizeZ+2.7],[.15,sizeZ+8,-2.7,sizeZ/2],[.15,sizeZ+8,sizeX+2.7,sizeZ/2]].forEach(function(r){
+    var line=new THREE.Mesh(new THREE.BoxGeometry(r[0],.03,r[1]),lineMat);line.position.set(r[2],.47,r[3]);state.scene.add(line);
+  });
+  if((manifest.buildings||[]).length>=3){
+    [[5,sizeZ,sizeX/2,sizeZ/2],[sizeX,5,sizeX/2,sizeZ/2]].forEach(function(r){var road=new THREE.Mesh(new THREE.BoxGeometry(r[0],.32,r[1]),roadMat);road.position.set(r[2],.29,r[3]);state.scene.add(road);});
+    [[.15,sizeZ,sizeX/2,sizeZ/2],[sizeX,.15,sizeX/2,sizeZ/2]].forEach(function(r){var line=new THREE.Mesh(new THREE.BoxGeometry(r[0],.035,r[1]),lineMat);line.position.set(r[2],.48,r[3]);state.scene.add(line);});
+  }
+  (manifest.plots||[]).forEach(function(plot){
+    var x1=Math.min(Number(plot.x1),Number(plot.x2))-b.minX,z1=Math.min(Number(plot.z1),Number(plot.z2))-b.minZ;
+    var w=Math.abs(Number(plot.x2)-Number(plot.x1))+1,d=Math.abs(Number(plot.z2)-Number(plot.z1))+1;
+    var color=plot.ownerId?0xD3C69A:0x8AA5AD;
+    var pad=new THREE.Mesh(new THREE.BoxGeometry(Math.max(1,w-.8),.18,Math.max(1,d-.8)),new THREE.MeshStandardMaterial({color:color,transparent:true,opacity:.34,roughness:.9}));
+    pad.position.set(x1+w/2,.31,z1+d/2);state.scene.add(pad);
+    var edges=new THREE.LineSegments(new THREE.EdgesGeometry(pad.geometry),new THREE.LineBasicMaterial({color:plot.ownerId?0xF4D675:0x91DAE8,transparent:true,opacity:.8}));
+    edges.position.copy(pad.position);state.scene.add(edges);
+  });
+  (manifest.buildings||[]).forEach(function(building){
+    var w=Number(building.x2)-Number(building.x1)+1,h=Number(building.y2)-Number(building.y1)+1,d=Number(building.z2)-Number(building.z1)+1;
+    var marker=ksCityMarkerStyle(building.showcaseMarker),color=marker.color;
+    var holder=new THREE.Group();holder.userData.building=building;
+    var mass=new THREE.Mesh(new THREE.BoxGeometry(w,Math.max(2,h),d),new THREE.MeshStandardMaterial({color:color,transparent:true,opacity:.16,wireframe:true}));
+    mass.position.set(w/2,Math.max(2,h)/2,d/2);mass.userData.building=building;holder.add(mass);
+    holder.position.set(Number(building.x1)-b.minX,Number(building.y1)-state.yBase,Number(building.z1)-b.minZ);
+    state.scene.add(holder);state.placeholders[String(building.id)]=holder;state.interactive.push(mass);
+    var pin=new THREE.Group(),pole=new THREE.Mesh(new THREE.CylinderGeometry(.11,.11,Math.max(2,h*.28),8),new THREE.MeshBasicMaterial({color:color}));
+    pole.position.y=Math.max(2,h*.28)/2;pin.add(pole);var diamond=new THREE.Mesh(new THREE.OctahedronGeometry(.65),new THREE.MeshStandardMaterial({color:color,emissive:color,emissiveIntensity:.45}));diamond.position.y=Math.max(2,h*.28)+.4;pin.add(diamond);
+    pin.position.set(Number(building.x1)-b.minX+w/2,h+1,Number(building.z1)-b.minZ+d/2);state.scene.add(pin);
+  });
+  if((manifest.buildings||[]).length){
+    var index=document.createElement('div');index.className='ks-city-building-index';
+    index.style.cssText='position:absolute;left:18px;bottom:18px;display:grid;gap:6px;max-width:min(330px,calc(100% - 36px));padding:10px;border:1px solid rgba(100,216,255,.3);border-radius:9px;background:rgba(5,15,24,.88);z-index:3;backdrop-filter:blur(8px)';
+    var label=document.createElement('div');label.textContent='楼栋目录 · BUILDINGS';label.style.cssText='color:#7895a9;font:9px var(--mono,monospace);letter-spacing:.12em';index.appendChild(label);
+    (manifest.buildings||[]).forEach(function(building){var marker=ksCityMarkerStyle(building.showcaseMarker),button=document.createElement('button');button.type='button';button.className='btn btn-sm';button.style.cssText='text-align:left;justify-content:flex-start;border-left:3px solid #'+marker.hex;button.innerHTML='<span style="color:#'+marker.hex+'">◆</span>&nbsp; '+escapeHtml(building.name||building.id);button.onclick=function(){if(state.focusBuilding)state.focusBuilding(building);showCityBuildingCard(document.getElementById('houseVoxelCanvasWrap'),building);};index.appendChild(button);});
+    document.getElementById('houseVoxelCanvasWrap').appendChild(index);
+  }
+}
+
+function ksCityMarkerStyle(name){
+  var styles={CYAN:{color:0x64D8FF,hex:'64D8FF',label:'青色'},MAGENTA:{color:0xFF5FC8,hex:'FF5FC8',label:'洋红'},AMBER:{color:0xF1C75B,hex:'F1C75B',label:'金色'},GREEN:{color:0x67D99A,hex:'67D99A',label:'绿色'},BLUE:{color:0x6F8FFF,hex:'6F8FFF',label:'蓝色'},RED:{color:0xFF6B72,hex:'FF6B72',label:'红色'}};
+  return styles[String(name||'CYAN').toUpperCase()]||styles.CYAN;
+}
+
+async function addCityBuildingModel(state,data,building){
+  if(ksZoneSceneState!==state)return;
+  var old=state.placeholders[String(building.id)];if(old){state.interactive=state.interactive.filter(function(object){return object.parent!==old&&object!==old;});state.scene.remove(old);delete state.placeholders[String(building.id)];}
+  var group=new window.THREE.Group();group.userData.building=building;state.scene.add(group);state.buildingGroups[String(building.id)]=group;
+  await addZoneVoxelChunk(state,data,{x1:Number(building.x1),z1:Number(building.z1)},group,building);
+}
+
 function initZoneVoxelScene(bounds){
   var THREE=window.THREE,wrap=document.getElementById('houseVoxelCanvasWrap');
+  wrap.style.position='relative';
   var width=wrap.clientWidth||1280,height=wrap.clientHeight||720;
-  var sizeX=bounds.maxX-bounds.minX+1,sizeZ=bounds.maxZ-bounds.minZ+1,maxDim=Math.max(sizeX,sizeZ,64);
-  var scene=new THREE.Scene();scene.background=new THREE.Color(0x050A10);scene.fog=new THREE.Fog(0x050A10,maxDim*0.75,maxDim*2.5);
-  var camera=new THREE.PerspectiveCamera(42,width/height,0.1,maxDim*8);
+  var sizeX=bounds.maxX-bounds.minX+1,sizeZ=bounds.maxZ-bounds.minZ+1,maxDim=Math.max(sizeX,sizeZ,36);
+  var scene=new THREE.Scene();scene.background=new THREE.Color(0x050A10);scene.fog=new THREE.Fog(0x050A10,maxDim*1.15,maxDim*4);
+  // 售楼沙盘使用正交等轴视角，避免近处楼栋被广角透视夸大、远处楼栋被压扁。
+  var viewSize=maxDim*1.35,aspect=width/height;
+  var camera=new THREE.OrthographicCamera(-viewSize*aspect/2,viewSize*aspect/2,viewSize/2,-viewSize/2,0.1,maxDim*10);
   var renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
   renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));renderer.outputColorSpace=THREE.SRGBColorSpace;
   renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.05;renderer.setSize(width,height);
@@ -1551,26 +1836,66 @@ function initZoneVoxelScene(bounds){
   scene.add(new THREE.HemisphereLight(0xbfe6ff,0x263426,.55));
   var grid=new THREE.GridHelper(maxDim*1.5,Math.max(16,Math.ceil(maxDim/16)),0x2C7F9E,0x17313D);
   grid.position.set(sizeX/2,-.05,sizeZ/2);if(grid.material){grid.material.transparent=true;grid.material.opacity=.32;}scene.add(grid);
-  var center=new THREE.Vector3(sizeX/2,18,sizeZ/2),radius=maxDim*1.18,theta=Math.PI*.78,phi=Math.PI*.34;
-  var dragging=false,lastX=0,lastY=0;
-  function updateCamera(){camera.position.set(center.x+radius*Math.sin(phi)*Math.cos(theta),center.y+radius*Math.cos(phi),center.z+radius*Math.sin(phi)*Math.sin(theta));camera.lookAt(center);}
+  var homeCenter=new THREE.Vector3(sizeX/2,Math.min(4,maxDim*.06),sizeZ/2),center=homeCenter.clone(),radius=maxDim*1.18,theta=Math.PI*.75,phi=Math.PI*.25,zoom=1;
+  var dragging=false,dragMode='rotate',lastX=0,lastY=0;
+  function updateProjection(){var w=wrap.clientWidth||1280,h=wrap.clientHeight||720,a=w/h;camera.left=-viewSize*a/2;camera.right=viewSize*a/2;camera.top=viewSize/2;camera.bottom=-viewSize/2;camera.zoom=zoom;camera.updateProjectionMatrix();}
+  function updateCamera(){camera.position.set(center.x+radius*Math.sin(phi)*Math.cos(theta),center.y+radius*Math.cos(phi),center.z+radius*Math.sin(phi)*Math.sin(theta));camera.lookAt(center);camera.updateMatrixWorld();}
+  function resetView(){center.copy(homeCenter);theta=Math.PI*.75;phi=Math.PI*.25;zoom=1;updateProjection();updateCamera();}
+  function panBy(dx,dy){
+    var units=viewSize/((wrap.clientHeight||720)*zoom),right=new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion);right.y=0;right.normalize();
+    var forward=new THREE.Vector3(center.x-camera.position.x,0,center.z-camera.position.z);if(forward.lengthSq()<.001)forward.set(0,0,1);else forward.normalize();
+    center.addScaledVector(right,-dx*units);center.addScaledVector(forward,dy*units);updateCamera();
+  }
   updateCamera();
-  function down(e){dragging=true;lastX=e.clientX;lastY=e.clientY;}
+  updateProjection();
+  function down(e){dragging=true;dragMode=(e.button===1||e.button===2||e.shiftKey)?'pan':'rotate';lastX=e.clientX;lastY=e.clientY;renderer.domElement.focus();}
   function up(){dragging=false;}
-  function move(e){if(!dragging)return;theta-=(e.clientX-lastX)*.008;phi=Math.max(.12,Math.min(Math.PI*.48,phi-(e.clientY-lastY)*.008));lastX=e.clientX;lastY=e.clientY;updateCamera();}
-  function wheel(e){e.preventDefault();radius=Math.max(maxDim*.22,Math.min(maxDim*3,radius*(1+e.deltaY*.001)));updateCamera();}
-  function resize(){if(!ksZoneSceneState||ksZoneSceneState.renderer!==renderer)return;var w=wrap.clientWidth||1280,h=wrap.clientHeight||720;camera.aspect=w/h;camera.updateProjectionMatrix();renderer.setSize(w,h);}
-  renderer.domElement.addEventListener('mousedown',down);renderer.domElement.addEventListener('mousemove',move);renderer.domElement.addEventListener('wheel',wheel,{passive:false});window.addEventListener('mouseup',up);window.addEventListener('resize',resize);
+  function move(e){if(!dragging)return;var dx=e.clientX-lastX,dy=e.clientY-lastY;if(dragMode==='pan')panBy(dx,dy);else{theta-=dx*.008;phi=Math.max(Math.PI*.12,Math.min(Math.PI*.46,phi-dy*.007));updateCamera();}lastX=e.clientX;lastY=e.clientY;}
+  function wheel(e){e.preventDefault();zoom=Math.max(.45,Math.min(3.2,zoom*Math.exp(-e.deltaY*.0012)));updateProjection();}
+  function keydown(e){var step=maxDim*.035/zoom;if(e.key==='ArrowLeft'||e.key==='a'||e.key==='A')panBy(step/Math.max(.001,viewSize/((wrap.clientHeight||720)*zoom)),0);else if(e.key==='ArrowRight'||e.key==='d'||e.key==='D')panBy(-step/Math.max(.001,viewSize/((wrap.clientHeight||720)*zoom)),0);else if(e.key==='ArrowUp'||e.key==='w'||e.key==='W')panBy(0,-step/Math.max(.001,viewSize/((wrap.clientHeight||720)*zoom)));else if(e.key==='ArrowDown'||e.key==='s'||e.key==='S')panBy(0,step/Math.max(.001,viewSize/((wrap.clientHeight||720)*zoom)));else return;e.preventDefault();}
+  function resize(){if(!ksZoneSceneState||ksZoneSceneState.renderer!==renderer)return;updateProjection();renderer.setSize(wrap.clientWidth||1280,wrap.clientHeight||720);}
+  renderer.domElement.tabIndex=0;renderer.domElement.style.outline='none';
+  renderer.domElement.addEventListener('mousedown',down);renderer.domElement.addEventListener('mousemove',move);renderer.domElement.addEventListener('wheel',wheel,{passive:false});renderer.domElement.addEventListener('contextmenu',function(e){e.preventDefault();});renderer.domElement.addEventListener('dblclick',resetView);renderer.domElement.addEventListener('keydown',keydown);window.addEventListener('mouseup',up);window.addEventListener('resize',resize);
+  var controls=document.createElement('div');controls.className='ks-city-camera-help';controls.style.cssText='position:absolute;left:18px;top:18px;display:flex;align-items:center;gap:8px;padding:7px 9px;border:1px solid rgba(100,216,255,.28);border-radius:8px;background:rgba(5,15,24,.82);color:#7895a9;font:10px var(--mono,monospace);z-index:2;backdrop-filter:blur(7px);pointer-events:none';controls.innerHTML='<button type="button" class="btn btn-sm" style="pointer-events:auto;padding:3px 8px">⌂ 视角复位</button><span>左键旋转 · 右键/Shift+左键平移 · 滚轮缩放 · WASD移动</span>';controls.querySelector('button').onclick=resetView;wrap.appendChild(controls);
+  var raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2(),downAt=null;
+  function rememberDown(e){downAt={x:e.clientX,y:e.clientY};}
+  function selectBuilding(e){
+    if(!downAt||Math.hypot(e.clientX-downAt.x,e.clientY-downAt.y)>5)return;
+    var rect=renderer.domElement.getBoundingClientRect();pointer.x=((e.clientX-rect.left)/rect.width)*2-1;pointer.y=-((e.clientY-rect.top)/rect.height)*2+1;
+    raycaster.setFromCamera(pointer,camera);var hits=raycaster.intersectObjects(state.interactive,true);
+    if(!hits.length)return;var object=hits[0].object,building=object.userData.building;
+    while(!building&&object.parent){object=object.parent;building=object.userData&&object.userData.building;}
+    if(building)showCityBuildingCard(wrap,building);
+  }
+  renderer.domElement.addEventListener('pointerdown',rememberDown);renderer.domElement.addEventListener('pointerup',selectBuilding);
   function animate(){ksVoxelAnimHandle=requestAnimationFrame(animate);renderer.render(scene,camera);}animate();
-  var state={scene:scene,camera:camera,renderer:renderer,loader:new THREE.TextureLoader(),bounds:bounds,yBase:null,materials:{},cleanup:function(){window.removeEventListener('mouseup',up);window.removeEventListener('resize',resize);}};
+  var state={scene:scene,camera:camera,renderer:renderer,loader:new THREE.TextureLoader(),bounds:bounds,yBase:null,materials:{},interactive:[],placeholders:{},buildingGroups:{},resetView:resetView,focusBuilding:function(building){var w=Number(building.x2)-Number(building.x1)+1,d=Number(building.z2)-Number(building.z1)+1,h=Number(building.y2)-Number(building.y1)+1;center.set(Number(building.x1)-bounds.minX+w/2,Math.max(3,h*.28),Number(building.z1)-bounds.minZ+d/2);zoom=Math.max(1.15,Math.min(2.1,maxDim/Math.max(w,d,18)*.72));updateProjection();updateCamera();},cleanup:function(){window.removeEventListener('mouseup',up);window.removeEventListener('resize',resize);renderer.domElement.removeEventListener('pointerdown',rememberDown);renderer.domElement.removeEventListener('pointerup',selectBuilding);renderer.domElement.removeEventListener('mousedown',down);renderer.domElement.removeEventListener('mousemove',move);renderer.domElement.removeEventListener('wheel',wheel);renderer.domElement.removeEventListener('dblclick',resetView);renderer.domElement.removeEventListener('keydown',keydown);}};
   state.loader.crossOrigin='anonymous';ksZoneSceneState=state;return state;
 }
 
-async function addZoneVoxelChunk(state,data,tile){
+function showCityBuildingCard(wrap,building){
+  var old=wrap.querySelector('.ks-city-building-card');if(old)old.remove();
+  var card=document.createElement('div');card.className='ks-city-building-card';
+  var market=building.market||{},sale=building.saleStatus==='FOR_SALE',showcase=building.saleStatus==='SHOWCASE',marker=ksCityMarkerStyle(building.showcaseMarker);
+  var footprint=(Number(building.x2)-Number(building.x1)+1)*(Number(building.z2)-Number(building.z1)+1),height=Number(building.y2)-Number(building.y1)+1;
+  card.style.cssText='position:absolute;right:18px;top:18px;width:min(300px,calc(100% - 36px));padding:14px 16px;border:1px solid rgba(100,216,255,.45);border-radius:10px;background:rgba(5,15,24,.94);box-shadow:0 16px 50px #0009;color:#ddecf4;font:12px/1.7 system-ui;z-index:3;backdrop-filter:blur(10px)';
+  card.innerHTML='<button style="float:right;border:0;background:transparent;color:#9bb6c5;cursor:pointer;font-size:16px" onclick="this.parentNode.remove()">×</button>'+
+    '<div style="color:#'+marker.hex+';font-weight:700;font-size:15px;margin-bottom:5px">◆ '+escapeHtml(building.name||building.id||'未命名楼栋')+'</div>'+
+    '<div>专属标识：<b style="color:#'+marker.hex+'">'+marker.label+'识别柱</b></div>'+
+    '<div>状态：<b style="color:'+(sale||showcase?'#f1c75b':'#8ed6b5')+'">'+(sale?'正式在售':(showcase?'沙盘展示':'已登记'))+'</b></div>'+
+    '<div>地块：'+escapeHtml(building.plotId||'-')+'</div>'+
+    '<div>大小：'+(Number(building.x2)-Number(building.x1)+1)+' × '+(Number(building.z2)-Number(building.z1)+1)+' · '+height+' 高</div>'+
+    '<div>占地：'+fmt(footprint)+' ㎡ · 建筑包围体 '+fmt(footprint*height)+' m³</div>'+
+    (sale?'<div>正式挂牌价：<b style="color:#f1c75b">'+fmt(market.price||0)+'</b></div><div>卖方：'+escapeHtml(market.sellerName||'-')+'</div>':(showcase?'<div>展示售价：<b style="color:#f1c75b">'+fmt(building.showcasePrice||0)+'</b></div><div style="color:#7895a9;font-size:10px">展示价不代表已提交正式市场挂单</div>':''));
+  wrap.appendChild(card);
+}
+
+async function addZoneVoxelChunk(state,data,tile,parent,building){
   if(ksZoneSceneState!==state)return;
   var THREE=window.THREE;
   if(state.yBase==null)state.yBase=data.y1;
   var offsetX=tile.x1-state.bounds.minX,offsetZ=tile.z1-state.bounds.minZ,offsetY=data.y1-state.yBase;
+  var target=parent||state.scene;
   var groups={},shaped=[];
   for(var i=0;i<data.blocks.length;i++){
     var block=data.blocks[i],category=ksVoxelShapeCategory(block.mat||'');
@@ -1586,11 +1911,12 @@ async function addZoneVoxelChunk(state,data,tile){
     for(var j=0;j<list.length;j++){
       dummy.position.set(offsetX+list[j].x+.5,offsetY+list[j].y+.5,offsetZ+list[j].z+.5);dummy.updateMatrix();mesh.setMatrixAt(j,dummy.matrix);
     }
-    mesh.instanceMatrix.needsUpdate=true;state.scene.add(mesh);
+    mesh.instanceMatrix.needsUpdate=true;
+    if(building){mesh.userData.building=building;state.interactive.push(mesh);}target.add(mesh);
   }
   for(var s=0;s<shaped.length;s++){
     var item=shaped[s],group=await ksVoxelBuildShapeGroup(THREE,state.loader,item.category,item.b.mat||'',item.b.data,item.b.color);
-    group.position.set(offsetX+item.b.x+.5,offsetY+item.b.y,offsetZ+item.b.z+.5);state.scene.add(group);
+    group.position.set(offsetX+item.b.x+.5,offsetY+item.b.y,offsetZ+item.b.z+.5);if(building){group.userData.building=building;state.interactive.push(group);}target.add(group);
   }
 }
 
@@ -1613,6 +1939,7 @@ function ksVoxelTextureSpec(matName){
   var m=matName.match(/^(.*)_LOG$/)||matName.match(/^(.*)_STEM$/);
   if(m)return {top:matName.toLowerCase(),side:matName.toLowerCase(),bottom:matName.toLowerCase()};
   if(matName.endsWith('_LEAVES'))return {top:matName.toLowerCase(),side:matName.toLowerCase(),bottom:matName.toLowerCase(),tint:0x59ae30,transparent:true};
+  if(matName.includes('GLASS'))return {top:matName.toLowerCase(),side:matName.toLowerCase(),bottom:matName.toLowerCase(),transparent:true,opacity:.72,depthWrite:true};
   return {top:matName.toLowerCase(),side:matName.toLowerCase(),bottom:matName.toLowerCase()};
 }
 function ksVoxelLoadTexture(loader,name){
@@ -1629,19 +1956,22 @@ function ksVoxelLoadTexture(loader,name){
 }
 // 为某材质构建 BoxGeometry 6 面材质数组：[+x,-x,+y,-y,+z,-z] = [右,左,顶,底,前,后]；纹理加载失败/复杂方块时整体回退为纯色立方体
 async function ksVoxelBuildMaterial(THREE,loader,matName,fallbackColor){
+  // 整玻璃块使用服务端颜色的干净半透明外露面。原版纹理的透明通道叠加到自定义面后会在 WebGL 中
+  // 暴露三角形排序边界；玻璃板仍由专用薄片几何和纹理负责。
+  if(matName.includes('GLASS'))return new THREE.MeshStandardMaterial({color:fallbackColor,roughness:.2,metalness:.06,transparent:false,depthWrite:true,side:THREE.FrontSide});
   var spec=ksVoxelTextureSpec(matName);
   if(!spec){
-    return [new THREE.MeshLambertMaterial({color:fallbackColor,transparent:matName==='WATER'||matName==='LAVA',opacity:(matName==='WATER')?0.75:1})];
+    return new THREE.MeshLambertMaterial({color:fallbackColor,transparent:matName==='WATER'||matName==='LAVA',opacity:(matName==='WATER')?0.75:1});
   }
   var topTex=await ksVoxelLoadTexture(loader,spec.top);
   var sideTex=(spec.side===spec.top)?topTex:await ksVoxelLoadTexture(loader,spec.side);
   var botTex=(spec.bottom===spec.top)?topTex:((spec.bottom===spec.side)?sideTex:await ksVoxelLoadTexture(loader,spec.bottom));
   if(!topTex&&!sideTex&&!botTex){
-    return [new THREE.MeshLambertMaterial({color:fallbackColor})];
+    return new THREE.MeshLambertMaterial({color:fallbackColor});
   }
   function mk(tex,tint){
     var opt={map:tex||null,color:tex?(tint!=null?tint:0xffffff):fallbackColor};
-    if(spec.transparent){opt.transparent=true;opt.alphaTest=0.4;opt.side=THREE.DoubleSide;}
+    if(spec.transparent){opt.transparent=true;opt.alphaTest=spec.opacity?0.05:0.4;opt.opacity=spec.opacity||1;opt.depthWrite=spec.depthWrite!==false;opt.side=THREE.DoubleSide;}
     return new THREE.MeshLambertMaterial(opt);
   }
   var sideMat=mk(sideTex,spec.tint&&spec.side===spec.top?spec.tint:(spec.tint&&!spec.topTint?spec.tint:null));
@@ -1658,6 +1988,7 @@ function ksVoxelParseProp(dataStr,key){
   return m?m[1]:null;
 }
 function ksVoxelShapeCategory(matName){
+  if(matName.endsWith('_GLASS_PANE'))return 'pane';
   if(matName.endsWith('_FENCE_GATE'))return 'fence_gate';
   if(matName.endsWith('_STAIRS'))return 'stairs';
   if(matName.endsWith('_SLAB'))return 'slab';
@@ -1743,6 +2074,13 @@ function ksVoxelBuildFenceGate(THREE,mat,facing){
   g.rotation.y=KS_VOXEL_FACING_ANGLE[facing]||0;
   return g;
 }
+function ksVoxelBuildPane(THREE,mat,dataStr){
+  var g=new THREE.Group(),north=ksVoxelParseProp(dataStr,'north'),south=ksVoxelParseProp(dataStr,'south');
+  var east=ksVoxelParseProp(dataStr,'east'),west=ksVoxelParseProp(dataStr,'west'),th=.10;
+  if(north==='true'||south==='true'||(!north&&!south&&!east&&!west))g.add(ksVoxelBox(THREE,mat,th,1,1,0,.5,0));
+  if(east==='true'||west==='true'||(!north&&!south&&!east&&!west))g.add(ksVoxelBox(THREE,mat,1,1,th,0,.5,0));
+  return g;
+}
 var KS_VOXEL_SHAPE_SUFFIX={stairs:'_STAIRS',slab:'_SLAB',fence:'_FENCE',wall:'_WALL',fence_gate:'_FENCE_GATE'};
 async function ksVoxelBuildShapeGroup(THREE,loader,category,matName,dataStr,fallbackColor){
   var facing=ksVoxelParseProp(dataStr,'facing')||'south';
@@ -1754,10 +2092,13 @@ async function ksVoxelBuildShapeGroup(THREE,loader,category,matName,dataStr,fall
     tex=await ksVoxelLoadTexture(loader,matName.toLowerCase()+((half==='top')?'_top':'_bottom'));
   }else if(category==='trapdoor'){
     tex=await ksVoxelLoadTexture(loader,matName.toLowerCase());
+  }else if(category==='pane'){
+    tex=await ksVoxelLoadTexture(loader,matName.slice(0,-5).toLowerCase());
   }else{
     tex=await ksVoxelLoadFirstAvailable(loader,ksVoxelBaseCandidates(matName,KS_VOXEL_SHAPE_SUFFIX[category]));
   }
-  mat=tex?new THREE.MeshLambertMaterial({map:tex}):new THREE.MeshLambertMaterial({color:fallbackColor});
+  mat=tex?new THREE.MeshLambertMaterial({map:tex,transparent:category==='pane',opacity:category==='pane'?0.72:1,alphaTest:category==='pane'?0.08:0,depthWrite:true,side:category==='pane'?THREE.DoubleSide:THREE.FrontSide}):new THREE.MeshLambertMaterial({color:fallbackColor,transparent:category==='pane',opacity:category==='pane'?0.66:1,depthWrite:true});
+  if(category==='pane')return ksVoxelBuildPane(THREE,mat,dataStr);
   if(category==='stairs')return ksVoxelBuildStairs(THREE,mat,half,facing);
   if(category==='slab')return ksVoxelBuildSlab(THREE,mat,type);
   if(category==='fence')return ksVoxelBuildFence(THREE,mat);
@@ -2011,6 +2352,7 @@ function KsMapEngine(canvasId,opts){
   var canvas=document.getElementById(canvasId);if(!canvas)return null;
   var ctx=canvas.getContext('2d');
   var st={world:opts.world||'world',zones:[],plots:[],scale:1,ox:0,oz:0,mode:'pan',dragging:false,selecting:false,moved:false,last:null,start:null,sel:null,selectedZoneId:null,pointerId:null,tiles:{},terrain:opts.terrain!==false,tilesEnabled:opts.terrain!==false};
+  var tileQueue=[],tileActive=0,tileEpoch=0,tileFailures=0,TILE_REQUEST_LIMIT=2;
   function size(){return {w:Math.max(1,canvas.clientWidth||800),h:Math.max(1,canvas.clientHeight||512)};}
   function zoneColor(type){return {RESIDENTIAL:'#00D9FF',COMMERCIAL:'#FF4FD8',INDUSTRIAL:'#FFC857',AGRICULTURAL:'#5BE38B'}[type]||'#8FA6C7';}
   function colorAlpha(hex,alpha){var value=parseInt(String(hex).slice(1),16);return 'rgba('+((value>>16)&255)+','+((value>>8)&255)+','+(value&255)+','+alpha+')';}
@@ -2023,12 +2365,45 @@ function KsMapEngine(canvasId,opts){
   function inWorld(v){return !v.world||String(v.world)===String(st.world);}
   function visible(){return st.zones.concat(st.plots).filter(inWorld);}
   function fitEntity(v,pad){var q=bounds(v),s=size();pad=pad||64;st.scale=Math.max(.02,Math.min(24,(s.w-pad*2)/Math.max(1,q.w),(s.h-pad*2)/Math.max(1,q.h)));st.ox=(s.w-q.w*st.scale)/2-q.x*st.scale;st.oz=(s.h-q.h*st.scale)/2-q.z*st.scale;}
-  function fit(){var all=visible(),s=size();if(!all.length){st.scale=1;st.ox=s.w/2;st.oz=s.h/2;draw();return;}var minX=Infinity,minZ=Infinity,maxX=-Infinity,maxZ=-Infinity;all.forEach(function(v){var q=bounds(v);minX=Math.min(minX,q.x);minZ=Math.min(minZ,q.z);maxX=Math.max(maxX,q.x+q.w);maxZ=Math.max(maxZ,q.z+q.h);});var pad=Math.min(78,Math.max(42,Math.min(s.w,s.h)*.12)),spanX=Math.max(1,maxX-minX),spanZ=Math.max(1,maxZ-minZ);st.scale=Math.max(.02,Math.min(24,(s.w-pad*2)/spanX,(s.h-pad*2)/spanZ));st.ox=(s.w-spanX*st.scale)/2-minX*st.scale;st.oz=(s.h-spanZ*st.scale)/2-minZ*st.scale;draw();}
+  function fit(){var all=visible(),s=size();if(!all.length){st.scale=4;st.ox=s.w/2;st.oz=s.h/2;draw();return;}var minX=Infinity,minZ=Infinity,maxX=-Infinity,maxZ=-Infinity;all.forEach(function(v){var q=bounds(v);minX=Math.min(minX,q.x);minZ=Math.min(minZ,q.z);maxX=Math.max(maxX,q.x+q.w);maxZ=Math.max(maxZ,q.z+q.h);});var pad=Math.min(78,Math.max(42,Math.min(s.w,s.h)*.12)),spanX=Math.max(1,maxX-minX),spanZ=Math.max(1,maxZ-minZ);st.scale=Math.max(.02,Math.min(24,(s.w-pad*2)/spanX,(s.h-pad*2)/spanZ));st.ox=(s.w-spanX*st.scale)/2-minX*st.scale;st.oz=(s.h-spanZ*st.scale)/2-minZ*st.scale;draw();}
   function gridStep(){var options=[8,16,32,64,128,256,512,1024,2048];for(var i=0;i<options.length;i++)if(options[i]*st.scale>=48)return options[i];return options[options.length-1];}
   function drawGrid(s){var step=gridStep(),a=world(0,0),b=world(s.w,s.h),x=Math.floor(a.x/step)*step,z=Math.floor(a.z/step)*step;ctx.font='9px Roboto Mono,monospace';ctx.textBaseline='top';for(;x<=b.x+step;x+=step){var p=point(x,0),major=x%(step*4)===0;ctx.strokeStyle=major?'rgba(120,169,204,.16)':'rgba(120,169,204,.075)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(Math.round(p.x)+.5,0);ctx.lineTo(Math.round(p.x)+.5,s.h);ctx.stroke();if(major&&p.x>42&&p.x<s.w-42){ctx.fillStyle='rgba(143,176,197,.48)';ctx.fillText(String(x),p.x+4,6);}}for(;z<=b.z+step;z+=step){var q=point(0,z),majorZ=z%(step*4)===0;ctx.strokeStyle=majorZ?'rgba(120,169,204,.16)':'rgba(120,169,204,.075)';ctx.beginPath();ctx.moveTo(0,Math.round(q.y)+.5);ctx.lineTo(s.w,Math.round(q.y)+.5);ctx.stroke();if(majorZ&&q.y>28&&q.y<s.h-28){ctx.fillStyle='rgba(143,176,197,.48)';ctx.fillText(String(z),6,q.y+4);}}}
   function tileZoom(){var wanted=16/Math.max(.02,st.scale),levels=[1,2,4,8],best=1,delta=Infinity;levels.forEach(function(level){var d=Math.abs(Math.log(wanted/level));if(d<delta){best=level;delta=d;}});return best;}
-  function loadTile(key,zoom,tx,tz){st.tiles[key]='loading';fetch('/kSHWP/api/tile?world='+encodeURIComponent(st.world)+'&x='+tx+'&z='+tz+'&zoom='+zoom).then(function(r){if(!r.ok)throw new Error('tile '+r.status);return r.json();}).then(function(data){if(!data||!data.tile)throw new Error('empty tile');var image=new Image();image.onload=function(){st.tiles[key]=image;draw();};image.onerror=function(){st.tiles[key]='failed';};image.src='data:image/png;base64,'+data.tile;}).catch(function(){st.tiles[key]='failed';if(st.tilesEnabled){st.tilesEnabled=false;st.tiles={};setStatus('ksHWP terrain unavailable; showing district grid');draw();}});}
-  function drawTiles(s){if(!st.tilesEnabled)return;var zoom=tileZoom(),span=16*zoom,a=world(0,0),b=world(s.w,s.h),minX=Math.floor(Math.min(a.x,b.x)/span)-1,maxX=Math.floor(Math.max(a.x,b.x)/span)+1,minZ=Math.floor(Math.min(a.z,b.z)/span)-1,maxZ=Math.floor(Math.max(a.z,b.z)/span)+1,size=span*st.scale;for(var tz=minZ;tz<=maxZ;tz++)for(var tx=minX;tx<=maxX;tx++){var key=st.world+':'+zoom+':'+tx+':'+tz,img=st.tiles[key],p=point(tx*span,tz*span);if(img&&img!=='loading'&&img!=='failed'){ctx.save();ctx.filter='saturate(0.55) brightness(0.6) contrast(1.05)';ctx.drawImage(img,p.x,p.y,size,size);ctx.restore();}else{ctx.fillStyle=img==='loading'?'#101827':'#0b1420';ctx.fillRect(p.x,p.y,size,size);}if(!img)loadTile(key,zoom,tx,tz);}ctx.fillStyle='rgba(6,10,22,0.45)';ctx.fillRect(0,0,s.w,s.h);}
+  function resetTileRequests(){tileEpoch++;tileQueue=[];tileFailures=0;}
+  function pumpTiles(){
+    while(tileActive<TILE_REQUEST_LIMIT&&tileQueue.length){
+      var item=tileQueue.shift();
+      if(item.epoch!==tileEpoch||item.world!==st.world||st.tiles[item.key]!=='queued')continue;
+      tileActive++;st.tiles[item.key]='loading';
+      (function(request){
+        fetch('/kSHWP/api/tile?world='+encodeURIComponent(request.world)+'&x='+request.tx+'&z='+request.tz+'&zoom='+request.zoom)
+          .then(function(r){if(!r.ok)throw new Error('tile '+r.status);return r.text();})
+          .then(function(text){var data;try{data=JSON.parse(text);}catch(ignore){throw new Error('tile response is not JSON');}if(!data||!data.tile)throw new Error('empty tile');var image=new Image();image.onload=function(){if(request.epoch===tileEpoch&&request.world===st.world){st.tiles[request.key]=image;draw();}};image.onerror=function(){if(request.epoch===tileEpoch&&request.world===st.world){st.tiles[request.key]='failed';draw();}};image.src='data:image/png;base64,'+data.tile;})
+          .catch(function(){if(request.epoch===tileEpoch&&request.world===st.world){st.tiles[request.key]='failed';tileFailures++;if(tileFailures===1)setStatus('部分地形瓦片暂不可用，其他区域继续加载');draw();}})
+          .then(function(){tileActive=Math.max(0,tileActive-1);pumpTiles();});
+      })(item);
+    }
+  }
+  function loadTile(key,zoom,tx,tz){
+    if(st.tiles[key])return;
+    st.tiles[key]='queued';
+    tileQueue.push({key:key,zoom:zoom,tx:tx,tz:tz,world:st.world,epoch:tileEpoch});
+    pumpTiles();
+  }
+  function drawTiles(s){
+    if(!st.tilesEnabled)return;
+    var zoom=tileZoom(),span=16*zoom,a=world(0,0),b=world(s.w,s.h),minX=Math.floor(Math.min(a.x,b.x)/span)-1,maxX=Math.floor(Math.max(a.x,b.x)/span)+1,minZ=Math.floor(Math.min(a.z,b.z)/span)-1,maxZ=Math.floor(Math.max(a.z,b.z)/span)+1,tileSize=span*st.scale,needed={},missing=[];
+    for(var tz=minZ;tz<=maxZ;tz++)for(var tx=minX;tx<=maxX;tx++){
+      var key=st.world+':'+zoom+':'+tx+':'+tz,img=st.tiles[key],p=point(tx*span,tz*span);
+      needed[key]=true;
+      if(img&&img!=='queued'&&img!=='loading'&&img!=='failed'){ctx.save();ctx.filter='saturate(0.55) brightness(0.6) contrast(1.05)';ctx.drawImage(img,p.x,p.y,tileSize,tileSize);ctx.restore();}
+      else{ctx.fillStyle=(img==='queued'||img==='loading')?'#101827':'#0b1420';ctx.fillRect(p.x,p.y,tileSize,tileSize);}
+      if(!img)missing.push({key:key,zoom:zoom,tx:tx,tz:tz,distance:Math.abs(p.x-s.w/2)+Math.abs(p.y-s.h/2)});
+    }
+    tileQueue=tileQueue.filter(function(item){if(item.epoch===tileEpoch&&needed[item.key])return true;if(st.tiles[item.key]==='queued')delete st.tiles[item.key];return false;});
+    missing.sort(function(left,right){return left.distance-right.distance;}).forEach(function(item){loadTile(item.key,item.zoom,item.tx,item.tz);});
+    ctx.fillStyle='rgba(6,10,22,0.45)';ctx.fillRect(0,0,s.w,s.h);
+  }
   function clipped(text,maxWidth){text=String(text||'');if(ctx.measureText(text).width<=maxWidth)return text;while(text.length>1&&ctx.measureText(text+'…').width>maxWidth)text=text.slice(0,-1);return text+'…';}
   function drawZone(z,labels){var q=bounds(z),p=point(q.x,q.z),w=q.w*st.scale,h=q.h*st.scale,c=zoneColor(z.type),sale=z.status==='FOR_SALE',selected=String(z.id)===String(st.selectedZoneId),radius=Math.min(12,Math.max(0,Math.min(w,h)*.12));if(w<1||h<1)return;ctx.save();if(!labels){var fill=ctx.createLinearGradient(p.x,p.y,p.x,p.y+h);fill.addColorStop(0,colorAlpha(c,sale?.42:.16));fill.addColorStop(1,colorAlpha(c,sale?.14:.055));roundedRect(p.x,p.y,w,h,radius);ctx.fillStyle=fill;ctx.fill();roundedRect(p.x+.5,p.y+.5,Math.max(0,w-1),Math.max(0,h-1),radius);ctx.globalAlpha=selected?1:(sale?.98:.48);ctx.strokeStyle=c;ctx.lineWidth=selected?3:(sale?2:1);ctx.setLineDash(sale?[]:[6,5]);ctx.shadowColor=c;ctx.shadowBlur=sale?18:8;ctx.stroke();ctx.setLineDash([]);}else if(w>44&&h>24){ctx.globalAlpha=1;ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='700 15px Rajdhani,Arial,sans-serif';ctx.fillStyle='#F8FCFF';ctx.shadowColor=c;ctx.shadowBlur=8;ctx.fillText(clipped(z.name||z.id,Math.max(28,w-14)),p.x+w/2,p.y+h/2-(h>48?8:0));if(h>48){ctx.shadowBlur=0;ctx.font='10px Roboto Mono,monospace';ctx.fillStyle=c;ctx.fillText(sale?'FOR SALE':String(z.status||z.type||'ZONE'),p.x+w/2,p.y+h/2+12);}}ctx.restore();}
   function drawPlot(v){var q=bounds(v),p=point(q.x,q.z),w=Math.max(1,q.w*st.scale),h=Math.max(1,q.h*st.scale),c=v.ownerType==='ENTERPRISE'?'#F07AD7':'#BFA7FF';ctx.save();ctx.fillStyle=c;ctx.globalAlpha=.14;ctx.fillRect(p.x,p.y,w,h);ctx.globalAlpha=.9;ctx.strokeStyle=c;ctx.lineWidth=1.2;ctx.setLineDash([5,4]);ctx.strokeRect(p.x+.5,p.y+.5,Math.max(0,w-1),Math.max(0,h-1));ctx.restore();}
@@ -2036,7 +2411,7 @@ function KsMapEngine(canvasId,opts){
   function draw(){var s=size();ctx.clearRect(0,0,s.w,s.h);ctx.fillStyle='#050914';ctx.fillRect(0,0,s.w,s.h);drawTiles(s);drawGrid(s);var zones=st.zones.filter(inWorld);zones.forEach(function(z){drawZone(z,false);});st.plots.filter(inWorld).forEach(drawPlot);zones.forEach(function(z){drawZone(z,true);});drawSelection();}
   function resize(){var s=size(),d=Math.min(window.devicePixelRatio||1,2);canvas.width=Math.round(s.w*d);canvas.height=Math.round(s.h*d);ctx.setTransform(d,0,0,d,0,0);draw();}
   function contains(q,w){return w.x>=q.x&&w.x<=q.x+q.w&&w.z>=q.z&&w.z<=q.z+q.h;}
-  function hit(x,y){var w=world(x,y),zones=st.zones.filter(inWorld).slice().reverse();for(var i=0;i<zones.length;i++)if(contains(bounds(zones[i]),w))return {kind:'zone',value:zones[i]};var plots=st.plots.filter(inWorld).slice().reverse();for(var j=0;j<plots.length;j++)if(contains(bounds(plots[j]),w))return {kind:'plot',value:plots[j]};return null;}
+  function hit(x,y){var w=world(x,y),plots=st.plots.filter(inWorld).slice().reverse();for(var i=0;i<plots.length;i++)if(contains(bounds(plots[i]),w))return {kind:'plot',value:plots[i]};var zones=st.zones.filter(inWorld).slice().reverse();for(var j=0;j<zones.length;j++)if(contains(bounds(zones[j]),w))return {kind:'zone',value:zones[j]};return null;}
   function setCursor(found){if(st.selecting||st.mode==='select'){canvas.style.cursor='crosshair';return;}if(st.dragging){canvas.style.cursor='grabbing';return;}canvas.style.cursor=found?'pointer':'grab';}
   function zoomAt(factor,x,y){var s=size();x=x==null?s.w/2:x;y=y==null?s.h/2:y;var before=world(x,y);st.scale=Math.max(.02,Math.min(24,st.scale*factor));st.ox=x-before.x*st.scale;st.oz=y-before.z*st.scale;draw();}
   canvas.addEventListener('pointerdown',function(e){if(e.button!==0)return;var m=mouse(e),w=world(m.x,m.y);st.pointerId=e.pointerId;st.last=m;st.moved=false;try{canvas.setPointerCapture(e.pointerId);}catch(ignore){}if(st.mode==='select'||e.shiftKey){st.selecting=true;st.start={x:Math.round(w.x),z:Math.round(w.z)};st.sel={x1:st.start.x,z1:st.start.z,x2:st.start.x,z2:st.start.z};}else{st.dragging=true;}setCursor();draw();});
@@ -2045,7 +2420,7 @@ function KsMapEngine(canvasId,opts){
   canvas.addEventListener('pointerup',endPointer);canvas.addEventListener('pointercancel',endPointer);
   canvas.addEventListener('wheel',function(e){e.preventDefault();var m=mouse(e);zoomAt(e.deltaY<0?1.16:.86,m.x,m.y);},{passive:false});
   if(window.ResizeObserver)new ResizeObserver(resize).observe(canvas);setTimeout(resize,40);window.addEventListener('resize',resize);
-  return {setZones:function(v){st.zones=v||[];draw();},setPlots:function(v){st.plots=v||[];draw();},setWorld:function(v){if(v&&v!==st.world){st.world=v;st.tiles={};st.tilesEnabled=st.terrain;if(st.terrain)setStatus('Loading ksHWP terrain');}draw();},setMode:function(v){st.mode=v==='select'?'select':'pan';canvas.classList.toggle('select-mode',st.mode==='select');setCursor();},setSelected:function(id){st.selectedZoneId=id||null;draw();},setSelection:function(v){st.sel=v||null;draw();},focus:function(v){if(v){fitEntity(v);draw();}},zoomIn:function(){zoomAt(1.16);},zoomOut:function(){zoomAt(.86);},center:fit,resize:resize};
+  return {setZones:function(v){st.zones=v||[];draw();},setPlots:function(v){st.plots=v||[];draw();},setWorld:function(v){if(v&&v!==st.world){resetTileRequests();st.world=v;st.tiles={};st.tilesEnabled=st.terrain;if(st.terrain)setStatus('正在加载 ksHWP 地形');}draw();},setMode:function(v){st.mode=v==='select'?'select':'pan';canvas.classList.toggle('select-mode',st.mode==='select');setCursor();},setSelected:function(id){st.selectedZoneId=id||null;draw();},setSelection:function(v){st.sel=v||null;draw();},focus:function(v){if(v){fitEntity(v);draw();}},zoomIn:function(){zoomAt(1.16);},zoomOut:function(){zoomAt(.86);},center:fit,resize:resize};
 }
 function KsDistrictMap(canvasId,opts){opts=opts||{};opts.terrain=false;return KsMapEngine(canvasId,opts);}
 function drawDistrictFocus(canvasId,v){
@@ -2063,7 +2438,7 @@ function openRePlotData(p){var canvas='<canvas id="districtFocusMap" class="dist
 function openPlotVoxelViewer(){var p=window.rePreviewPlot;if(!p){toast('请先选择一个地块','err');return;}openRegionVoxelViewer({world:p.world||reMapState.world,x1:Math.min(Number(p.x1),Number(p.x2)),z1:Math.min(Number(p.z1),Number(p.z2)),x2:Math.max(Number(p.x1),Number(p.x2)),z2:Math.max(Number(p.z1),Number(p.z2))});}
 function openEmpirePlotData(p){var canvas='<canvas id="districtFocusMap" class="district-focus-map"></canvas>';window.rePreviewPlot=p;showModal('我的地块 // '+escapeHtml(p.id||p.plotId||'—'),canvas+'<div class="hub-feed"><div class="hub-feed-item"><span>区域</span><b>'+escapeHtml(p.zoneId||'—')+'</b></div><div class="hub-feed-item"><span>范围</span><b>['+p.x1+','+p.z1+'] - ['+p.x2+','+p.z2+']</b></div><div class="hub-feed-item"><span>购入价</span><b>'+fmt(p.price||0)+'</b></div><div class="hub-feed-item"><span>副本权限</span><b>'+escapeHtml(p.dungeonTemplateId||'—')+'</b></div></div><div style="margin-top:12px;text-align:right;"><button class="btn btn-primary" type="button" onclick="openPlotVoxelViewer()">进入地块 3D</button></div>');setTimeout(function(){drawDistrictFocus('districtFocusMap',Object.assign({},p,{type:p.zoneType}));},0);}
 var reBrowseMap=null,lastMapSelect=null,lastMap3dSelect=null,reActivePurchaseZone=null;
-var reMapState={zones:[],plots:[],world:'world',selectedZoneId:null,loaded:false,moduleLoaded:false};
+var reMapState={zones:[],plots:[],world:'world',worldMeta:{},selectedZoneId:null,loaded:false,moduleLoaded:false};
 function initBrowseMap(){
   if(reBrowseMap){reBrowseMap.resize();return;}
   reBrowseMap=KsMapEngine('reBrowseCanvas',{
@@ -2085,10 +2460,10 @@ function reSelectionZone(s){
 function reSelectionOverlapsPlot(s){return reWorldPlots().some(function(p){var x1=Math.min(Number(p.x1),Number(p.x2)),x2=Math.max(Number(p.x1),Number(p.x2)),z1=Math.min(Number(p.z1),Number(p.z2)),z2=Math.max(Number(p.z1),Number(p.z2));return s.x1<=x2&&s.x2>=x1&&s.z1<=z2&&s.z2>=z1;});}
 function reZoneFullyOccupied(z){var zx1=Math.min(Number(z.x1),Number(z.x2)),zx2=Math.max(Number(z.x1),Number(z.x2)),zz1=Math.min(Number(z.z1),Number(z.z2)),zz2=Math.max(Number(z.z1),Number(z.z2));return reWorldPlots().some(function(p){if(String(p.zoneId)!==String(z.id))return false;var x1=Math.min(Number(p.x1),Number(p.x2)),x2=Math.max(Number(p.x1),Number(p.x2)),z1=Math.min(Number(p.z1),Number(p.z2)),z2=Math.max(Number(p.z1),Number(p.z2));return x1<=zx1&&x2>=zx2&&z1<=zz1&&z2>=zz2;});}
 function renderReSelection(valid,message){var el=document.getElementById('reMapSelectionText');if(!el)return;el.textContent=message;el.classList.toggle('invalid',valid===false);}
-function setReMap3dEnabled(selection){var button=document.getElementById('reMap3dBtn');if(!button)return;var valid=selection&&selection.x2-selection.x1+1<=128&&selection.z2-selection.z1+1<=128;button.disabled=!valid;button.title=valid?'查看所选区域建筑 3D':'请框选不超过 128 x 128 的区域';}
+function setReMap3dEnabled(selection){var button=document.getElementById('reMap3dBtn');if(!button)return;var width=selection?selection.x2-selection.x1+1:0,depth=selection?selection.z2-selection.z1+1:0,valid=selection&&width<=KS_REGION_3D_MAX_SPAN&&depth<=KS_REGION_3D_MAX_SPAN;button.disabled=!valid;button.title=valid?'查看所选区域建筑 3D':(selection?'当前 '+width+' × '+depth+'，上限 '+KS_REGION_3D_MAX_SPAN+' × '+KS_REGION_3D_MAX_SPAN:'请框选不超过 '+KS_REGION_3D_MAX_SPAN+' × '+KS_REGION_3D_MAX_SPAN+' 的区域');}
 function applyReMapSelection(s){
   var width=s.x2-s.x1+1,depth=s.z2-s.z1+1;
-  if(width>128||depth>128){lastMapSelect=null;lastMap3dSelect=null;setReMap3dEnabled(null);renderReSelection(false,'范围过大，请框选不超过 128 x 128 的区域');toast('3D 查看范围过大，请选择更小的区域','err');return;}
+  if(width>KS_REGION_3D_MAX_SPAN||depth>KS_REGION_3D_MAX_SPAN){lastMapSelect=null;lastMap3dSelect=null;setReMap3dEnabled(s);renderReSelection(false,'已框选 '+width+' × '+depth+' 方块，超过 '+KS_REGION_3D_MAX_SPAN+' × '+KS_REGION_3D_MAX_SPAN+' 上限');toast('当前 '+width+' × '+depth+'，请缩小到 '+KS_REGION_3D_MAX_SPAN+' × '+KS_REGION_3D_MAX_SPAN+' 内','err');return;}
   lastMap3dSelect=Object.assign({},s);setReMap3dEnabled(lastMap3dSelect);
   var zone=reSelectionZone(s);
   if(!zone){lastMapSelect=null;renderReSelection(true,'已选 '+width+' × '+depth+' 方块 · 可查看 3D（购地需落在单一可购区域）');return;}
@@ -2119,7 +2494,7 @@ function renderReKpis(zones,plots){var sale=zones.filter(function(z){return z.st
 function renderReZoneDetail(zone){
   var el=document.getElementById('reZoneDetail');if(!zone){el.innerHTML='<span class="eyebrow">SELECTED DISTRICT</span><h3>当前世界没有区域</h3>';return;}
   var meta=reZoneMeta(zone.type),sale=zone.status==='FOR_SALE',occupied=reZoneFullyOccupied(zone),actionable=sale&&!occupied,area=reZoneArea(zone),status=reStatusLabel(zone.status)+(occupied?' · 已占用':'');
-  el.innerHTML='<span class="eyebrow">SELECTED DISTRICT · '+escapeHtml(zone.id)+'</span><h3>'+escapeHtml(zone.name||zone.id)+'</h3><span class="re-map-type-tag"><i class="re-map-swatch" style="color:'+meta.color+'"></i>'+escapeHtml(meta.label)+' · '+escapeHtml(status)+'</span><div class="re-map-detail-grid"><div><small>区域底价</small><b>'+fmt(zone.basePrice||0)+'</b></div><div><small>年税率</small><b>'+pct(zone.taxRate||0)+'</b></div><div><small>坐标面积</small><b>'+fmt(area)+' 方块</b></div><div><small>登记地块</small><b>'+fmt(zone.plotCount||0)+'</b></div><div><small>房屋容量</small><b>'+reCapacityText(zone)+'</b></div><div><small>副本权限</small><b>'+escapeHtml(zone.dungeonTemplateId||'无')+'</b></div></div><button class="btn btn-primary re-map-buy" type="button" onclick="buyReSelectedZone()"'+(actionable?'':' disabled')+'><i data-lucide="'+(actionable?'scan-line':'lock')+'"></i><span>'+(occupied?'区域已占用':(sale?'选择范围并购入':'当前不可购'))+'</span></button>';
+  el.innerHTML='<span class="eyebrow">SELECTED DISTRICT · '+escapeHtml(zone.id)+'</span><h3>'+escapeHtml(zone.name||zone.id)+'</h3><span class="re-map-type-tag"><i class="re-map-swatch" style="color:'+meta.color+'"></i>'+escapeHtml(meta.label)+' · '+escapeHtml(status)+'</span><div class="re-map-detail-grid"><div><small>区域底价</small><b>'+fmt(zone.basePrice||0)+'</b></div><div><small>年税率</small><b>'+pct(zone.taxRate||0)+'</b></div><div><small>坐标面积</small><b>'+fmt(area)+' 方块</b></div><div><small>登记地块</small><b>'+fmt(zone.plotCount||0)+'</b></div><div><small>房屋容量</small><b>'+reCapacityText(zone)+'</b></div><div><small>副本权限</small><b>'+escapeHtml(zone.dungeonTemplateId||'无')+'</b></div></div><button class="btn btn-primary re-map-buy" type="button" data-zone-id="'+escapeAttr(zone.id)+'" onclick="openZoneVoxelViewerById(this.dataset.zoneId)"><i data-lucide="building-2"></i><span>进入城区售楼沙盘</span></button><button class="btn re-map-buy" type="button" style="margin-top:7px" onclick="buyReSelectedZone()"'+(actionable?'':' disabled')+'><i data-lucide="'+(actionable?'scan-line':'lock')+'"></i><span>'+(occupied?'区域已占用':(sale?'选择范围并购入':'当前不可购'))+'</span></button>';
   if(window.lucide&&window.lucide.createIcons)window.lucide.createIcons({attrs:{'stroke-width':1.8}});
 }
 function renderRePriceBars(zones){var el=document.getElementById('rePriceBars');if(!zones.length){el.innerHTML='<span style="color:#7895A9;font-size:10px;">暂无数据</span>';return;}var max=Math.max.apply(null,zones.map(function(z){return Number(z.basePrice)||0;}));el.innerHTML=zones.map(function(z){var h=max>0?Math.round(12+(Number(z.basePrice)||0)/max*50):12;return '<i class="re-price-bar'+(String(z.id)===String(reMapState.selectedZoneId)?' selected':'')+'" style="height:'+h+'px" title="'+escapeAttr(z.name||z.id)+' · '+escapeAttr(fmt(z.basePrice||0))+'"></i>';}).join('');}
@@ -2132,13 +2507,29 @@ async function loadReBrowse(forceCenter){
   initBrowseMap();
   document.getElementById('reModuleHint2').textContent='SYNCING REAL DATA';
   document.getElementById('reBrowseStatus').textContent='正在同步区域数据';
-  var result=await Promise.all([api('GET','/api/realestate/zones'),api('GET','/api/realestate/plots')]),d=result[0]||{},pd=result[1]||{};
+  var result=await Promise.all([
+    api('GET','/api/realestate/zones'),
+    api('GET','/api/realestate/plots'),
+    fetch('/kSHWP/api/worlds').then(function(r){return r.ok?r.json():{};}).catch(function(){return {};})
+  ]),d=result[0]||{},pd=result[1]||{},wd=result[2]||{};
   if(d.error){reMapState.zones=[];reMapState.plots=[];reMapState.moduleLoaded=false;document.getElementById('reModuleHint2').textContent='SYNC FAILED';reBrowseMap.setZones([]);reBrowseMap.setPlots([]);renderReWorkspace();document.getElementById('reBrowseStatus').textContent='区域数据同步失败';return;}
   if(d.moduleLoaded===false){reMapState.zones=[];reMapState.plots=[];reMapState.moduleLoaded=false;document.getElementById('reModuleHint2').textContent='MODULE OFFLINE';reBrowseMap.setZones([]);reBrowseMap.setPlots([]);renderReWorkspace();document.getElementById('reBrowseStatus').textContent='房地产模块未安装';return;}
   reMapState.moduleLoaded=true;reMapState.zones=Array.isArray(d.zones)?d.zones:[];reMapState.plots=Array.isArray(pd.plots)?pd.plots:[];
-  var worlds=[];reMapState.zones.concat(reMapState.plots).forEach(function(v){var w=String(v.world||'world');if(worlds.indexOf(w)<0)worlds.push(w);});worlds.sort();if(!worlds.length)worlds=['world'];
+  var worlds=[],worldMeta={};
+  if(Array.isArray(wd.worlds))wd.worlds.forEach(function(v){
+    var w=String(v&&v.name||'').trim();if(!w)return;
+    if(worlds.indexOf(w)<0)worlds.push(w);
+    worldMeta[w]=v||{};
+  });
+  reMapState.zones.concat(reMapState.plots).forEach(function(v){
+    var w=String(v.world||'world');if(worlds.indexOf(w)<0)worlds.push(w);
+  });
+  worlds.sort();if(!worlds.length)worlds=['world'];reMapState.worldMeta=worldMeta;
   var previousWorld=reMapState.world;if(worlds.indexOf(reMapState.world)<0)reMapState.world=worlds[0];
-  var select=document.getElementById('reWorldSelect');select.innerHTML=worlds.map(function(w){return '<option value="'+escapeAttr(w)+'"'+(w===reMapState.world?' selected':'')+'>'+escapeHtml(w)+'</option>';}).join('');
+  var select=document.getElementById('reWorldSelect');select.innerHTML=worlds.map(function(w){
+    var meta=worldMeta[w]||{},dimension=String(meta.dimension||'').trim(),label=dimension?w+' · '+dimension:w;
+    return '<option value="'+escapeAttr(w)+'"'+(w===reMapState.world?' selected':'')+'>'+escapeHtml(label)+'</option>';
+  }).join('');
   var worldZones=reWorldZones();if(!worldZones.some(function(z){return String(z.id)===String(reMapState.selectedZoneId);})){var first=worldZones.find(function(z){return z.status==='FOR_SALE';})||worldZones[0]||null;reMapState.selectedZoneId=first?first.id:null;}
   reBrowseMap.setZones(reMapState.zones);reBrowseMap.setPlots(reMapState.plots);reBrowseMap.setWorld(reMapState.world);reBrowseMap.setSelected(reMapState.selectedZoneId);reBrowseMap.setSelection(lastMap3dSelect);if(forceCenter||!reMapState.loaded||previousWorld!==reMapState.world)reBrowseMap.center();
   reMapState.loaded=true;document.getElementById('reModuleHint2').textContent='LIVE REGION DATA';updateReMapStatus();renderReWorkspace();

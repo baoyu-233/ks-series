@@ -17,6 +17,11 @@ import java.util.logging.Level;
 /** 称号定义/持有/佩戴的 CRUD 与购买业务逻辑。 */
 public final class TitleManager {
 
+    public static final double MAX_ABS_ATTRIBUTE_AMOUNT = 1_000_000.0;
+    public static final int MIN_FRAME_INTERVAL_MS = 50;
+    public static final int MAX_FRAME_INTERVAL_MS = 60_000;
+    public static final int MAX_IA_FRAME_COUNT = 256;
+
     private final KsTitle plugin;
 
     public record GrantTempResult(boolean success, String message, long expiresAt) {}
@@ -37,6 +42,7 @@ public final class TitleManager {
     /** 管理员创建称号（自增ID）。 */
     public int createTitle(String displayName, String description, String category, String rarity,
                             double price, String unlockType, String conditionType, String conditionValue) {
+        if (displayName == null || displayName.isBlank() || !validPrice(price)) return -1;
         String sql = "INSERT INTO ks_title_defs (display_name, description, category, rarity, price, " +
             "unlock_type, condition_type, condition_value, visible, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,1,1,?)";
         try (PreparedStatement ps = conn().prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
@@ -86,6 +92,7 @@ public final class TitleManager {
     public boolean updateTitle(int id, String displayName, String description, String category, String rarity,
                                 double price, String unlockType, String conditionType, String conditionValue,
                                 boolean visible, boolean enabled) {
+        if (id <= 0 || displayName == null || displayName.isBlank() || !validPrice(price)) return false;
         String sql = "UPDATE ks_title_defs SET display_name=?, description=?, category=?, rarity=?, price=?, " +
             "unlock_type=?, condition_type=?, condition_value=?, visible=?, enabled=? WHERE id=?";
         try (PreparedStatement ps = conn().prepareStatement(sql)) {
@@ -223,6 +230,8 @@ public final class TitleManager {
     // ==================== 属性/技能加成 ====================
 
     public int addAttribute(int titleId, String buffType, String buffKey, double amount, String extra) {
+        if (titleId <= 0 || buffType == null || buffType.isBlank() || buffKey == null || buffKey.isBlank()
+                || !validAttributeAmount(amount)) return -1;
         String sql = "INSERT INTO ks_title_attributes (title_id, buff_type, buff_key, amount, extra) VALUES (?,?,?,?,?)";
         try (PreparedStatement ps = conn().prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             ps.setInt(1, titleId);
@@ -241,6 +250,7 @@ public final class TitleManager {
     }
 
     public boolean updateAttributeAmount(int attrId, double amount) {
+        if (attrId <= 0 || !validAttributeAmount(amount)) return false;
         try (PreparedStatement ps = conn().prepareStatement("UPDATE ks_title_attributes SET amount=? WHERE id=?")) {
             ps.setDouble(1, amount);
             ps.setInt(2, attrId);
@@ -286,6 +296,8 @@ public final class TitleManager {
     }
 
     public boolean addFrame(int titleId, int frameIndex, String frameText, int intervalMs) {
+        if (titleId <= 0 || frameIndex < 0 || frameText == null || frameText.isBlank()
+                || intervalMs < MIN_FRAME_INTERVAL_MS || intervalMs > MAX_FRAME_INTERVAL_MS) return false;
         String sql = "INSERT INTO ks_title_frames (title_id, frame_index, frame_text, interval_ms) VALUES (?,?,?,?)";
         try (PreparedStatement ps = conn().prepareStatement(sql)) {
             ps.setInt(1, titleId);
@@ -566,6 +578,9 @@ public final class TitleManager {
     // ==================== IA 图片动画绑定 ====================
 
     public boolean setIaBinding(int titleId, String imagePrefix, int frameCount, int intervalMs, boolean chatStatic) {
+        if (titleId <= 0 || imagePrefix == null || !imagePrefix.matches("[a-z0-9_-]{1,64}")
+                || frameCount < 1 || frameCount > MAX_IA_FRAME_COUNT
+                || intervalMs < MIN_FRAME_INTERVAL_MS || intervalMs > MAX_FRAME_INTERVAL_MS) return false;
         String sql = "INSERT OR REPLACE INTO ks_title_ia_bindings (title_id, image_prefix, frame_count, interval_ms, chat_static, created_at) VALUES (?,?,?,?,?,?)";
         try (PreparedStatement ps = conn().prepareStatement(sql)) {
             ps.setInt(1, titleId);
@@ -617,6 +632,14 @@ public final class TitleManager {
     private IaBinding mapIaBinding(ResultSet rs) throws SQLException {
         return new IaBinding(rs.getInt("title_id"), rs.getString("image_prefix"), rs.getInt("frame_count"),
             rs.getInt("interval_ms"), rs.getInt("chat_static") != 0, rs.getLong("created_at"));
+    }
+
+    private static boolean validPrice(double price) {
+        return Double.isFinite(price) && price >= 0.0;
+    }
+
+    private static boolean validAttributeAmount(double amount) {
+        return Double.isFinite(amount) && Math.abs(amount) <= MAX_ABS_ATTRIBUTE_AMOUNT;
     }
 
     // ==================== 当前展示文本（供 PAPI 调用） ====================

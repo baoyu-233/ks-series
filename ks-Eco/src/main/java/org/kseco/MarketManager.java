@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * 市场核心管理器。
@@ -22,6 +23,10 @@ public final class MarketManager {
 
     public MarketManager(KsEco plugin) {
         this.plugin = plugin;
+        plugin.scheduler().runGlobalLater(() -> {
+            recoverMarketSettlements();
+            recoverPropertySettlements();
+        }, 40L);
     }
 
     // ---- 玩家挂单出售 ----
@@ -68,19 +73,19 @@ public final class MarketManager {
         plugin.asyncWorkPool().executeDatabase(() -> {
             List<ListingManager.Listing> myListings = plugin.listingManager().getPlayerListings(sellerUuid);
             if (myListings.size() >= maxListings) {
-                org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
+                plugin.scheduler().runEntity(seller, () -> {
                     if (seller.isOnline()) {
                         seller.getInventory().addItem(toList);
                         seller.sendMessage("§c挂单数量已达上限（" + maxListings + "个）。");
                     } else {
                         plugin.storageManager().storeItem(sellerUuid, toList, "LISTING_LIMIT_RETURN");
                     }
-                });
+                }, () -> { });
                 return;
             }
             var listing = plugin.listingManager().createListing(
                     sellerUuid, sellerName, preparedItem, quantity, unitPrice, "SELL");
-            org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runEntity(seller, () -> {
                 // The row is committed at this point. Queue an immediate protection check even if
                 // the seller disconnected while the database operation was running.
                 if (listing != null) {
@@ -100,7 +105,7 @@ public final class MarketManager {
                         itemDisplayName +
                         " §a单价: " + plugin.vaultHook().format(unitPrice) +
                         " §a总价: " + plugin.vaultHook().format(listing.totalPrice()));
-            });
+            }, () -> { });
         });
     }
 
@@ -117,7 +122,7 @@ public final class MarketManager {
         plugin.asyncWorkPool().executeDatabase(() -> {
             ListingManager.Listing target = plugin.listingManager().getListing(listingId);
             // 读完回主线程做 Vault/库存操作
-            org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runEntity(buyer, () -> {
                 if (!buyer.isOnline()) return;
                 if (target == null) {
                     buyer.sendMessage("§c该挂单已不存在。");
@@ -147,142 +152,779 @@ public final class MarketManager {
                     return;
                 }
 
-                if (!plugin.vaultHook().withdraw(buyer, totalWithTax)) {
-                    buyer.sendMessage("§c扣款失败，请稍后重试。");
-                    return;
-                }
-                reserveAndSettlePurchase(buyer, target, quantity, totalCost,
-                        taxRate, tax, totalWithTax);
-            });
+                beginMarketPurchase(buyer.getUniqueId(), buyer.getName(), target, quantity,
+                        totalCost, taxRate, tax, totalWithTax);
+            }, () -> { });
         });
     }
 
-    private void reserveAndSettlePurchase(Player buyer, ListingManager.Listing target, int quantity,
-                                          double totalCost, double taxRate, double tax,
-                                          double totalWithTax) {
-        UUID buyerUuid = buyer.getUniqueId();
-        String buyerName = buyer.getName();
-        plugin.asyncWorkPool().executeDatabase(() -> {
-            ListingManager.PurchaseReservation reservation =
-                    plugin.listingManager().reservePurchase(target, buyerUuid, quantity);
-            org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
-                if (reservation == null) {
-                    if (!plugin.vaultHook().deposit(buyer, totalWithTax)) {
-                        plugin.getLogger().severe("[市场] 挂单认领失败且无法退款买家: " + target.id());
+    private void beginMarketPurchase(UUID buyerUuid, String buyerName, ListingManager.Listing target, int quantity,
+                                     double totalCost, double taxRate, double tax, double totalWithTax) {
+        String settlementId = "MK-" + UUID.randomUUID();
+        MarketPurchaseSettlementStore.Settlement settlement = new MarketPurchaseSettlementStore.Settlement(
+                settlementId, target.id(), null, buyerUuid, buyerName, target.sellerUuid(), quantity,
+                totalCost, taxRate, tax, totalWithTax,
+                MarketPurchaseSettlementStore.BUYER_CHARGE_CLAIMED, "", "");
+        executeDatabaseOrReject(() -> {
+            boolean prepared = false;
+            try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+                if (connection != null) {
+                    MarketPurchaseSettlementStore.initialize(connection);
+                    MarketPurchaseSettlementStore.insertChargeClaim(connection, settlement, now());
+                    prepared = true;
+                }
+            } catch (SQLException exception) {
+                plugin.getLogger().warning("[市场] 无法创建购买结算: " + exception.getMessage());
+            }
+            boolean ready = prepared;
+            plugin.scheduler().runEntityOrGlobal(settlement.buyerUuid(), () -> {
+                if (!ready) {
+                    sendBuyerMessage(buyerUuid, "§c无法创建交易结算，请稍后重试。");
+                    return;
+                }
+                chargeMarketBuyer(settlement, target);
+            });
+        }, () -> sendBuyerMessage(buyerUuid, "§c市场队列繁忙，未扣款，请稍后重试。"));
+    }
+
+    private void chargeMarketBuyer(MarketPurchaseSettlementStore.Settlement settlement,
+                                   ListingManager.Listing target) {
+        Player buyer = org.bukkit.Bukkit.getPlayer(settlement.buyerUuid());
+        if (buyer == null || !buyer.isOnline()) {
+            transitionSettlementAsync(settlement.id(), MarketPurchaseSettlementStore.BUYER_CHARGE_CLAIMED,
+                    MarketPurchaseSettlementStore.COMPENSATED, "buyer disconnected before charge");
+            return;
+        }
+        if (plugin.vaultHook().directBuiltinActive()) {
+            executeDatabaseOrReject(() -> {
+                boolean charged = plugin.vaultHook().withdrawDirect(
+                        settlement.buyerUuid(), settlement.buyerName(), settlement.totalCharge());
+                plugin.scheduler().runEntity(buyer, () -> {
+                    if (charged) reserveChargedPurchase(settlement, target);
+                    else {
+                        transitionSettlementAsync(settlement.id(), MarketPurchaseSettlementStore.BUYER_CHARGE_CLAIMED,
+                                MarketPurchaseSettlementStore.COMPENSATED, "builtin buyer charge rejected");
+                        buyer.sendMessage("§c余额不足或扣款失败。");
                     }
-                    if (buyer.isOnline()) buyer.sendMessage("§c挂单已被其他玩家购买，已退款。");
-                    return;
-                }
-
-                var seller = org.bukkit.Bukkit.getOfflinePlayer(target.sellerUuid());
-                if (!plugin.vaultHook().deposit(seller, totalCost)) {
-                    boolean buyerRefunded = plugin.vaultHook().deposit(buyer, totalWithTax);
-                    plugin.asyncWorkPool().executeDatabase(() -> {
-                        boolean rolledBack = plugin.listingManager().rollbackPurchase(reservation);
-                        if (!rolledBack || !buyerRefunded) {
-                            plugin.getLogger().severe("[市场] 卖家入账失败且回滚不完整: " + target.id());
-                        }
-                    });
-                    if (buyer.isOnline()) buyer.sendMessage("§c卖家收款失败，交易已回滚。");
-                    return;
-                }
-
-                plugin.asyncWorkPool().executeDatabase(() -> plugin.priceEngine().recordTrade(
-                        target.itemMaterial(), quantity, target.unitPrice(), buyerUuid.toString(),
-                        target.sellerUuid().toString(), "PLAYER"));
-                recordTax(buyerUuid.toString(), buyerName, "MARKET_TRADE",
-                        totalCost, taxRate, tax, "购买挂单 " + target.id());
-
-                if (buyer.isOnline()) {
-                    buyer.sendMessage("§a购买成功！物品已放入暂存箱。花费: "
-                            + plugin.vaultHook().format(totalWithTax)
-                            + "（含税: " + plugin.vaultHook().format(tax) + "）");
-                }
-                var onlineSeller = org.bukkit.Bukkit.getPlayer(target.sellerUuid());
-                if (onlineSeller != null) {
-                    onlineSeller.sendMessage("§a你的挂单已售出 " + quantity + "x，收入: "
-                            + plugin.vaultHook().format(totalCost));
-                }
-            });
-        });
+                }, () -> {
+                    if (charged) markSettlementReviewAsync(settlement.id(),
+                            MarketPurchaseSettlementStore.BUYER_CHARGE_CLAIMED,
+                            "buyer disconnected after builtin charge");
+                });
+            }, () -> buyer.sendMessage("§c市场队列繁忙，未扣款，请稍后重试。"));
+            return;
+        }
+        if (!plugin.vaultHook().has(buyer, settlement.totalCharge())) {
+            transitionSettlementAsync(settlement.id(), MarketPurchaseSettlementStore.BUYER_CHARGE_CLAIMED,
+                    MarketPurchaseSettlementStore.COMPENSATED, "insufficient balance");
+            buyer.sendMessage("§c余额已发生变化，交易未扣款。");
+            return;
+        }
+        if (!plugin.vaultHook().withdraw(buyer, settlement.totalCharge())) {
+            transitionSettlementAsync(settlement.id(), MarketPurchaseSettlementStore.BUYER_CHARGE_CLAIMED,
+                    MarketPurchaseSettlementStore.COMPENSATED, "buyer charge rejected");
+            buyer.sendMessage("§c扣款失败，请稍后重试。");
+            return;
+        }
+        reserveChargedPurchase(settlement, target);
     }
 
-    /**
-     * 购买商品房挂单：扣款/转账/记税流程与普通挂单一致，但不走"给物品"，而是反射调用
-     * ks-Eco-RealEstate 模块的 transferHouseOwnership 转移房屋产权（地块所有权不变）。
-     * 房地产模块未加载/转移失败时整单回滚（不能扣钱却不给房）。
-     * 注意：此方法必须在主线程调用（Vault 操作要求）。
-     */
+    private void reserveChargedPurchase(MarketPurchaseSettlementStore.Settlement settlement,
+                                        ListingManager.Listing target) {
+        executeDatabaseOrReject(() -> {
+            boolean charged = transitionSettlement(settlement.id(),
+                    MarketPurchaseSettlementStore.BUYER_CHARGE_CLAIMED,
+                    MarketPurchaseSettlementStore.BUYER_CHARGED, "");
+            ListingManager.PurchaseReservation reservation = charged
+                    ? plugin.listingManager().reservePurchase(target, settlement.buyerUuid(),
+                    settlement.quantity(), settlement.id()) : null;
+            if (charged && reservation == null) {
+                transitionSettlement(settlement.id(), MarketPurchaseSettlementStore.BUYER_CHARGED,
+                        MarketPurchaseSettlementStore.REFUND_READY, "listing reservation rejected");
+            }
+            plugin.scheduler().runEntityOrGlobal(settlement.buyerUuid(), () -> {
+                if (!charged) {
+                    markSettlementReviewAsync(settlement.id(), MarketPurchaseSettlementStore.BUYER_CHARGE_CLAIMED,
+                            "buyer was charged but journal transition failed");
+                    return;
+                }
+                if (reservation == null) {
+                    refundMarketBuyer(settlement);
+                    return;
+                }
+                claimSellerPayout(settlement, target, reservation);
+            });
+        }, () -> markSettlementReviewAsync(settlement.id(),
+                MarketPurchaseSettlementStore.BUYER_CHARGE_CLAIMED,
+                "database queue rejected after buyer charge"));
+    }
+
+    private void claimSellerPayout(MarketPurchaseSettlementStore.Settlement settlement,
+                                   ListingManager.Listing target,
+                                   ListingManager.PurchaseReservation reservation) {
+        executeDatabaseOrReject(() -> {
+            boolean claimed = transitionSettlement(settlement.id(), MarketPurchaseSettlementStore.RESERVED,
+                    MarketPurchaseSettlementStore.SELLER_PAYOUT_CLAIMED, "");
+            Runnable payout = () -> {
+                if (!claimed) return;
+                boolean paid = plugin.vaultHook().directBuiltinActive()
+                        ? plugin.vaultHook().depositDirect(settlement.sellerUuid(),
+                                target.sellerName(), settlement.totalCost())
+                        : plugin.vaultHook().deposit(
+                                org.bukkit.Bukkit.getOfflinePlayer(settlement.sellerUuid()), settlement.totalCost());
+                if (paid) {
+                    finalizeMarketPurchase(settlement, target, reservation);
+                } else {
+                    rollbackMarketReservation(settlement, reservation,
+                            MarketPurchaseSettlementStore.SELLER_PAYOUT_CLAIMED,
+                            "seller payout rejected");
+                }
+            };
+            if (plugin.vaultHook().directBuiltinActive()) payout.run();
+            else plugin.scheduler().runEntityOrGlobal(settlement.sellerUuid(), payout);
+        }, () -> plugin.getLogger().warning("[市场] 卖家入账认领排队失败，启动恢复将重试: " + settlement.id()));
+    }
+
+    private void finalizeMarketPurchase(MarketPurchaseSettlementStore.Settlement settlement,
+                                        ListingManager.Listing target,
+                                        ListingManager.PurchaseReservation reservation) {
+        executeDatabaseOrReject(() -> {
+            boolean finalized = plugin.listingManager().finalizePurchase(reservation, settlement.id());
+            if (!finalized) {
+                markSettlementReview(settlement.id(), MarketPurchaseSettlementStore.SELLER_PAYOUT_CLAIMED,
+                        "seller paid but delivery finalization failed");
+                return;
+            }
+            plugin.priceEngine().recordTrade(target.itemMaterial(), settlement.quantity(), target.unitPrice(),
+                    settlement.buyerUuid().toString(), settlement.sellerUuid().toString(), "PLAYER");
+            recordTax(settlement.buyerUuid().toString(), settlement.buyerName(), "MARKET_TRADE",
+                    settlement.totalCost(), settlement.taxRate(), settlement.tax(), "购买挂单 " + target.id());
+            plugin.scheduler().runEntityOrGlobal(settlement.buyerUuid(), () -> {
+                sendBuyerMessage(settlement.buyerUuid(), "§a购买成功！物品已放入暂存箱。花费: "
+                        + plugin.vaultHook().format(settlement.totalCharge())
+                        + "（含税: " + plugin.vaultHook().format(settlement.tax()) + "）");
+                Player seller = org.bukkit.Bukkit.getPlayer(settlement.sellerUuid());
+                if (seller != null) seller.sendMessage("§a你的挂单已售出 " + settlement.quantity()
+                        + "x，收入: " + plugin.vaultHook().format(settlement.totalCost()));
+            });
+        }, () -> markSettlementReviewAsync(settlement.id(),
+                MarketPurchaseSettlementStore.SELLER_PAYOUT_CLAIMED,
+                "database queue rejected after seller payout"));
+    }
+
+    private void rollbackMarketReservation(MarketPurchaseSettlementStore.Settlement settlement,
+                                           ListingManager.PurchaseReservation reservation,
+                                           String expectedState, String reason) {
+        executeDatabaseOrReject(() -> {
+            boolean rolledBack = plugin.listingManager().rollbackPurchase(
+                    reservation, settlement.id(), expectedState);
+            if (!rolledBack) {
+                markSettlementReview(settlement.id(), expectedState,
+                        reason + "; reservation rollback failed");
+                return;
+            }
+            plugin.scheduler().runEntityOrGlobal(settlement.buyerUuid(), () -> refundMarketBuyer(settlement));
+        }, () -> markSettlementReviewAsync(settlement.id(), expectedState,
+                reason + "; rollback queue rejected"));
+    }
+
+    private void refundMarketBuyer(MarketPurchaseSettlementStore.Settlement settlement) {
+        executeDatabaseOrReject(() -> {
+            boolean claimed = transitionSettlement(settlement.id(), MarketPurchaseSettlementStore.REFUND_READY,
+                    MarketPurchaseSettlementStore.REFUND_CLAIMED, "");
+            Runnable refund = () -> {
+                if (!claimed) return;
+                boolean refunded = plugin.vaultHook().directBuiltinActive()
+                        ? plugin.vaultHook().depositDirect(settlement.buyerUuid(),
+                                settlement.buyerName(), settlement.totalCharge())
+                        : plugin.vaultHook().deposit(
+                                org.bukkit.Bukkit.getOfflinePlayer(settlement.buyerUuid()), settlement.totalCharge());
+                transitionSettlementAsync(settlement.id(), MarketPurchaseSettlementStore.REFUND_CLAIMED,
+                        refunded ? MarketPurchaseSettlementStore.COMPENSATED
+                                : MarketPurchaseSettlementStore.REFUND_READY,
+                        refunded ? "" : "buyer refund rejected");
+                if (refunded) sendBuyerMessage(settlement.buyerUuid(), "§c挂单成交失败，扣款已退回。");
+            };
+            if (plugin.vaultHook().directBuiltinActive()) refund.run();
+            else plugin.scheduler().runEntityOrGlobal(settlement.buyerUuid(), refund);
+        }, () -> plugin.getLogger().warning("[市场] 退款认领排队失败，启动恢复将重试: " + settlement.id()));
+    }
+
+    private void recoverMarketSettlements() {
+        executeDatabaseOrReject(() -> {
+            List<RecoveredPayout> resumePayouts = new java.util.ArrayList<>();
+            List<MarketPurchaseSettlementStore.Settlement> refunds = new java.util.ArrayList<>();
+            int reviews = 0;
+            try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+                if (connection == null) return;
+                MarketPurchaseSettlementStore.initialize(connection);
+                reviews = MarketPurchaseSettlementStore.markUnknownCallsForReview(connection, now());
+                for (MarketPurchaseSettlementStore.Settlement settlement
+                        : MarketPurchaseSettlementStore.open(connection)) {
+                    switch (settlement.status()) {
+                        case MarketPurchaseSettlementStore.BUYER_CHARGED -> {
+                            if (MarketPurchaseSettlementStore.transition(connection, settlement.id(),
+                                    MarketPurchaseSettlementStore.BUYER_CHARGED,
+                                    MarketPurchaseSettlementStore.REFUND_READY,
+                                    "startup refund before reservation", now())) refunds.add(settlement);
+                        }
+                        case MarketPurchaseSettlementStore.RESERVED -> {
+                            ListingManager.Listing listing = plugin.listingManager()
+                                    .getListingForSettlement(settlement.listingId());
+                            if (listing == null || settlement.storageId() == null) {
+                                MarketPurchaseSettlementStore.transition(connection, settlement.id(),
+                                        MarketPurchaseSettlementStore.RESERVED,
+                                        MarketPurchaseSettlementStore.REVIEW_REQUIRED,
+                                        "startup could not rebuild listing reservation", now());
+                            } else {
+                                ListingManager.PurchaseReservation reservation = new ListingManager.PurchaseReservation(
+                                        settlement.storageId(), settlement.listingId(), settlement.buyerUuid(),
+                                        settlement.quantity(), ListingManager.DEFAULT_CURRENCY_ID, settlement.totalCost());
+                                resumePayouts.add(new RecoveredPayout(settlement, listing, reservation));
+                            }
+                        }
+                        case MarketPurchaseSettlementStore.REFUND_READY -> refunds.add(settlement);
+                        default -> { }
+                    }
+                }
+            } catch (SQLException exception) {
+                plugin.getLogger().severe("[市场] 结算恢复失败: " + exception.getMessage());
+                return;
+            }
+            int reviewCount = reviews;
+            plugin.scheduler().runGlobal(() -> {
+                if (reviewCount > 0) plugin.getLogger().severe("[市场] " + reviewCount
+                        + " 笔外部钱包结果未知，已进入 REVIEW_REQUIRED");
+                for (RecoveredPayout payout : resumePayouts) {
+                    claimSellerPayout(payout.settlement(), payout.listing(), payout.reservation());
+                }
+                refunds.forEach(this::refundMarketBuyer);
+            });
+        }, () -> plugin.getLogger().warning("[市场] 启动恢复排队失败"));
+    }
+
+    private boolean transitionSettlement(String settlementId, String expected, String next, String error) {
+        try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+            return connection != null && MarketPurchaseSettlementStore.transition(
+                    connection, settlementId, expected, next, error, now());
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("[市场] 结算状态更新失败 " + settlementId + ": " + exception.getMessage());
+            return false;
+        }
+    }
+
+    private void transitionSettlementAsync(String settlementId, String expected, String next, String error) {
+        executeDatabaseOrReject(() -> transitionSettlement(settlementId, expected, next, error),
+                () -> plugin.getLogger().severe("[市场] 结算状态排队失败: " + settlementId));
+    }
+
+    private void markSettlementReview(String settlementId, String expected, String error) {
+        if (!transitionSettlement(settlementId, expected, MarketPurchaseSettlementStore.REVIEW_REQUIRED, error)) {
+            plugin.getLogger().severe("[市场] 无法标记人工复核: " + settlementId + " - " + error);
+        }
+    }
+
+    private void markSettlementReviewAsync(String settlementId, String expected, String error) {
+        executeDatabaseOrReject(() -> markSettlementReview(settlementId, expected, error),
+                () -> plugin.getLogger().severe("[市场] 人工复核标记排队失败: " + settlementId));
+    }
+
+    private boolean executeDatabaseOrReject(Runnable task, Runnable onRejected) {
+        try {
+            plugin.asyncWorkPool().executeDatabase(task);
+            return true;
+        } catch (RejectedExecutionException rejected) {
+            onRejected.run();
+            return false;
+        }
+    }
+
+    private void sendBuyerMessage(UUID buyerUuid, String message) {
+        plugin.scheduler().runPlayer(buyerUuid, buyer -> buyer.sendMessage(message), () -> { });
+    }
+
+    private void sendSellerMessage(UUID sellerUuid, String message) {
+        plugin.scheduler().runPlayer(sellerUuid, seller -> seller.sendMessage(message), () -> { });
+    }
+
+    private boolean isEnterprisePropertySellerAuthorized(String enterpriseId, UUID sellerUuid) {
+        var access = plugin.enterpriseAccessProvider();
+        return access != null && plugin.enterpriseFundSettlementProvider() != null
+                && access.hasPermission(enterpriseId, sellerUuid, EnterprisePermissionService.MANAGE_PROPERTY);
+    }
+
+    private static long now() {
+        return System.currentTimeMillis() / 1000;
+    }
+
+    private record RecoveredPayout(MarketPurchaseSettlementStore.Settlement settlement,
+                                   ListingManager.Listing listing,
+                                   ListingManager.PurchaseReservation reservation) { }
+
     private void buyPropertyListing(Player buyer, ListingManager.Listing target) {
         if (target.sellerUuid().equals(buyer.getUniqueId())) {
             buyer.sendMessage("§c不能购买自己的挂单。");
             return;
         }
-        String houseId = target.assetRef();
-        Map<String, Object> house = getHouseInfo(houseId);
-        if (house == null) {
-            buyer.sendMessage("§c房屋不存在或地产模块未加载。");
-            return;
-        }
-        String expectedOwnerType = String.valueOf(house.get("ownerType"));
-        String expectedOwnerId = String.valueOf(house.get("ownerId"));
-        boolean sellerStillOwns = "PLAYER".equals(expectedOwnerType)
-                ? target.sellerUuid().toString().equals(expectedOwnerId)
-                : Boolean.TRUE.equals(callRealEstate("isEnterpriseMember",
-                        new Class<?>[]{String.class, UUID.class}, expectedOwnerId, target.sellerUuid()));
-        if (!sellerStillOwns) {
-            buyer.sendMessage("§c卖家已不再拥有该房屋，挂单无法成交。");
-            return;
-        }
-        double totalCost = target.unitPrice();
-        // 流转税率（"契税率"）：房屋自己的税率（继承自所在地块/区域，管理员划区时配的），不是全局统一税率；
-        // 只在产权转移这一刻收一次，平时持有不收任何费用（不做年付/维护费）。
-        double taxRate = houseTaxRate(houseId);
-        double tax = Math.max(totalCost * taxRate, plugin.ecoConfig().getMinTax());
-        double totalWithTax = totalCost + tax;
-
-        if (!plugin.vaultHook().has(buyer, totalWithTax)) {
-            buyer.sendMessage("§c余额不足。需要: " + plugin.vaultHook().format(totalWithTax) +
-                    "（含税: " + plugin.vaultHook().format(tax) + "）");
-            return;
-        }
-
-        if (!plugin.vaultHook().withdraw(buyer, totalWithTax)) {
-            buyer.sendMessage("§c扣款失败，请稍后重试。");
-            return;
-        }
-
-        String transferError = transferHouseOwnership(houseId, expectedOwnerType, expectedOwnerId,
-                "PLAYER", buyer.getUniqueId().toString());
-        if (transferError != null) {
-            if (!plugin.vaultHook().deposit(buyer, totalWithTax)) {
-                plugin.getLogger().severe("[市场] 商品房交易失败且退款失败: house=" + houseId);
+        UUID buyerUuid = buyer.getUniqueId();
+        String buyerName = buyer.getName();
+        executeDatabaseOrReject(() -> {
+            String houseId = target.assetRef();
+            Map<String, Object> house = getHouseInfo(houseId);
+            if (house == null) {
+                sendBuyerMessage(buyerUuid, "§c房屋不存在或地产模块未加载。");
+                return;
             }
-            buyer.sendMessage("§c购买失败（房屋转移异常: " + transferError + "），已退款。");
-            plugin.getLogger().warning("[市场] 商品房交易失败已回滚: house=" + houseId + " buyer=" + buyer.getUniqueId() + " 原因=" + transferError);
-            return;
-        }
-
-        var seller = org.bukkit.Bukkit.getOfflinePlayer(target.sellerUuid());
-        if (!plugin.vaultHook().deposit(seller, totalCost)) {
-            plugin.getLogger().severe("[市场] 商品房已转移但卖家入账失败: house=" + houseId);
-            buyer.sendMessage("§e房屋已转移，卖家入账待管理员处理。");
-            return;
-        }
-        if (!plugin.listingManager().fillListing(target.id(), buyer.getUniqueId(), 1)) {
-            plugin.getLogger().severe("[市场] 商品房已转移但挂单状态更新失败: house=" + houseId);
-        }
-
-        buyer.sendMessage("§a购房成功！花费: " + plugin.vaultHook().format(totalWithTax) +
-                "（含税: " + plugin.vaultHook().format(tax) + "），房屋ID: " + houseId);
-        var onlineSeller = org.bukkit.Bukkit.getPlayer(target.sellerUuid());
-        if (onlineSeller != null) {
-            onlineSeller.sendMessage("§a你的商品房 " + houseId + " 已售出，收入: " + plugin.vaultHook().format(totalCost));
-        }
-        // 税收记录异步，不阻塞主线程
-        recordTax(buyer.getUniqueId().toString(), buyer.getName(), "PROPERTY_TRADE",
-                totalCost, taxRate, tax, "购买商品房 " + houseId);
+            String ownerType = String.valueOf(house.get("ownerType"));
+            String ownerId = String.valueOf(house.get("ownerId"));
+            boolean enterpriseAuthorized = !"ENTERPRISE".equalsIgnoreCase(ownerType)
+                    || isEnterprisePropertySellerAuthorized(ownerId, target.sellerUuid());
+            PropertySalePolicy.Decision decision = PropertySalePolicy.evaluate(
+                    ownerType, ownerId, target.sellerUuid(), enterpriseAuthorized);
+            if (!decision.allowed()) {
+                sendBuyerMessage(buyerUuid, decision.reason() == PropertySalePolicy.Reason.ENTERPRISE_NOT_AUTHORIZED
+                        ? "§c企业房产暂不支持市场成交：企业公户结算尚未接线。"
+                        : "§c卖家已不再拥有该房屋，挂单无法成交。");
+                return;
+            }
+            double taxRate = houseTaxRate(houseId);
+            double tax = Math.max(target.unitPrice() * taxRate, plugin.ecoConfig().getMinTax());
+            PropertyMarketSettlementStore.Settlement settlement = new PropertyMarketSettlementStore.Settlement(
+                    "PMS-" + UUID.randomUUID(), target.id(), houseId, buyerUuid, buyerName,
+                    target.sellerUuid(), ownerType, ownerId, target.unitPrice(), taxRate, tax,
+                    target.unitPrice() + tax, PropertyMarketSettlementStore.BUYER_CHARGE_READY, "", "");
+            try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+                if (connection == null) throw new SQLException("database unavailable");
+                PropertyMarketSettlementStore.initialize(connection);
+                PropertyMarketSettlementStore.prepare(connection, settlement, now());
+            } catch (SQLException failure) {
+                sendBuyerMessage(buyerUuid, "§c挂单状态已变化，请刷新后重试。");
+                return;
+            }
+            plugin.scheduler().runEntityOrGlobal(settlement.buyerUuid(), () -> processPropertyBuyerCharge(settlement));
+        }, () -> buyer.sendMessage("§c结算队列繁忙，请稍后重试。"));
     }
+
+    private void processPropertyBuyerCharge(PropertyMarketSettlementStore.Settlement settlement) {
+        executeDatabaseOrReject(() -> {
+            if (!transitionProperty(settlement.id(), PropertyMarketSettlementStore.BUYER_CHARGE_READY,
+                    PropertyMarketSettlementStore.BUYER_CHARGE_CLAIMED, "")) return;
+            plugin.scheduler().runEntityOrGlobal(settlement.buyerUuid(), () -> {
+                boolean charged;
+                try {
+                    charged = plugin.vaultHook().withdraw(
+                            org.bukkit.Bukkit.getOfflinePlayer(settlement.buyerUuid()), settlement.totalCharge());
+                } catch (RuntimeException uncertain) {
+                    markPropertyReviewAsync(settlement.id(), PropertyMarketSettlementStore.BUYER_CHARGE_CLAIMED,
+                            "buyer charge outcome unknown: " + uncertain.getMessage());
+                    return;
+                }
+                if (!charged) {
+                    executeDatabaseOrReject(() -> {
+                        try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+                            if (connection != null && PropertyMarketSettlementStore.compensateBeforeTransfer(
+                                    connection, settlement, PropertyMarketSettlementStore.BUYER_CHARGE_CLAIMED,
+                                    "buyer charge rejected", now())) {
+                                sendBuyerMessage(settlement.buyerUuid(), "§c余额不足或扣款被拒绝。");
+                            }
+                        } catch (SQLException failure) {
+                            markPropertyReview(settlement.id(), PropertyMarketSettlementStore.BUYER_CHARGE_CLAIMED,
+                                    "charge rejected but listing restore failed: " + failure.getMessage());
+                        }
+                    }, () -> markPropertyReviewAsync(settlement.id(),
+                            PropertyMarketSettlementStore.BUYER_CHARGE_CLAIMED,
+                            "charge rejection rollback queue rejected"));
+                    return;
+                }
+                executeDatabaseOrReject(() -> {
+                    if (transitionProperty(settlement.id(), PropertyMarketSettlementStore.BUYER_CHARGE_CLAIMED,
+                            PropertyMarketSettlementStore.TRANSFER_READY, "")) {
+                        processPropertyTransfer(settlement, false);
+                    } else {
+                        markPropertyReview(settlement.id(), PropertyMarketSettlementStore.BUYER_CHARGE_CLAIMED,
+                                "buyer charged but transfer preparation failed");
+                    }
+                }, () -> markPropertyReviewAsync(settlement.id(),
+                        PropertyMarketSettlementStore.BUYER_CHARGE_CLAIMED,
+                        "post-charge database queue rejected"));
+            });
+        }, () -> plugin.getLogger().warning("[Property settlement] Buyer charge claim queue rejected: "
+                + settlement.id()));
+    }
+
+    private void processPropertyTransfer(PropertyMarketSettlementStore.Settlement settlement, boolean alreadyClaimed) {
+        if (!alreadyClaimed && !transitionProperty(settlement.id(), PropertyMarketSettlementStore.TRANSFER_READY,
+                PropertyMarketSettlementStore.TRANSFER_CLAIMED, "")) return;
+        String transferError = transferHouseOwnership(settlement.houseId(), settlement.expectedOwnerType(),
+                settlement.expectedOwnerId(), "PLAYER", settlement.buyerUuid().toString());
+        Map<String, Object> current = getHouseInfo(settlement.houseId());
+        String currentType = current == null ? "" : String.valueOf(current.get("ownerType"));
+        String currentId = current == null ? "" : String.valueOf(current.get("ownerId"));
+        if ("PLAYER".equalsIgnoreCase(currentType) && settlement.buyerUuid().toString().equals(currentId)) {
+            try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+                if (connection != null && PropertyMarketSettlementStore.finishTransfer(connection, settlement, now())) {
+                    plugin.scheduler().runEntityOrGlobal(settlement.sellerUuid(), () -> processPropertySellerPayout(settlement));
+                    return;
+                }
+            } catch (SQLException failure) {
+                transferError = failure.getMessage();
+            }
+            markPropertyReview(settlement.id(), PropertyMarketSettlementStore.TRANSFER_CLAIMED,
+                    "ownership transferred but journal finalization failed: " + transferError);
+            return;
+        }
+        if (settlement.expectedOwnerType().equalsIgnoreCase(currentType)
+                && settlement.expectedOwnerId().equals(currentId)) {
+            try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+                if (connection != null && PropertyMarketSettlementStore.prepareRefund(connection, settlement,
+                        PropertyMarketSettlementStore.TRANSFER_CLAIMED,
+                        "property transfer rejected: " + transferError, now())) {
+                    plugin.scheduler().runEntityOrGlobal(settlement.buyerUuid(), () -> processPropertyRefund(settlement));
+                    return;
+                }
+            } catch (SQLException failure) {
+                transferError = failure.getMessage();
+            }
+        }
+        markPropertyReview(settlement.id(), PropertyMarketSettlementStore.TRANSFER_CLAIMED,
+                "property ownership could not be reconciled: " + transferError);
+    }
+
+    private void processPropertySellerPayout(PropertyMarketSettlementStore.Settlement settlement) {
+        if ("ENTERPRISE".equalsIgnoreCase(settlement.expectedOwnerType())) {
+            processEnterprisePropertyPayout(settlement);
+            return;
+        }
+        executeDatabaseOrReject(() -> {
+            if (!transitionProperty(settlement.id(), PropertyMarketSettlementStore.SELLER_PAYOUT_READY,
+                    PropertyMarketSettlementStore.SELLER_PAYOUT_CLAIMED, "")) return;
+            plugin.scheduler().runEntityOrGlobal(settlement.sellerUuid(), () -> {
+                boolean paid;
+                try {
+                    paid = plugin.vaultHook().deposit(org.bukkit.Bukkit.getOfflinePlayer(settlement.sellerUuid()),
+                            settlement.saleAmount());
+                } catch (RuntimeException uncertain) {
+                    markPropertyReviewAsync(settlement.id(), PropertyMarketSettlementStore.SELLER_PAYOUT_CLAIMED,
+                            "seller payout outcome unknown: " + uncertain.getMessage());
+                    return;
+                }
+                if (!paid) {
+                    transitionPropertyAsync(settlement.id(), PropertyMarketSettlementStore.SELLER_PAYOUT_CLAIMED,
+                            PropertyMarketSettlementStore.SELLER_PAYOUT_READY, "seller payout rejected");
+                    return;
+                }
+                executeDatabaseOrReject(() -> {
+                    if (!transitionProperty(settlement.id(), PropertyMarketSettlementStore.SELLER_PAYOUT_CLAIMED,
+                            PropertyMarketSettlementStore.FINALIZED, "")) {
+                        markPropertyReview(settlement.id(), PropertyMarketSettlementStore.SELLER_PAYOUT_CLAIMED,
+                                "seller paid but finalization failed");
+                        return;
+                    }
+                    recordTax(settlement.buyerUuid().toString(), settlement.buyerName(), "PROPERTY_TRADE",
+                            settlement.saleAmount(), settlement.taxRate(), settlement.taxAmount(),
+                            "购买商品房 " + settlement.houseId());
+                    plugin.scheduler().runEntityOrGlobal(settlement.buyerUuid(), () -> {
+                        sendBuyerMessage(settlement.buyerUuid(), "§a购房成功！花费: "
+                                + plugin.vaultHook().format(settlement.totalCharge())
+                                + "，房屋ID: " + settlement.houseId());
+                        Player seller = org.bukkit.Bukkit.getPlayer(settlement.sellerUuid());
+                        if (seller != null) seller.sendMessage("§a你的商品房 " + settlement.houseId()
+                                + " 已售出，收入: " + plugin.vaultHook().format(settlement.saleAmount()));
+                    });
+                }, () -> markPropertyReviewAsync(settlement.id(),
+                        PropertyMarketSettlementStore.SELLER_PAYOUT_CLAIMED,
+                        "seller paid but finalization queue rejected"));
+            });
+        }, () -> plugin.getLogger().warning("[Property settlement] Seller payout queue rejected: "
+                + settlement.id()));
+    }
+
+    private void processEnterprisePropertyPayout(PropertyMarketSettlementStore.Settlement settlement) {
+        executeDatabaseOrReject(() -> {
+            var provider = plugin.enterpriseFundSettlementProvider();
+            if (provider == null) {
+                plugin.getLogger().severe("[Property settlement] Enterprise payout provider unavailable: "
+                        + settlement.id());
+                return;
+            }
+            try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+                if (connection == null) throw new SQLException("database unavailable");
+                if (!PropertyMarketSettlementStore.finishEnterprisePayout(
+                        connection, settlement, provider, now())) return;
+                recordTax(settlement.buyerUuid().toString(), settlement.buyerName(), "PROPERTY_TRADE",
+                        settlement.saleAmount(), settlement.taxRate(), settlement.taxAmount(),
+                        "enterprise property sale " + settlement.houseId());
+                sendBuyerMessage(settlement.buyerUuid(), "§a购房成功！房屋ID: " + settlement.houseId());
+                sendSellerMessage(settlement.sellerUuid(), "§a企业房产 " + settlement.houseId()
+                        + " 已售出，收入已进入企业公户。");
+            } catch (SQLException failure) {
+                plugin.getLogger().severe("[Property settlement] Enterprise payout failed " + settlement.id()
+                        + ": " + failure.getMessage());
+            }
+        }, () -> plugin.getLogger().severe("[Property settlement] Enterprise payout queue rejected: "
+                + settlement.id()));
+    }
+
+    private void processPropertyRefund(PropertyMarketSettlementStore.Settlement settlement) {
+        executeDatabaseOrReject(() -> {
+            if (!transitionProperty(settlement.id(), PropertyMarketSettlementStore.REFUND_READY,
+                    PropertyMarketSettlementStore.REFUND_CLAIMED, "")) return;
+            plugin.scheduler().runEntityOrGlobal(settlement.buyerUuid(), () -> {
+                boolean refunded;
+                try {
+                    refunded = plugin.vaultHook().deposit(org.bukkit.Bukkit.getOfflinePlayer(settlement.buyerUuid()),
+                            settlement.totalCharge());
+                } catch (RuntimeException uncertain) {
+                    markPropertyReviewAsync(settlement.id(), PropertyMarketSettlementStore.REFUND_CLAIMED,
+                            "buyer refund outcome unknown: " + uncertain.getMessage());
+                    return;
+                }
+                transitionPropertyAsync(settlement.id(), PropertyMarketSettlementStore.REFUND_CLAIMED,
+                        refunded ? PropertyMarketSettlementStore.COMPENSATED
+                                : PropertyMarketSettlementStore.REFUND_READY,
+                        refunded ? "" : "buyer refund rejected");
+                if (refunded) sendBuyerMessage(settlement.buyerUuid(), "§c房屋转移失败，扣款已退回。");
+            });
+        }, () -> plugin.getLogger().warning("[Property settlement] Refund queue rejected: " + settlement.id()));
+    }
+
+    private void recoverPropertySettlements() {
+        executeDatabaseOrReject(() -> {
+            List<PropertyMarketSettlementStore.Settlement> open;
+            int reviews;
+            try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+                if (connection == null) return;
+                PropertyMarketSettlementStore.initialize(connection);
+                PropertyMarketSettlementStore.resetAtomicEnterprisePayoutClaims(connection, now());
+                reviews = PropertyMarketSettlementStore.markUnknownWalletCallsForReview(connection, now());
+                open = PropertyMarketSettlementStore.open(connection);
+            } catch (SQLException failure) {
+                plugin.getLogger().severe("[Property settlement] Startup recovery failed: " + failure.getMessage());
+                return;
+            }
+            if (reviews > 0) plugin.getLogger().severe("[Property settlement] " + reviews
+                    + " wallet outcomes require administrator review");
+            for (PropertyMarketSettlementStore.Settlement settlement : open) {
+                switch (settlement.status()) {
+                    case PropertyMarketSettlementStore.BUYER_CHARGE_READY ->
+                            plugin.scheduler().runEntityOrGlobal(settlement.buyerUuid(),
+                                    () -> processPropertyBuyerCharge(settlement));
+                    case PropertyMarketSettlementStore.TRANSFER_READY -> processPropertyTransfer(settlement, false);
+                    case PropertyMarketSettlementStore.TRANSFER_CLAIMED -> processPropertyTransfer(settlement, true);
+                    case PropertyMarketSettlementStore.SELLER_PAYOUT_READY ->
+                            plugin.scheduler().runEntityOrGlobal(settlement.sellerUuid(),
+                                    () -> processPropertySellerPayout(settlement));
+                    case PropertyMarketSettlementStore.REFUND_READY ->
+                            plugin.scheduler().runEntityOrGlobal(settlement.buyerUuid(), () -> processPropertyRefund(settlement));
+                    default -> { }
+                }
+            }
+        }, () -> plugin.getLogger().warning("[Property settlement] Startup recovery queue rejected"));
+    }
+
+    private boolean transitionProperty(String id, String expected, String next, String error) {
+        try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+            return connection != null && PropertyMarketSettlementStore.transition(
+                    connection, id, expected, next, error, now());
+        } catch (SQLException failure) {
+            plugin.getLogger().warning("[Property settlement] State update failed " + id + ": "
+                    + failure.getMessage());
+            return false;
+        }
+    }
+
+    private void transitionPropertyAsync(String id, String expected, String next, String error) {
+        executeDatabaseOrReject(() -> transitionProperty(id, expected, next, error),
+                () -> plugin.getLogger().severe("[Property settlement] State update queue rejected: " + id));
+    }
+
+    private void markPropertyReview(String id, String expected, String error) {
+        if (!transitionProperty(id, expected, PropertyMarketSettlementStore.REVIEW_REQUIRED, error)) {
+            plugin.getLogger().severe("[Property settlement] Could not mark administrator review: " + id);
+        }
+    }
+
+    private void markPropertyReviewAsync(String id, String expected, String error) {
+        executeDatabaseOrReject(() -> markPropertyReview(id, expected, error),
+                () -> plugin.getLogger().severe("[Property settlement] Review queue rejected: " + id));
+    }
+
+    PropertyReviewResolution resolvePropertyReview(String id, String action) throws SQLException {
+        PropertyMarketSettlementStore.Settlement settlement;
+        String nextAction = "";
+        try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+            if (connection == null) throw new SQLException("database unavailable");
+            PropertyMarketSettlementStore.initialize(connection);
+            settlement = PropertyMarketSettlementStore.find(connection, id);
+            if (settlement == null || !PropertyMarketSettlementStore.REVIEW_REQUIRED.equals(settlement.status())) {
+                throw new SQLException("property settlement is not awaiting review");
+            }
+            String stage = settlement.reviewStage();
+            switch (action) {
+                case "CONFIRM_CHARGE_SUCCEEDED" -> {
+                    requirePropertyStage(stage, PropertyMarketSettlementStore.BUYER_CHARGE_CLAIMED);
+                    requirePropertyResolution(PropertyMarketSettlementStore.resolveReview(connection, id, stage,
+                            PropertyMarketSettlementStore.TRANSFER_READY,
+                            "administrator confirmed buyer charge", now()));
+                    nextAction = "TRANSFER";
+                }
+                case "CONFIRM_CHARGE_FAILED" -> {
+                    requirePropertyStage(stage, PropertyMarketSettlementStore.BUYER_CHARGE_CLAIMED);
+                    requirePropertyResolution(PropertyMarketSettlementStore.resolveReview(connection, id, stage,
+                            PropertyMarketSettlementStore.BUYER_CHARGE_CLAIMED,
+                            "administrator rejected buyer charge", now()));
+                    requirePropertyResolution(PropertyMarketSettlementStore.compensateBeforeTransfer(connection,
+                            settlement, PropertyMarketSettlementStore.BUYER_CHARGE_CLAIMED,
+                            "administrator confirmed buyer charge failed", now()));
+                }
+                case "RECHECK_TRANSFER" -> {
+                    requirePropertyStage(stage, PropertyMarketSettlementStore.TRANSFER_CLAIMED);
+                    requirePropertyResolution(PropertyMarketSettlementStore.resolveReview(connection, id, stage,
+                            PropertyMarketSettlementStore.TRANSFER_CLAIMED,
+                            "administrator requested ownership reconciliation", now()));
+                    nextAction = "RECHECK_TRANSFER";
+                }
+                case "CONFIRM_PAYOUT_SUCCEEDED" -> {
+                    requirePropertyStage(stage, PropertyMarketSettlementStore.SELLER_PAYOUT_CLAIMED);
+                    requirePropertyResolution(PropertyMarketSettlementStore.resolveReview(connection, id, stage,
+                            PropertyMarketSettlementStore.FINALIZED,
+                            "administrator confirmed seller payout", now()));
+                    nextAction = "RECORD_TAX";
+                }
+                case "CONFIRM_PAYOUT_FAILED" -> {
+                    requirePropertyStage(stage, PropertyMarketSettlementStore.SELLER_PAYOUT_CLAIMED);
+                    requirePropertyResolution(PropertyMarketSettlementStore.resolveReview(connection, id, stage,
+                            PropertyMarketSettlementStore.SELLER_PAYOUT_READY,
+                            "administrator confirmed seller payout failed", now()));
+                    nextAction = "PAYOUT";
+                }
+                case "CONFIRM_REFUND_SUCCEEDED" -> {
+                    requirePropertyStage(stage, PropertyMarketSettlementStore.REFUND_CLAIMED);
+                    requirePropertyResolution(PropertyMarketSettlementStore.resolveReview(connection, id, stage,
+                            PropertyMarketSettlementStore.COMPENSATED,
+                            "administrator confirmed buyer refund", now()));
+                }
+                case "CONFIRM_REFUND_FAILED" -> {
+                    requirePropertyStage(stage, PropertyMarketSettlementStore.REFUND_CLAIMED);
+                    requirePropertyResolution(PropertyMarketSettlementStore.resolveReview(connection, id, stage,
+                            PropertyMarketSettlementStore.REFUND_READY,
+                            "administrator confirmed buyer refund failed", now()));
+                    nextAction = "REFUND";
+                }
+                default -> throw new SQLException("unsupported property review action");
+            }
+            settlement = PropertyMarketSettlementStore.find(connection, id);
+        }
+        PropertyMarketSettlementStore.Settlement resolved = settlement;
+        switch (nextAction) {
+            case "TRANSFER" -> processPropertyTransfer(resolved, false);
+            case "RECHECK_TRANSFER" -> processPropertyTransfer(resolved, true);
+            case "PAYOUT" -> plugin.scheduler().runEntityOrGlobal(resolved.sellerUuid(),
+                    () -> processPropertySellerPayout(resolved));
+            case "REFUND" -> plugin.scheduler().runEntityOrGlobal(resolved.buyerUuid(),
+                    () -> processPropertyRefund(resolved));
+            case "RECORD_TAX" -> recordTax(resolved.buyerUuid().toString(), resolved.buyerName(),
+                    "PROPERTY_TRADE", resolved.saleAmount(), resolved.taxRate(), resolved.taxAmount(),
+                    "购买商品房 " + resolved.houseId());
+            default -> { }
+        }
+        return new PropertyReviewResolution(resolved.id(), resolved.status());
+    }
+
+    private static void requirePropertyStage(String actual, String expected) throws SQLException {
+        if (!expected.equals(actual)) throw new SQLException("property review stage does not allow this action");
+    }
+
+    private static void requirePropertyResolution(boolean resolved) throws SQLException {
+        if (!resolved) throw new SQLException("property settlement review changed concurrently");
+    }
+
+    record PropertyReviewResolution(String id, String status) { }
+
+    MarketReviewResolution resolveMarketReview(String id, String action) throws SQLException {
+        MarketPurchaseSettlementStore.Settlement settlement;
+        String nextAction = "";
+        ListingManager.Listing listing = null;
+        ListingManager.PurchaseReservation reservation = null;
+        try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+            if (connection == null) throw new SQLException("database unavailable");
+            MarketPurchaseSettlementStore.initialize(connection);
+            settlement = MarketPurchaseSettlementStore.find(connection, id);
+            if (settlement == null || !MarketPurchaseSettlementStore.REVIEW_REQUIRED.equals(settlement.status())) {
+                throw new SQLException("market settlement is not awaiting review");
+            }
+            String stage = settlement.reviewStage();
+            switch (action) {
+                case "CONFIRM_CHARGE_SUCCEEDED" -> {
+                    requireMarketStage(stage, MarketPurchaseSettlementStore.BUYER_CHARGE_CLAIMED);
+                    listing = plugin.listingManager().getListingForSettlement(settlement.listingId());
+                    if (listing == null) throw new SQLException("listing is unavailable for charged purchase recovery");
+                    requireMarketResolution(MarketPurchaseSettlementStore.resolveReview(connection, id, stage,
+                            MarketPurchaseSettlementStore.BUYER_CHARGE_CLAIMED,
+                            "administrator confirmed buyer charge", now()));
+                    nextAction = "RESERVE";
+                }
+                case "CONFIRM_CHARGE_FAILED" -> {
+                    requireMarketStage(stage, MarketPurchaseSettlementStore.BUYER_CHARGE_CLAIMED);
+                    requireMarketResolution(MarketPurchaseSettlementStore.resolveReview(connection, id, stage,
+                            MarketPurchaseSettlementStore.COMPENSATED,
+                            "administrator confirmed buyer charge failed", now()));
+                }
+                case "CONFIRM_PAYOUT_SUCCEEDED", "CONFIRM_PAYOUT_FAILED" -> {
+                    requireMarketStage(stage, MarketPurchaseSettlementStore.SELLER_PAYOUT_CLAIMED);
+                    listing = plugin.listingManager().getListingForSettlement(settlement.listingId());
+                    if (listing == null || settlement.storageId() == null) {
+                        throw new SQLException("listing reservation is unavailable for payout recovery");
+                    }
+                    reservation = new ListingManager.PurchaseReservation(settlement.storageId(),
+                            settlement.listingId(), settlement.buyerUuid(), settlement.quantity(),
+                            ListingManager.DEFAULT_CURRENCY_ID, settlement.totalCost());
+                    requireMarketResolution(MarketPurchaseSettlementStore.resolveReview(connection, id, stage,
+                            MarketPurchaseSettlementStore.SELLER_PAYOUT_CLAIMED,
+                            "administrator resolved seller payout", now()));
+                    nextAction = "CONFIRM_PAYOUT_SUCCEEDED".equals(action) ? "FINALIZE" : "ROLLBACK";
+                }
+                case "CONFIRM_REFUND_SUCCEEDED" -> {
+                    requireMarketStage(stage, MarketPurchaseSettlementStore.REFUND_CLAIMED);
+                    requireMarketResolution(MarketPurchaseSettlementStore.resolveReview(connection, id, stage,
+                            MarketPurchaseSettlementStore.COMPENSATED,
+                            "administrator confirmed buyer refund", now()));
+                }
+                case "CONFIRM_REFUND_FAILED" -> {
+                    requireMarketStage(stage, MarketPurchaseSettlementStore.REFUND_CLAIMED);
+                    requireMarketResolution(MarketPurchaseSettlementStore.resolveReview(connection, id, stage,
+                            MarketPurchaseSettlementStore.REFUND_READY,
+                            "administrator confirmed buyer refund failed", now()));
+                    nextAction = "REFUND";
+                }
+                default -> throw new SQLException("unsupported market review action");
+            }
+            settlement = MarketPurchaseSettlementStore.find(connection, id);
+        }
+        MarketPurchaseSettlementStore.Settlement resolved = settlement;
+        ListingManager.Listing resolvedListing = listing;
+        ListingManager.PurchaseReservation resolvedReservation = reservation;
+        switch (nextAction) {
+            case "RESERVE" -> reserveChargedPurchase(resolved, resolvedListing);
+            case "FINALIZE" -> finalizeMarketPurchase(resolved, resolvedListing, resolvedReservation);
+            case "ROLLBACK" -> rollbackMarketReservation(resolved, resolvedReservation,
+                    MarketPurchaseSettlementStore.SELLER_PAYOUT_CLAIMED,
+                    "administrator confirmed seller payout failed");
+            case "REFUND" -> plugin.scheduler().runEntityOrGlobal(resolved.buyerUuid(), () -> refundMarketBuyer(resolved));
+            default -> { }
+        }
+        return new MarketReviewResolution(resolved.id(), resolved.status());
+    }
+
+    private static void requireMarketStage(String actual, String expected) throws SQLException {
+        if (!expected.equals(actual)) throw new SQLException("market review stage does not allow this action");
+    }
+
+    private static void requireMarketResolution(boolean resolved) throws SQLException {
+        if (!resolved) throw new SQLException("market settlement review changed concurrently");
+    }
+
+    record MarketReviewResolution(String id, String status) { }
 
     /** 读房屋自己的流转税率（继承自地块/区域的"契税率"）；房屋不存在/模块未加载时回退到全局 PROPERTY_TRADE 类目税率。 */
     private double houseTaxRate(String houseId) {
@@ -313,43 +955,40 @@ public final class MarketManager {
         }
     }
 
-    /**
-     * 玩家上架商品房出售。校验：房屋存在、卖家是该房屋所有者（个人本人 / 企业成员）、未有重复挂单。
-     */
+    /** 玩家上架个人产权商品房；企业房产在企业公户结算接线前禁止进入个人钱包市场路径。 */
     public boolean listHouseForSale(Player seller, String houseId, double price) {
         if (!Double.isFinite(price) || price <= 0 || price > 1_000_000_000_000d) {
             seller.sendMessage("§c价格必须是有效正数。");
             return false;
         }
-        Object houseObj = callRealEstate("getHouse", new Class<?>[]{String.class}, houseId);
-        if (!(houseObj instanceof Map<?, ?> house)) {
-            seller.sendMessage("§c房屋不存在，或房地产模块未加载。");
-            return false;
-        }
-        String ownerType = (String) house.get("ownerType");
-        String ownerId = (String) house.get("ownerId");
-        boolean owns;
-        if ("PLAYER".equals(ownerType)) {
-            owns = seller.getUniqueId().toString().equals(ownerId);
-        } else {
-            Object isMember = callRealEstate("isEnterpriseMember", new Class<?>[]{String.class, UUID.class}, ownerId, seller.getUniqueId());
-            owns = Boolean.TRUE.equals(isMember);
-        }
-        if (!owns) {
-            seller.sendMessage("§c你不是该房屋的所有者。");
-            return false;
-        }
-        if (plugin.listingManager().hasActivePropertyListing(houseId)) {
-            seller.sendMessage("§c该房屋已有挂单在售。");
-            return false;
-        }
-        var listing = plugin.listingManager().createPropertyListing(seller.getUniqueId(), seller.getName(), houseId, price);
-        if (listing == null) {
-            seller.sendMessage("§c上架失败。");
-            return false;
-        }
-        seller.sendMessage("§a已上架商品房 " + houseId + "，价格: " + plugin.vaultHook().format(price));
-        return true;
+        UUID sellerUuid = seller.getUniqueId();
+        String sellerName = seller.getName();
+        String formattedPrice = plugin.vaultHook().format(price);
+        return executeDatabaseOrReject(() -> {
+            Object houseObj = callRealEstate("getHouse", new Class<?>[]{String.class}, houseId);
+            if (!(houseObj instanceof Map<?, ?> house)) {
+                sendSellerMessage(sellerUuid, "§c房屋不存在，或房地产模块未加载。");
+                return;
+            }
+            String ownerType = String.valueOf(house.get("ownerType"));
+            String ownerId = String.valueOf(house.get("ownerId"));
+            boolean enterpriseAuthorized = !"ENTERPRISE".equalsIgnoreCase(ownerType)
+                    || isEnterprisePropertySellerAuthorized(ownerId, sellerUuid);
+            PropertySalePolicy.Decision decision = PropertySalePolicy.evaluate(
+                    ownerType, ownerId, sellerUuid, enterpriseAuthorized);
+            if (!decision.allowed()) {
+                sendSellerMessage(sellerUuid,
+                        decision.reason() == PropertySalePolicy.Reason.ENTERPRISE_NOT_AUTHORIZED
+                                ? "§c你没有该企业的房产挂牌权限。"
+                                : "§c你不是该房屋的所有者，或产权信息无效。");
+                return;
+            }
+            var listing = plugin.listingManager().createPropertyListing(
+                    sellerUuid, sellerName, houseId, price);
+            sendSellerMessage(sellerUuid, listing == null
+                    ? "§c该房屋已有在售挂牌，或上架失败。"
+                    : "§a已上架商品房 " + houseId + "，价格: " + formattedPrice);
+        }, () -> sendSellerMessage(sellerUuid, "§c结算队列繁忙，请稍后重试。"));
     }
 
     /** 反射桥接 ks-eco-realestate 模块的 RealEstateManager 方法。模块未加载/异常时返回 null。 */
@@ -493,26 +1132,27 @@ public final class MarketManager {
     private void recordTax(String payerUuid, String payerName, String category,
                            double baseAmount, double taxRate, double taxAmount, String description) {
         if (taxAmount <= 0) return;
-        plugin.asyncWorkPool().executeDatabase(() -> {
+        executeDatabaseOrReject(() -> {
             try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
                 if (conn == null) return;
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT INTO ks_tax_records (payer_uuid, payer_name, category, " +
+                        "INSERT INTO ks_tax_records (id,payer_uuid, payer_name, category, " +
                         "base_amount, tax_rate, tax_amount, description, collected_at) " +
-                        "VALUES (?,?,?,?,?,?,?,?)")) {
-                    ps.setString(1, payerUuid);
-                    ps.setString(2, payerName);
-                    ps.setString(3, category);
-                    ps.setDouble(4, baseAmount);
-                    ps.setDouble(5, taxRate);
-                    ps.setDouble(6, taxAmount);
-                    ps.setString(7, description);
-                    ps.setLong(8, System.currentTimeMillis() / 1000);
+                        "VALUES (?,?,?,?,?,?,?,?,?)")) {
+                    ps.setString(1, "TAX-" + UUID.randomUUID());
+                    ps.setString(2, payerUuid);
+                    ps.setString(3, payerName);
+                    ps.setString(4, category);
+                    ps.setDouble(5, baseAmount);
+                    ps.setDouble(6, taxRate);
+                    ps.setDouble(7, taxAmount);
+                    ps.setString(8, description);
+                    ps.setLong(9, System.currentTimeMillis() / 1000);
                     ps.executeUpdate();
                 }
             } catch (SQLException e) {
                 plugin.getLogger().warning("记录税收失败: " + e.getMessage());
             }
-        });
+        }, () -> plugin.getLogger().warning("记录税收排队失败: " + category));
     }
 }

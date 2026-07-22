@@ -113,7 +113,9 @@ public final class HwpWebHandler implements HttpHandler {
         return subPath.equals("/api/force-render-area")
                 || subPath.equals("/api/force-render-all")
                 || subPath.equals("/api/pre-render")
-                || subPath.equals("/api/batch-render");
+                || subPath.equals("/api/batch-render")
+                || subPath.equals("/api/clear-cache")
+                || subPath.equals("/api/debug");
     }
 
     private KsAuthManager.Session authenticatedSession(HttpExchange exchange, String query) {
@@ -362,15 +364,14 @@ public final class HwpWebHandler implements HttpHandler {
         String q = params.get("q");
         String world = params.get("world");
         String type = params.get("type");
-        String token = params.get("token");
-
-        UUID playerUuid = null;
-        if (token != null && !token.isEmpty()) {
-            KsAuthManager.Session session = plugin.bridge().validateToken(token);
-            if (session != null) playerUuid = session.playerUuid;
+        KsAuthManager.Session session = authenticatedSession(exchange, query);
+        if (session == null || session.playerUuid == null) {
+            KsPluginBridge.sendJson(exchange, 401, "{\"error\":\"搜索备注需要登录 token\"}");
+            return;
         }
 
-        List<Map<String, Object>> results = plugin.annotationManager().search(q, world, type, playerUuid);
+        List<Map<String, Object>> results = plugin.annotationManager().search(
+                q, world, type, session.playerUuid, session.isAdmin);
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("results", results);
         resp.put("count", results.size());
@@ -623,21 +624,16 @@ public final class HwpWebHandler implements HttpHandler {
     // ---- API: 调试 ----
 
     private void handleDebug(HttpExchange exchange, String query) throws IOException {
-        Map<String, String> params = KsPluginBridge.parseQuery(query);
-        String token = params.get("token");
-
-        // 调试接口需要管理员 token
-        boolean isAdmin = false;
-        if (token != null && !token.isEmpty()) {
-            KsAuthManager.Session session = plugin.bridge().validateToken(token);
-            if (session != null && session.isAdmin) isAdmin = true;
+        KsAuthManager.Session session = authenticatedSession(exchange, query);
+        if (session == null || !session.isAdmin) {
+            KsPluginBridge.sendJson(exchange, 403, "{\"error\":\"调试接口仅管理员可用\"}");
+            return;
         }
 
         Map<String, Object> debug = plugin.collectDebugInfo();
         debug.put("debugTokenRequired", true);
-        debug.put("debugAuthenticated", isAdmin);
+        debug.put("debugAuthenticated", true);
 
-        // 附加: 测试各 API 是否正常
         Map<String, Object> apiChecks = new LinkedHashMap<>();
         try {
             var worlds = plugin.mapRenderer().getWorlds();
@@ -662,29 +658,11 @@ public final class HwpWebHandler implements HttpHandler {
         } catch (Exception e) {
             apiChecks.put("bridge", Map.of("ok", false, "error", e.getMessage()));
         }
-        try {
-            // 测试渲染一个简单 tile
-            var world = Bukkit.getWorlds().get(0);
-            if (world != null) {
-                long t0 = System.currentTimeMillis();
-                String tile = plugin.mapRenderer().renderTileAsync(world.getName(), 0, 0, 1).get();
-                long elapsed = System.currentTimeMillis() - t0;
-                apiChecks.put("renderTest", Map.of("ok", tile != null, "elapsedMs", elapsed,
-                        "tileSize", tile != null ? tile.length() : 0));
-            } else {
-                apiChecks.put("renderTest", Map.of("ok", false, "error", "no worlds loaded"));
-            }
-        } catch (Exception e) {
-            apiChecks.put("renderTest", Map.of("ok", false, "error", e.getMessage()));
-        }
+        // Avoid blocking HTTP workers on expensive tile renders from the debug endpoint.
+        apiChecks.put("renderTest", Map.of("ok", true, "skipped", true,
+                "reason", "render probe disabled to avoid expensive blocking work"));
 
         debug.put("apiChecks", apiChecks);
-
-        // 如果是管理员，显示完整信息；否则去除敏感字段
-        if (!isAdmin) {
-            debug.remove("recentErrors"); // 仅管理员可查看错误详情
-        }
-
         KsPluginBridge.sendJson(exchange, 200, gson.toJson(debug));
     }
 

@@ -20,6 +20,7 @@ public final class EnterpriseExtra implements KsEcoExtraModule {
     private KsEco eco;
     private EnterpriseManager enterpriseManager;
     private EnterpriseAccessProviderImpl enterpriseAccessProvider;
+    private EnterpriseFundSettlementProviderImpl enterpriseFundSettlementProvider;
     private BiddingManager biddingManager;
     private QualificationChecker qualificationChecker;
 
@@ -34,6 +35,7 @@ public final class EnterpriseExtra implements KsEcoExtraModule {
         this.eco = eco;
         this.enterpriseManager = new EnterpriseManager(eco);
         this.enterpriseAccessProvider = new EnterpriseAccessProviderImpl(eco);
+        this.enterpriseFundSettlementProvider = new EnterpriseFundSettlementProviderImpl();
         this.biddingManager = new BiddingManager(eco, enterpriseManager);
         this.qualificationChecker = new QualificationChecker(enterpriseManager);
         eco.getLogger().info("[企业系统] 模块已加载。");
@@ -44,17 +46,21 @@ public final class EnterpriseExtra implements KsEcoExtraModule {
         enterpriseManager.init();
         enterpriseAccessProvider.init();
         eco.registerEnterpriseAccessProvider(enterpriseAccessProvider);
+        eco.registerEnterpriseFundSettlementProvider(enterpriseFundSettlementProvider);
         biddingManager.init();
         eco.getLogger().info("[企业系统] 模块已启用。");
     }
 
     @Override
     public void onDisable() {
+        eco.registerEnterpriseFundSettlementProvider(null);
+        eco.registerEnterpriseAccessProvider(null);
         eco.getLogger().info("[企业系统] 模块已停用。");
     }
 
     public EnterpriseManager enterpriseManager() { return enterpriseManager; }
     public EnterpriseAccessProviderImpl enterpriseAccessProvider() { return enterpriseAccessProvider; }
+    public EnterpriseFundSettlementProviderImpl enterpriseFundSettlementProvider() { return enterpriseFundSettlementProvider; }
     public BiddingManager biddingManager() { return biddingManager; }
     public QualificationChecker qualificationChecker() { return qualificationChecker; }
 }

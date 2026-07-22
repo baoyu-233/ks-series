@@ -9,6 +9,7 @@ import org.bukkit.Material;
 import org.bukkit.Sound;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
@@ -63,7 +64,7 @@ public final class PurchaseOrderMenu implements InventoryHolder {
             plugin.asyncWorkPool().executeDatabase(() -> {
                 List<PurchaseOrderManager.OrderSnapshot> snapshots =
                         plugin.purchaseOrderManager().loadActiveOrderSnapshots();
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                plugin.scheduler().runPlayer(playerId, () -> {
                     Player current = Bukkit.getPlayer(playerId);
                     if (current == null || !current.isOnline()
                             || current.getOpenInventory().getTopInventory().getHolder() != this) return;
@@ -155,7 +156,7 @@ public final class PurchaseOrderMenu implements InventoryHolder {
             inventory.setItem(31, button(Material.WRITABLE_BOOK, "§e这是你发布的求购单",
                     "§7有限求购剩余预存款会在撤销后退回"));
             inventory.setItem(40, button(Material.BARRIER, "§c撤销求购单",
-                    "§7Shift+右键确认撤销"));
+                    "§7中键确认撤销"));
         }
         inventory.setItem(49, button(Material.OAK_DOOR, "§c返回求购列表"));
     }
@@ -174,7 +175,7 @@ public final class PurchaseOrderMenu implements InventoryHolder {
         lore.add(Component.text(order.exactNbt() ? "匹配: 精确 NBT" : "匹配: 仅材质", NamedTextColor.AQUA));
         lore.add(Component.empty());
         if (viewer.getUniqueId().equals(order.buyerUuid())) {
-            lore.add(Component.text("左键查看 · Shift+右键撤销", NamedTextColor.YELLOW));
+            lore.add(Component.text("左键查看 · 中键撤销", NamedTextColor.YELLOW));
         } else {
             lore.add(Component.text("点击进入详情并选择出售数量", NamedTextColor.YELLOW));
             lore.add(Component.text("支持识别主手潜影盒内的匹配物品", NamedTextColor.DARK_GRAY));
@@ -264,7 +265,7 @@ public final class PurchaseOrderMenu implements InventoryHolder {
                     int index = menu.page * PAGE_SIZE + slot;
                     if (index < menu.orders.size()) {
                         PurchaseOrderManager.Order order = menu.orders.get(index);
-                        if (event.isShiftClick() && event.isRightClick()
+                        if (event.getClick() == ClickType.MIDDLE
                                 && player.getUniqueId().equals(order.buyerUuid())) {
                             cancel(player, menu, order);
                         } else {
@@ -306,7 +307,7 @@ public final class PurchaseOrderMenu implements InventoryHolder {
             }
             boolean owner = player.getUniqueId().equals(order.buyerUuid());
             if (owner) {
-                if (slot == 40 && event.isShiftClick() && event.isRightClick()) cancel(player, menu, order);
+                if (slot == 40 && event.getClick() == ClickType.MIDDLE) cancel(player, menu, order);
             } else {
                 int available = plugin.purchaseOrderManager().availableQuantity(order,
                         player.getInventory().getItemInMainHand());
@@ -395,7 +396,7 @@ public final class PurchaseOrderMenu implements InventoryHolder {
             if (!PENDING.containsKey(playerId)) return;
             event.setCancelled(true);
             String input = PlainTextComponentSerializer.plainText().serialize(event.message()).trim();
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 PendingCreation pending = PENDING.remove(playerId);
                 Player player = Bukkit.getPlayer(playerId);
                 if (pending != null && player != null) handleInput(player, pending, input);

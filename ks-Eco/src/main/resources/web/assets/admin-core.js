@@ -45,6 +45,10 @@ function ksPreviewApi(path){
   if(path==='/api/admin/transfer/config')return {taxFreeAmount:1000,taxRate:.01};
   if(path==='/api/enterprise/list')return {maxEnterpriseLevel:10,enterprises:[{id:'ENT-NOVA',name:'新星联合工业',description:'工业与红石设备供应',type:'PRIVATE',industry:'INDUSTRY',level:6,registered_capital:2500000,corporate_balance:4820000,employee_count:12,region:'新城区',status:'ACTIVE'},{id:'ENT-ORBIT',name:'轨道物流集团',description:'跨区物流',type:'PRIVATE',industry:'OTHER',level:3,registered_capital:1400000,corporate_balance:2360000,employee_count:7,region:'港区',status:'ACTIVE'},{id:'ENT-AGRI',name:'曙光农业社',description:'农业生产',type:'PRIVATE',industry:'AGRICULTURE',level:4,registered_capital:900000,corporate_balance:1560000,employee_count:18,region:'生态带',status:'ACTIVE'}]};
   if(path==='/api/bank/list')return {banks:[{id:'B-AURORA',name:'曙光发展银行',type:'COMMERCIAL',total_assets:330182382,loan_rate:.02,status:'ACTIVE'},{id:'B-NOVA',name:'新星储备银行',type:'COMMERCIAL',total_assets:210093000,loan_rate:.026,status:'ACTIVE'},{id:'GUIDE-BANK',name:'城邦发展银行',type:'GUIDANCE',total_assets:96000000,loan_rate:.015,status:'ACTIVE'}]};
+  if(path==='/api/admin/bank/resolution/fund')return {success:true,balance:10000000,coverageLimit:100000,premiumRate:.0005,updatedAt:1784600000};
+  if(path==='/api/admin/bank/resolution/cases')return {cases:[]};
+  if(path==='/api/admin/bank/resolution/preview')return {success:true,bankId:'B-AURORA',bridgeBankId:'B-NOVA',operatingStatus:'RESOLUTION',totalDeposits:600000,depositorCount:8,estateValue:420000,recoveryRatio:.7,insuredDeposits:500000,uninsuredDeposits:100000,insuranceSubsidy:150000,uninsuredHaircut:30000,fundSufficient:true};
+  if(path==='/api/admin/bank/loan-payout/review')return {reviews:[{id:'LN-REVIEW-01',bank_id:'B-AURORA',borrower_name:'示例玩家',borrower_uuid:'00000000-0000-0000-0000-000000000001',principal:250000,product_type:'HOME',request_id:'REQ-01'}]};
   if(path==='/api/realestate/zones')return {moduleLoaded:true,zones:zones};
   if(path==='/api/realestate/plots')return {plots:plots};
   if(path==='/api/market/stats')return {activeListings:46,storedItems:1280,officialWarehouseItems:84,officialBuyEnabled:true};
@@ -59,6 +63,11 @@ function ksPreviewApi(path){
   if(path==='/api/blindbox/pools')return {maxEnterpriseLevel:10,pools:[{id:'tech-cache',name:'科技补给箱',enabled:true,price:680,pityMax:50,pityRules:'RARE:50,EPIC:120',pityRulesText:'RARE 50 / EPIC 120',poolType:'ENTERPRISE',ownerType:'ENTERPRISE',minEnterpriseLevel:4,lootCount:14,pullCount:1240,allowedCategories:'material,tool',allowedIndustries:'INDUSTRY',requiredLandZoneTypes:'INDUSTRIAL',description:'企业工业补给'}]};
   if(path==='/api/audit/log?limit=20')return {logs:[{createdAt:1783958400,action:'BANK_RATE_SET',playerName:'baoyu_233',targetId:'B-AURORA',details:'贷款利率调整为 2.00%'},{createdAt:1783953000,action:'ZONE_PRICE_SET',playerName:'baoyu_233',targetId:'ZN-C4',details:'地块基础价格已更新'}]};
   if(path==='/api/admin/bans')return {bans:[]};
+  if(path==='/api/admin/settlements/review')return {settlements:[
+    {type:'PROJECT_WALLET',id:'PRJ-STL-01',projectId:'PROJECT-17',bidId:'BID-09',playerUuid:'11111111-1111-1111-1111-111111111111',depositAmount:12000,prepaymentAmount:30000,reviewStage:'DEPOSIT_CHARGE_CLAIMED',lastError:'钱包扣款请求超时，最终结果未知'},
+    {type:'PROPERTY_MARKET',id:'PROP-STL-02',listingId:'HOUSE-LIST-08',houseId:'HOUSE-31',buyerUuid:'22222222-2222-2222-2222-222222222222',sellerUuid:'33333333-3333-3333-3333-333333333333',saleAmount:280000,taxAmount:14000,totalCharge:294000,reviewStage:'TRANSFER_CLAIMED',lastError:'产权转移回调中断'},
+    {type:'MARKET_PURCHASE',id:'MKT-STL-03',listingId:'L-19',storageId:'STORAGE-44',buyerUuid:'44444444-4444-4444-4444-444444444444',sellerUuid:'55555555-5555-5555-5555-555555555555',totalCost:6400,tax:320,totalCharge:6720,reviewStage:'SELLER_PAYOUT_CLAIMED',lastError:'卖家入账请求超时，最终结果未知'}
+  ]};
   if(path==='/api/admin/eco/features')return {bank:true,enterprise:true,realestate:true,blindbox:true};
   if(path==='/api/rankings/players')return {rankings:[{name:'baoyu_233',uuid:'afab46b2',balance:1582000,online:true},{name:'NovaMiner',uuid:'d09c8c4e',balance:1248800,online:true}]};
   if(path==='/api/rankings/enterprises')return {rankings:[]};
@@ -124,7 +133,7 @@ function switchTab(tabId){
     'macro':'经济大盘 // MACRO OVERVIEW','corps-hub':'企业与领地 // CORPS & ZONES','protocols-hub':'核心协议 // PROTOCOLS','market-hub':'黑市与商业化 // BLACK MARKET','security-hub':'安全与审计 // SECURITY',
     'banks':'商业银行 // COMMERCIAL BANKS','bank-cb':'中央银行 // CENTRAL BANK','ents':'企业注册表 // CORPORATIONS','bidding':'招投标 // TENDERS',
     'tax-rates':'税收协议 // TAXATION','market-overview':'市场监控 // MARKET WATCH','prices':'官方定价 // OFFICIAL PRICING','price-volatility':'波动引擎 // VOLATILITY',
-    'bb-pools':'盲盒卡池 // GACHA POOLS','re-zones':'领地地块 // ZONES & PLOTS','dg-templates':'副本协议 // DUNGEON PROTOCOLS','politic-offices':'元老院 // SENATE','ops':'运营配置 // OPERATIONS','audit-log':'审计日志 // AUDIT TRAIL'
+    'bb-pools':'盲盒卡池 // GACHA POOLS','re-zones':'领地地块 // ZONES & PLOTS','dg-templates':'副本协议 // DUNGEON PROTOCOLS','politic-offices':'元老院 // SENATE','ops':'运营配置 // OPERATIONS','settlement-review':'结算复核 // SETTLEMENT REVIEW','audit-log':'审计日志 // AUDIT TRAIL'
   };
   document.getElementById('pageTitle').textContent=titles[tabId]||tabId;
   var loaders={
@@ -134,7 +143,7 @@ function switchTab(tabId){
     'market-hub':loadMarketHub,
     'security-hub':loadSecurityHub,
     'banks':function(){loadBankList();},
-    'bank-cb':function(){loadCbRates();loadGuidanceConfig();loadCbLoans();},
+    'bank-cb':function(){loadCbRates();loadGuidanceConfig();loadCbLoans();loadBankPolicyEvents();loadBankResolutionConsole();loadBankLoanPayoutReviews();},
     'ents':function(){loadEntList();loadEconomicThresholds();loadInviteList();loadDivList();},
     'bidding':function(){loadProjectList();loadProcurementList();},
     'tax-rates':function(){loadTaxRates();loadTaxBrackets();loadTaxRecords();loadPenalties();},
@@ -146,6 +155,7 @@ function switchTab(tabId){
     'dg-templates':function(){loadDgTemplates();loadDgInstances();loadDgGrids();loadDgConfig();},
     'politic-offices':function(){loadPoliticOffices();loadAdminProposals();loadPoliticConfig();},
     'ops':function(){loadMoAdmin();loadEcoFeatures();loadTransportConfig();},
+    'settlement-review':loadSettlementReviews,
     'audit-log':loadAuditLog
   };
   if(loaders[tabId])loaders[tabId]();
@@ -314,6 +324,68 @@ async function loadCbRates(){
     {icon:'📐',label:'商行利率走廊',value:(d.rateMin!=null||d.rateMax!=null)?(pct(d.rateMin)+' ~ '+pct(d.rateMax)):'未设置'},
     {icon:'🏦',label:'开行最低资本',value:fmt(d.bankMinCapital!=null?d.bankMinCapital:50000)}
   ]);
+}
+async function loadBankPolicyEvents(){
+  var events=await api('GET','/api/bank/policy-events');
+  var body=document.getElementById('bankPolicyEventBody');
+  if(body)body.innerHTML=(events.events||[]).map(function(e){return '<tr><td><b>'+escapeHtml(e.title)+'</b><br><small>'+escapeHtml(e.description||'')+'</small></td><td>'+escapeHtml(e.event_type)+'</td><td>'+pct(e.rate_modifier)+'</td><td>'+new Date(Number(e.starts_at)*1000).toLocaleString('zh-CN')+'<br>至 '+new Date(Number(e.ends_at)*1000).toLocaleString('zh-CN')+'</td><td><span class="badge '+(e.status==='ACTIVE'?'badge-active':'badge-closed')+'">'+escapeHtml(e.status)+'</span></td></tr>';}).join('')||'<tr><td colspan="5" style="color:#666;">暂无计划中或生效中的政策事件</td></tr>';
+  var banks=await api('GET','/api/bank/list'),select=document.getElementById('bankResolutionBank');
+  if(select){var current=select.value;select.innerHTML='<option value="">请选择商业银行</option>'+(banks.banks||[]).filter(function(b){return b.type!=='CENTRAL';}).map(function(b){return '<option value="'+escapeAttr(b.id)+'">'+escapeHtml(b.name)+' · '+escapeHtml(b.id)+'</option>';}).join('');select.value=current;}
+  var start=document.getElementById('bankPolicyStarts'),end=document.getElementById('bankPolicyEnds');
+  function localValue(date){var z=new Date(date.getTime()-date.getTimezoneOffset()*60000);return z.toISOString().slice(0,16);}
+  if(start&&!start.value)start.value=localValue(new Date());
+  if(end&&!end.value)end.value=localValue(new Date(Date.now()+7*86400000));
+}
+async function createBankPolicyEvent(){
+  var start=new Date(document.getElementById('bankPolicyStarts').value).getTime()/1000,end=new Date(document.getElementById('bankPolicyEnds').value).getTime()/1000;
+  var d=await api('POST','/api/admin/bank/policy-events',{eventType:document.getElementById('bankPolicyType').value,title:document.getElementById('bankPolicyTitle').value,description:document.getElementById('bankPolicyDescription').value,rateModifier:Number(document.getElementById('bankPolicyRate').value||0),riskModifier:Number(document.getElementById('bankPolicyRisk').value||0),startsAt:start,endsAt:end});
+  if(d.success){toast(d.message||'政策事件已创建','ok');loadBankPolicyEvents();}else toast(d.error||'创建失败','err');
+}
+async function setBankOperatingStatus(){
+  var bankId=document.getElementById('bankResolutionBank').value,status=document.getElementById('bankResolutionStatus').value;if(!bankId){toast('请选择目标银行','err');return;}
+  if(!confirm('确认将该银行经营状态调整为 '+status+'？'))return;
+  var d=await api('POST','/api/admin/bank/operating-status',{bankId:bankId,status:status});
+  if(d.success){toast(d.message||'处置状态已更新','ok');loadBankList();}else toast(d.error||'更新失败','err');
+}
+async function loadBankResolutionConsole(){
+  var fund=await api('GET','/api/admin/bank/resolution/fund'),box=document.getElementById('bankInsuranceFund');
+  if(box)box.innerHTML=fund.error?'<span style="color:#d88;">'+escapeHtml(fund.error)+'</span>':'基金余额 <b>'+fmt(fund.balance)+'</b> · 单人保额 <b>'+fmt(fund.coverageLimit)+'</b> · 月保费率 <b>'+pct(fund.premiumRate)+'</b>';
+  var banks=await api('GET','/api/bank/list'),items=(banks.banks||[]).filter(function(b){return b.type!=='CENTRAL'&&b.status==='ACTIVE';});
+  ['bankFailureBank','bankBridgeBank'].forEach(function(id){var el=document.getElementById(id);if(!el)return;var current=el.value;el.innerHTML='<option value="">请选择银行</option>'+items.map(function(b){return '<option value="'+escapeAttr(b.id)+'">'+escapeHtml(b.name)+' · '+escapeHtml(b.id)+'</option>';}).join('');el.value=current;});
+  var history=await api('GET','/api/admin/bank/resolution/cases'),body=document.getElementById('bankResolutionCaseBody');if(body)body.innerHTML=(history.cases||[]).map(function(x){return '<tr><td>'+escapeHtml(x.id)+'</td><td>'+escapeHtml(x.bank_id)+'</td><td>'+escapeHtml(x.bridge_bank_id)+'</td><td>'+fmt(x.total_deposits)+'</td><td>'+pct(x.recovery_ratio)+'</td><td>'+fmt(x.insurance_subsidy)+'</td><td>'+fmt(x.total_haircut)+'</td><td>'+new Date(Number(x.resolved_at)*1000).toLocaleString('zh-CN')+'</td></tr>';}).join('')||'<tr><td colspan="8" style="color:#666;">暂无银行处置记录</td></tr>';
+}
+async function loadBankLoanPayoutReviews(){
+  var data=await api('GET','/api/admin/bank/loan-payout/review'),body=document.getElementById('bankLoanPayoutReviewBody');
+  if(!body)return;
+  if(data.error){body.innerHTML='<tr><td colspan="7" style="color:#d88;">'+escapeHtml(data.error)+'</td></tr>';return;}
+  body.innerHTML=(data.reviews||[]).map(function(x){var label=x.borrower_name||x.borrower_uuid||'-',key=encodeURIComponent(String(x.id||''));return '<tr><td>'+escapeHtml(x.id)+'</td><td>'+escapeHtml(x.bank_id)+'</td><td>'+escapeHtml(label)+'</td><td>'+fmt(x.principal)+'</td><td>'+escapeHtml(x.product_type||'STANDARD')+'</td><td>'+escapeHtml(x.request_id||'-')+'</td><td><button class="btn btn-sm" data-loan="'+key+'" onclick="resolveBankLoanPayout(decodeURIComponent(this.dataset.loan),\'CONFIRM_PAYOUT_SUCCEEDED\')">确认已到账</button> <button class="btn btn-sm btn-danger" data-loan="'+key+'" onclick="resolveBankLoanPayout(decodeURIComponent(this.dataset.loan),\'CONFIRM_PAYOUT_FAILED\')">确认未到账</button></td></tr>';}).join('')||'<tr><td colspan="7" style="color:#666;">没有待人工复核的放款</td></tr>';
+}
+async function resolveBankLoanPayout(loanId,action){
+  var succeeded=action==='CONFIRM_PAYOUT_SUCCEEDED',word=succeeded?'已经到账并激活贷款':'未到账并执行账务回滚';
+  if(!confirm('请确认已核对 Vault 流水：贷款 '+loanId+' '+word+'？'))return;
+  var typed=prompt('请输入贷款 ID 进行二次确认：','');if(typed!==loanId){toast('贷款 ID 不匹配，已取消','err');return;}
+  var data=await api('POST','/api/admin/bank/loan-payout/resolve',{loanId:loanId,action:action});
+  if(data.success){toast(data.message||'复核完成','ok');loadBankLoanPayoutReviews();}else toast(data.error||'复核失败','err');
+}
+async function topUpBankInsuranceFund(){
+  var amount=Number(document.getElementById('bankInsuranceTopUp').value||0);if(amount<=0){toast('请输入有效注资金额','err');return;}
+  if(!confirm('确认由央行向存款保险基金注入 '+fmt(amount)+'？该操作会记录审计日志。'))return;
+  var d=await api('POST','/api/admin/bank/resolution/fund/top-up',{amount:amount});if(d.success){toast(d.message||'注资完成','ok');loadBankResolutionConsole();}else toast(d.error||'注资失败','err');
+}
+var currentBankResolutionPreview=null;
+async function previewBankResolution(){
+  var bankId=document.getElementById('bankFailureBank').value,bridgeBankId=document.getElementById('bankBridgeBank').value,box=document.getElementById('bankResolutionPreview');if(!bankId||!bridgeBankId||bankId===bridgeBankId){toast('请选择不同的失败银行和桥接银行','err');return;}
+  var d=await api('POST','/api/admin/bank/resolution/preview',{bankId:bankId,bridgeBankId:bridgeBankId});
+  if(d.error){currentBankResolutionPreview=null;box.innerHTML='<span style="color:#d88;">'+escapeHtml(d.error)+'</span>';return;}
+  currentBankResolutionPreview={bankId:bankId,bridgeBankId:bridgeBankId};
+  box.innerHTML='<div class="stats-row"><div class="stat-card"><div class="stat-val">'+fmt(d.totalDeposits)+'</div><div class="stat-label">总存款</div></div><div class="stat-card"><div class="stat-val">'+fmt(d.estateValue)+'</div><div class="stat-label">可回收资产</div></div><div class="stat-card"><div class="stat-val">'+pct(d.recoveryRatio)+'</div><div class="stat-label">资产回收率</div></div><div class="stat-card"><div class="stat-val">'+fmt(d.insuranceSubsidy)+'</div><div class="stat-label">保险基金赔付</div></div><div class="stat-card"><div class="stat-val">'+fmt(d.uninsuredHaircut)+'</div><div class="stat-label">未保险折价</div></div></div><div>存款人 '+fmt(d.depositorCount)+' 名 · 受保存款 '+fmt(d.insuredDeposits)+' · 未保险存款 '+fmt(d.uninsuredDeposits)+' · 基金'+(d.fundSufficient?'充足':'不足')+' · 当前状态 '+escapeHtml(d.operatingStatus)+'</div>';
+}
+async function executeBankResolution(){
+  if(!currentBankResolutionPreview){toast('请先完成处置测算','err');return;}
+  var p=currentBankResolutionPreview;if(!confirm('不可逆操作：确认清算 '+p.bankId+'，并将存款、贷款和抵押资产全部转给 '+p.bridgeBankId+'？'))return;
+  var typed=prompt('请输入失败银行 ID 以二次确认：', '');if(typed!==p.bankId){toast('银行 ID 不匹配，已取消','err');return;}
+  var d=await api('POST','/api/admin/bank/resolution/execute',p);
+  if(d.success){toast(d.message||'银行清算完成','ok');currentBankResolutionPreview=null;loadBankResolutionConsole();loadBankPolicyEvents();loadBankList();}else toast(d.error||'清算失败','err');
 }
 async function setCbRateRange(){
   var min=parseFloat(document.getElementById('cbRateMin').value);
@@ -1076,8 +1148,115 @@ var ACTION_LABELS={
   'PROJECT_AWARD':'🏆 评标','DIVIDEND_DECLARE':'💸 分红','INVITE_SEND':'📨 邀请',
   'PENALTY_ISSUE':'⚠ 罚单','TAX_RATE_SET':'📊 税率调整',
   'ENTERPRISE_PERMISSION_SET':'🔑 企业权限','BANK_PERMISSION_SET':'🔑 银行权限',
-  'BANK_RATE_SET':'🏦 银行利率'
+  'BANK_RATE_SET':'🏦 银行利率',
+  'PROJECT_SETTLEMENT_REVIEW_RESOLVED':'项目结算复核',
+  'PROPERTY_SETTLEMENT_REVIEW_RESOLVED':'房产结算复核',
+  'MARKET_SETTLEMENT_REVIEW_RESOLVED':'市场结算复核',
+  'BANK_LOAN_REPAYMENT_REVIEW_RESOLVED':'银行还款复核'
 };
+
+var SETTLEMENT_REVIEW_LABELS={
+  'PROJECT_WALLET':'个人工程款',
+  'PROPERTY_MARKET':'房产交易',
+  'MARKET_PURCHASE':'普通市场购买',
+  'BANK_LOAN_REPAYMENT':'银行贷款还款'
+};
+var SETTLEMENT_STAGE_LABELS={
+  'DEPOSIT_CHARGE_CLAIMED':'保证金扣款结果未知',
+  'PREPAYMENT_CLAIMED':'工程预付款结果未知',
+  'CHARGE_CLAIMED':'还款扣款结果未知',
+  'BUYER_CHARGE_CLAIMED':'买家扣款结果未知',
+  'TRANSFER_CLAIMED':'产权转移结果未知',
+  'SELLER_PAYOUT_CLAIMED':'卖家入账结果未知',
+  'REFUND_CLAIMED':'买家退款结果未知'
+};
+var SETTLEMENT_ACTION_LABELS={
+  'CONFIRM_CHARGE_SUCCEEDED':'确认扣款成功',
+  'CONFIRM_CHARGE_FAILED':'确认扣款失败',
+  'RECHECK_TRANSFER':'重新核对产权',
+  'CONFIRM_PAYOUT_SUCCEEDED':'确认入账成功',
+  'CONFIRM_PAYOUT_FAILED':'确认入账失败',
+  'CONFIRM_REFUND_SUCCEEDED':'确认退款成功',
+  'CONFIRM_REFUND_FAILED':'确认退款失败'
+};
+var SETTLEMENT_REVIEW_ACTIONS={
+  'PROJECT_WALLET':{
+    'DEPOSIT_CHARGE_CLAIMED':['CONFIRM_CHARGE_SUCCEEDED','CONFIRM_CHARGE_FAILED'],
+    'PREPAYMENT_CLAIMED':['CONFIRM_PAYOUT_SUCCEEDED','CONFIRM_PAYOUT_FAILED']
+  },
+  'PROPERTY_MARKET':{
+    'BUYER_CHARGE_CLAIMED':['CONFIRM_CHARGE_SUCCEEDED','CONFIRM_CHARGE_FAILED'],
+    'TRANSFER_CLAIMED':['RECHECK_TRANSFER'],
+    'SELLER_PAYOUT_CLAIMED':['CONFIRM_PAYOUT_SUCCEEDED','CONFIRM_PAYOUT_FAILED'],
+    'REFUND_CLAIMED':['CONFIRM_REFUND_SUCCEEDED','CONFIRM_REFUND_FAILED']
+  },
+  'MARKET_PURCHASE':{
+    'BUYER_CHARGE_CLAIMED':['CONFIRM_CHARGE_SUCCEEDED','CONFIRM_CHARGE_FAILED'],
+    'SELLER_PAYOUT_CLAIMED':['CONFIRM_PAYOUT_SUCCEEDED','CONFIRM_PAYOUT_FAILED'],
+    'REFUND_CLAIMED':['CONFIRM_REFUND_SUCCEEDED','CONFIRM_REFUND_FAILED']
+  },
+  'BANK_LOAN_REPAYMENT':{
+    'CHARGE_CLAIMED':['CONFIRM_CHARGE_SUCCEEDED','CONFIRM_CHARGE_FAILED'],
+    'REFUND_CLAIMED':['CONFIRM_REFUND_SUCCEEDED','CONFIRM_REFUND_FAILED']
+  }
+};
+function settlementReviewActions(type,stage){
+  var byType=SETTLEMENT_REVIEW_ACTIONS[type]||{};
+  return byType[stage]||[];
+}
+function settlementReviewBusiness(row){
+  if(row.type==='PROJECT_WALLET')return '项目 '+escapeHtml(row.projectId||'—')+'<br><span style="color:var(--faint);">投标 '+escapeHtml(row.bidId||'—')+'</span>';
+  if(row.type==='PROPERTY_MARKET')return '房屋 '+escapeHtml(row.houseId||'—')+'<br><span style="color:var(--faint);">挂牌 '+escapeHtml(row.listingId||'—')+'</span>';
+  if(row.type==='BANK_LOAN_REPAYMENT')return '贷款 '+escapeHtml(row.loanId||'—')+'<br><span style="color:var(--faint);">银行 '+escapeHtml(row.bankId||'—')+'</span>';
+  return '挂牌 '+escapeHtml(row.listingId||'—')+'<br><span style="color:var(--faint);">暂存 '+escapeHtml(row.storageId||'—')+'</span>';
+}
+function settlementReviewAccounts(row){
+  if(row.type==='PROJECT_WALLET')return '<span title="'+escapeAttr(row.playerUuid||'')+'">玩家 '+escapeHtml(row.playerUuid||'—')+'</span>';
+  if(row.type==='BANK_LOAN_REPAYMENT')return '<span title="'+escapeAttr(row.borrowerUuid||'')+'">借款人 '+escapeHtml(row.borrowerUuid||'—')+'</span>';
+  return '<span title="'+escapeAttr(row.buyerUuid||'')+'">买家 '+escapeHtml(row.buyerUuid||'—')+'</span><br><span title="'+escapeAttr(row.sellerUuid||'')+'">卖家 '+escapeHtml(row.sellerUuid||'—')+'</span>';
+}
+function settlementReviewAmounts(row){
+  if(row.type==='PROJECT_WALLET')return '保证金 '+fmt(row.depositAmount||0)+'<br>预付款 '+fmt(row.prepaymentAmount||0);
+  if(row.type==='PROPERTY_MARKET')return '成交 '+fmt(row.saleAmount||0)+'<br>税额 '+fmt(row.taxAmount||0)+' / 实扣 '+fmt(row.totalCharge||0);
+  if(row.type==='BANK_LOAN_REPAYMENT')return '还款 '+fmt(row.amount||0)+'<br>预期剩余 '+fmt(row.expectedRemaining||0);
+  return '货款 '+fmt(row.totalCost||0)+'<br>税额 '+fmt(row.tax||0)+' / 实扣 '+fmt(row.totalCharge||0);
+}
+async function loadSettlementReviews(){
+  var body=document.getElementById('settlementReviewBody');
+  var summary=document.getElementById('settlementReviewSummary');
+  if(!body||!summary)return;
+  summary.textContent='正在读取待复核结算...';
+  body.innerHTML='<tr><td colspan="7" style="color:var(--faint);">正在加载...</td></tr>';
+  var d=await api('GET','/api/admin/settlements/review');
+  if(d.error){summary.textContent='读取失败';body.innerHTML='<tr><td colspan="7" style="color:#ff8fa3;">'+escapeHtml(d.error)+'</td></tr>';return;}
+  var rows=d.settlements||[];
+  summary.textContent=rows.length?'共有 '+rows.length+' 笔结算等待人工核实。':'当前没有需要人工复核的结算。';
+  var html='';rows.forEach(function(row){
+    var actions=settlementReviewActions(row.type,row.reviewStage);
+    var buttons=actions.map(function(action){
+      var danger=/(FAILED)$/.test(action)?' btn-danger':'';
+      return '<button class="btn btn-sm'+danger+'" type="button" data-settlement-id="'+escapeAttr(row.id||'')+'" data-settlement-type="'+escapeAttr(row.type||'')+'" data-settlement-stage="'+escapeAttr(row.reviewStage||'')+'" data-settlement-action="'+action+'" onclick="resolveSettlementReview(this)">'+escapeHtml(SETTLEMENT_ACTION_LABELS[action]||action)+'</button>';
+    }).join(' ');
+    if(!buttons)buttons='<span style="color:#ff8fa3;">当前阶段无可用动作，请检查服务端版本</span>';
+    html+='<tr><td><b>'+escapeHtml(SETTLEMENT_REVIEW_LABELS[row.type]||row.type||'未知类型')+'</b><br><span style="color:var(--faint);">'+escapeHtml(row.id||'—')+'</span></td>'
+      +'<td>'+settlementReviewBusiness(row)+'</td><td style="font-size:10px;">'+settlementReviewAccounts(row)+'</td><td>'+settlementReviewAmounts(row)+'</td>'
+      +'<td><span class="badge badge-pending">'+escapeHtml(SETTLEMENT_STAGE_LABELS[row.reviewStage]||row.reviewStage||'—')+'</span><br><span style="color:var(--faint);font-size:10px;">'+escapeHtml(row.reviewStage||'—')+'</span></td>'
+      +'<td style="max-width:260px;color:#ffb0ba;font-size:11px;white-space:normal;">'+escapeHtml(row.lastError||'—')+'</td><td>'+buttons+'</td></tr>';
+  });
+  body.innerHTML=html||'<tr><td colspan="7" style="color:var(--faint);">暂无待复核结算</td></tr>';
+}
+async function resolveSettlementReview(button){
+  var id=button.dataset.settlementId,type=button.dataset.settlementType,stage=button.dataset.settlementStage,action=button.dataset.settlementAction;
+  if(settlementReviewActions(type,stage).indexOf(action)<0){toast('当前结算阶段不允许该操作','err');return;}
+  var prompt='确认执行“'+(SETTLEMENT_ACTION_LABELS[action]||action)+'”？\n\n结算：'+id+'\n类型：'+(SETTLEMENT_REVIEW_LABELS[type]||type)+'\n中断阶段：'+(SETTLEMENT_STAGE_LABELS[stage]||stage)+'\n\n该操作会改变资金或产权结算状态，请先核对外部流水。';
+  if(!confirm(prompt))return;
+  var buttons=Array.prototype.filter.call(document.querySelectorAll('[data-settlement-id]'),function(item){return item.dataset.settlementId===id;});
+  buttons.forEach(function(item){item.disabled=true;});
+  var d=await api('POST','/api/admin/settlements/resolve',{id:id,type:type,action:action});
+  if(d.error){toast('复核处理失败：'+d.error,'err');buttons.forEach(function(item){item.disabled=false;});return;}
+  toast('复核已处理，当前状态：'+(d.status||'已提交'),'ok');
+  loadSettlementReviews();
+}
 async function loadAuditLog(){
   var action=document.getElementById('auditAction').value;
   var limit=document.getElementById('auditLimit').value;
@@ -1484,9 +1663,19 @@ function KsDistrictMap(canvasId,opts){opts=opts||{};opts.terrain=false;return Ks
 function drawDistrictFocus(canvasId,v){
   var c=document.getElementById(canvasId);if(!c)return;var d=Math.min(window.devicePixelRatio||1,2),w=c.clientWidth||520,h=c.clientHeight||220;c.width=w*d;c.height=h*d;var x=c.getContext('2d');x.setTransform(d,0,0,d,0,0);x.fillStyle='#080D16';x.fillRect(0,0,w,h);x.strokeStyle='rgba(112,154,194,.12)';for(var g=16;g<w;g+=16){x.beginPath();x.moveTo(g,0);x.lineTo(g,h);x.stroke();}for(var gy=16;gy<h;gy+=16){x.beginPath();x.moveTo(0,gy);x.lineTo(w,gy);x.stroke();}var x1=Math.min(Number(v.x1)||0,Number(v.x2)||0),z1=Math.min(Number(v.z1)||0,Number(v.z2)||0),ww=Math.max(1,Math.abs((Number(v.x2)||0)-(Number(v.x1)||0))),hh=Math.max(1,Math.abs((Number(v.z2)||0)-(Number(v.z1)||0))),scale=Math.min((w-68)/ww,(h-68)/hh),rw=Math.max(48,ww*scale),rh=Math.max(48,hh*scale),left=(w-rw)/2,top=(h-rh)/2,col={RESIDENTIAL:'#00D9FF',COMMERCIAL:'#FF4FD8',INDUSTRIAL:'#FFC857',AGRICULTURAL:'#5BE38B'}[v.type]||'#B18CFF';x.fillStyle=col+'35';x.fillRect(left,top,rw,rh);x.strokeStyle=col;x.lineWidth=2;x.strokeRect(left,top,rw,rh);x.fillStyle='#F1FAFF';x.font='600 14px Rajdhani,Arial';x.fillText(String(v.name||v.id||'PLOT'),left+12,top+24);x.fillStyle=col;x.font='11px Roboto Mono,monospace';x.fillText('['+x1+', '+z1+']  '+ww+' x '+hh,left+12,top+43);
 }
+async function viewAdminZonePlots(zoneId){
+  closeModal();
+  var filter=document.getElementById('rePlotFilterZone');
+  if(!filter){toast('地块查询面板未加载','err');return;}
+  filter.value=zoneId||'';
+  await loadRePlots();
+  var card=document.getElementById('ks-card-replots');
+  if(card)card.scrollIntoView({behavior:'smooth',block:'start'});
+  toast(zoneId?'已显示该区域的地块':'已显示全部地块','ok');
+}
 function openAdminDistrictEntity(item){
   var v=item.value,canvas='<canvas id="districtFocusMap" class="district-focus-map"></canvas>';
-  if(item.kind==='plot'){showModal('地块详情 // '+escapeHtml(v.id),canvas+'<div class="hub-feed"><div class="hub-feed-item"><span>区域</span><b>'+escapeHtml(v.zoneId||'—')+'</b></div><div class="hub-feed-item"><span>所有者</span><b>'+escapeHtml(v.ownerType||'—')+' · '+escapeHtml(v.ownerId||'—')+'</b></div><div class="hub-feed-item"><span>范围</span><b>['+v.x1+','+v.z1+'] - ['+v.x2+','+v.z2+']</b></div><div class="hub-feed-item"><span>购入价</span><b>'+fmt(v.price||0)+'</b></div></div><p><button class="btn" onclick="closeModal();document.getElementById(\'rePlotFilterZone\').value=\''+escapeAttr(v.zoneId||'')+'\';loadRePlots()">查看区域地块</button></p>');setTimeout(function(){drawDistrictFocus('districtFocusMap',v);},0);return;}
+  if(item.kind==='plot'){showModal('地块详情 // '+escapeHtml(v.id),canvas+'<div class="hub-feed"><div class="hub-feed-item"><span>区域</span><b>'+escapeHtml(v.zoneId||'—')+'</b></div><div class="hub-feed-item"><span>所有者</span><b>'+escapeHtml(v.ownerType||'—')+' · '+escapeHtml(v.ownerId||'—')+'</b></div><div class="hub-feed-item"><span>范围</span><b>['+v.x1+','+v.z1+'] - ['+v.x2+','+v.z2+']</b></div><div class="hub-feed-item"><span>购入价</span><b>'+fmt(v.price||0)+'</b></div></div><p><button class="btn" onclick="viewAdminZonePlots(\''+escapeAttr(v.zoneId||'')+'\')">查看区域地块</button></p>');setTimeout(function(){drawDistrictFocus('districtFocusMap',v);},0);return;}
   showModal('区域详情 // '+escapeHtml(v.name||v.id),canvas+'<div class="hub-feed"><div class="hub-feed-item"><span>规划</span><b>'+escapeHtml(ZONE_TYPE_CN(v.type))+'</b></div><div class="hub-feed-item"><span>状态</span><b>'+escapeHtml(v.status||'—')+'</b></div><div class="hub-feed-item"><span>基础价</span><b>'+fmt(v.basePrice||0)+'</b></div><div class="hub-feed-item"><span>范围</span><b>['+v.x1+','+v.z1+'] - ['+v.x2+','+v.z2+']</b></div></div><p><button class="btn" onclick="closeModal();editReZone(\''+escapeAttr(v.id)+'\')">载入编辑器</button> <button class="btn btn-sm" onclick="closeModal();setReZonePrice(\''+escapeAttr(v.id)+'\','+Number(v.basePrice||0)+')">调整价格</button></p>');setTimeout(function(){drawDistrictFocus('districtFocusMap',v);},0);
 }var reZoneMap=null;
 function initReZoneMap(){

@@ -67,9 +67,11 @@ public final class StorageMenu implements InventoryHolder {
             inventory.setItem(slot, display);
         }
 
-        // 导航
+// 导航
         if (page > 0) {
             inventory.setItem(45, navButton(Material.ARROW, "§a上一页"));
+        } else {
+            inventory.setItem(45, navButton(Material.OAK_DOOR, "§c返回主菜单"));
         }
         if (end < items.size()) {
             inventory.setItem(53, navButton(Material.ARROW, "§a下一页"));
@@ -142,10 +144,15 @@ public final class StorageMenu implements InventoryHolder {
             if (slot < 0 || slot >= SIZE) return;
 
             // 导航
-            if (slot == 45 && menu.page > 0) {
-                menu.page--;
-                menu.build();
-                player.openInventory(menu.getInventory());
+            if (slot == 45) {
+                if (menu.page > 0) {
+                    menu.page--;
+                    menu.build();
+                    player.openInventory(menu.getInventory());
+                } else {
+                    player.closeInventory();
+                    new EcoGuiMainMenu(plugin).open(player);
+                }
                 return;
             }
             if (slot == 53) {

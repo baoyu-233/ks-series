@@ -74,6 +74,10 @@ public final class CompensationGui implements InventoryHolder {
     }
 
     private void applyRows(Player player, List<CompensationManager.Plan> rows) {
+        if (!plugin.scheduler().isEntityThread(player)) {
+            plugin.scheduler().runEntity(player, () -> applyRows(player, rows), () -> { });
+            return;
+        }
         if (!player.isOnline() || player.getOpenInventory().getTopInventory().getHolder() != this) return;
         plans = List.copyOf(rows);
         if (view == View.ADMIN_EDIT && selectedPlan() == null) view = View.ADMIN_LIST;
@@ -137,7 +141,7 @@ public final class CompensationGui implements InventoryHolder {
         inventory.setItem(14, button(plan.enabled() ? Material.LIME_CONCRETE : Material.RED_CONCRETE,
                 plan.enabled() ? "§a已启用" : "§c已停用", "§7点击切换领取入口"));
         inventory.setItem(15, button(Material.ITEM_FRAME, "§b替换为手持物品", "§7保留手持物品完整 NBT/PDC"));
-        inventory.setItem(23, button(Material.BARRIER, "§c删除计划", "§7Shift + 右键确认删除"));
+        inventory.setItem(23, button(Material.BARRIER, "§c删除计划", "§7中键确认删除"));
         inventory.setItem(31, statusIcon(plan));
         inventory.setItem(49, button(Material.OAK_DOOR, "§c返回管理列表"));
     }
@@ -238,11 +242,13 @@ public final class CompensationGui implements InventoryHolder {
                 if (plan.claimed()) { player.sendMessage("§e你已经领取过这份补偿。"); return; }
                 gui.claiming = true;
                 plugin.compensationManager().claim(player.getUniqueId(), player.getName(), plan.id(), result -> {
-                    gui.claiming = false;
-                    if (!player.isOnline()) return;
-                    player.sendMessage((result.success() ? "§a" : "§c") + result.message());
-                    if (result.success()) player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.7f, 1.4f);
-                    if (player.getOpenInventory().getTopInventory().getHolder() == gui) gui.load(player);
+                    plugin.scheduler().runEntity(player, () -> {
+                        gui.claiming = false;
+                        if (!player.isOnline()) return;
+                        player.sendMessage((result.success() ? "§a" : "§c") + result.message());
+                        if (result.success()) player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.7f, 1.4f);
+                        if (player.getOpenInventory().getTopInventory().getHolder() == gui) gui.load(player);
+                    }, () -> gui.claiming = false);
                 });
                 return;
             }
@@ -280,7 +286,7 @@ public final class CompensationGui implements InventoryHolder {
                 plugin.compensationManager().updateExpiryDays(plan.id(), Math.max(1, days), result -> finish(gui, player, result));
             } else if (slot == 14) plugin.compensationManager().updateEnabled(plan.id(), !plan.enabled(), result -> finish(gui, player, result));
             else if (slot == 15) plugin.compensationManager().replaceItem(plan.id(), player.getInventory().getItemInMainHand(), result -> finish(gui, player, result));
-            else if (slot == 23 && event.isShiftClick() && event.isRightClick()) {
+            else if (slot == 23 && event.getClick() == ClickType.MIDDLE) {
                 plugin.compensationManager().delete(plan.id(), result -> { gui.view = View.ADMIN_LIST; gui.selectedId = null; finish(gui, player, result); });
             } else if (slot == 49) { gui.view = View.ADMIN_LIST; gui.selectedId = null; gui.load(player); }
         }
@@ -292,9 +298,11 @@ public final class CompensationGui implements InventoryHolder {
         }
 
         private static void finish(CompensationGui gui, Player player, CompensationManager.OperationResult result) {
-            if (!player.isOnline()) return;
-            player.sendMessage((result.success() ? "§a" : "§c") + result.message());
-            gui.load(player);
+            gui.plugin.scheduler().runEntity(player, () -> {
+                if (!player.isOnline()) return;
+                player.sendMessage((result.success() ? "§a" : "§c") + result.message());
+                gui.load(player);
+            }, () -> { });
         }
     }
 
@@ -307,7 +315,7 @@ public final class CompensationGui implements InventoryHolder {
             if (!PENDING_INPUT.containsKey(playerId)) return;
             event.setCancelled(true);
             String text = event.getMessage().trim();
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 PendingInput pending = PENDING_INPUT.remove(playerId);
                 Player player = Bukkit.getPlayer(playerId);
                 if (pending == null || player == null) return;

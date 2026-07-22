@@ -5,6 +5,7 @@ import org.bukkit.entity.Player;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.util.UUID;
 
 /** Player-to-player money transfers with a configurable tax-free allowance. */
 public final class TransferManager {
@@ -78,17 +79,18 @@ public final class TransferManager {
             try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
                 if (conn == null) return;
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT INTO ks_tax_records (payer_uuid, payer_name, category, base_amount, "
-                                + "tax_rate, tax_amount, description, collected_at) VALUES (?,?,?,?,?,?,?,?)")) {
-                    ps.setString(1, senderUuid);
-                    ps.setString(2, senderName);
-                    ps.setString(3, TAX_CATEGORY);
-                    ps.setDouble(4, quote.taxableAmount());
-                    ps.setDouble(5, quote.taxRate());
-                    ps.setDouble(6, quote.tax());
-                    ps.setString(7, "向 " + recipientName
+                        "INSERT INTO ks_tax_records (id,payer_uuid, payer_name, category, base_amount, "
+                                + "tax_rate, tax_amount, description, collected_at) VALUES (?,?,?,?,?,?,?,?,?)")) {
+                    ps.setString(1, "TAX-" + UUID.randomUUID());
+                    ps.setString(2, senderUuid);
+                    ps.setString(3, senderName);
+                    ps.setString(4, TAX_CATEGORY);
+                    ps.setDouble(5, quote.taxableAmount());
+                    ps.setDouble(6, quote.taxRate());
+                    ps.setDouble(7, quote.tax());
+                    ps.setString(8, "向 " + recipientName
                             + " 转账 " + quote.amount() + "（免税额 " + quote.exemptAmount() + "）");
-                    ps.setLong(8, System.currentTimeMillis() / 1000);
+                    ps.setLong(9, System.currentTimeMillis() / 1000);
                     ps.executeUpdate();
                 }
             } catch (Exception e) {

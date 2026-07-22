@@ -60,8 +60,26 @@ public final class RealEstateExtra implements KsEcoExtraModule {
 
     @Override
     public void onDisable() {
+        if (realEstateManager != null) realEstateManager.shutdownVoxelCache();
         if (landPerkManager != null) landPerkManager.stopCropGrowthTask();
         eco.getLogger().info("[房地产] 模块已停用");
+    }
+
+    @Override
+    public void onCrossServerInvalidation(String namespace, String key) {
+        if (!"real-estate".equals(namespace) || eco == null || realEstateManager == null) return;
+        refreshRemoteCaches(1);
+    }
+
+    private void refreshRemoteCaches(int attempt) {
+        eco.asyncWorkPool().executeDatabase(() -> {
+            boolean healthy = realEstateManager.refreshAllCachesFromRemote();
+            if (landPerkManager != null) landPerkManager.refreshSharedCachesFromRemote();
+            if (!healthy && attempt < 5 && eco.isEnabled()) {
+                Bukkit.getScheduler().runTaskLater(eco, () -> refreshRemoteCaches(attempt + 1),
+                        Math.min(20L * 30L, 20L << (attempt - 1)));
+            }
+        });
     }
 
     public RealEstateManager realEstateManager() { return realEstateManager; }

@@ -20,6 +20,13 @@ import java.util.stream.Stream;
 
 /** Immutable, file-backed combat content. Item identities exist only in content YAML files. */
 final class CombatCatalog {
+    private static final java.util.Set<String> ACTIVE_MECHANIC_TYPES = java.util.Set.of(
+            "ARC_SLASH", "MARK_ARROW", "HAMMER_QUAKE", "HEAVY_QUAKE", "RELAY_DASH",
+            "ANCHOR_GUARD", "SIGNAL_AURA", "PIONEER_RESCUE");
+    private static final java.util.Set<String> PASSIVE_MECHANIC_TYPES = java.util.Set.of(
+            "LAST_STAND_ABSORPTION", "LOW_HEALTH_RESISTANCE", "NEXT_ATTACK_ENABLE",
+            "COOLDOWN_MULTIPLIER", "MARK_FOCUS_DAMAGE", "MARK_RESONANCE", "HUNTER_MARK_DAMAGE");
+
     enum Trigger {
         SNEAK_RIGHT_CLICK,
         SNEAK_SWAP_HANDS
@@ -85,7 +92,9 @@ final class CombatCatalog {
 
     record WeightedItem(ItemRef item, double weight) {
         WeightedItem {
-            if (weight <= 0.0) throw new IllegalArgumentException("Reward weight must be positive");
+            if (!Double.isFinite(weight) || weight <= 0.0) {
+                throw new IllegalArgumentException("Reward weight must be finite and positive");
+            }
         }
     }
 
@@ -99,7 +108,9 @@ final class CombatCatalog {
 
     record DropEntry(ItemRef item, double chance, int minimum, int maximum) {
         DropEntry {
-            if (chance < 0.0 || chance > 1.0) throw new IllegalArgumentException("Drop chance must be between 0 and 1");
+            if (!Double.isFinite(chance) || chance < 0.0 || chance > 1.0) {
+                throw new IllegalArgumentException("Drop chance must be finite and between 0 and 1");
+            }
             if (minimum < 1 || maximum < minimum) throw new IllegalArgumentException("Invalid drop amount range");
         }
     }
@@ -220,14 +231,16 @@ final class CombatCatalog {
             if (category.equals("talismans") && trigger != Trigger.SNEAK_SWAP_HANDS) {
                 throw new IllegalArgumentException("Talisman " + key + " must use SNEAK_SWAP_HANDS");
             }
-            output.add(new ActiveDefinition(key, item(section, key), trigger, section.getInt("cooldown-seconds", 0), mechanics(section, key)));
+            output.add(new ActiveDefinition(key, item(section, key), trigger, section.getInt("cooldown-seconds", 0),
+                    mechanics(section, key, ACTIVE_MECHANIC_TYPES, "active")));
         }
     }
 
     private static void loadPassives(YamlConfiguration yaml, List<PassiveDefinition> output) {
         for (String key : yaml.getKeys(false)) {
             ConfigurationSection section = yaml.getConfigurationSection(key);
-            if (section != null) output.add(new PassiveDefinition(key, "饰品", item(section, key), mechanics(section, key)));
+            if (section != null) output.add(new PassiveDefinition(key, "饰品", item(section, key),
+                    mechanics(section, key, PASSIVE_MECHANIC_TYPES, "passive")));
         }
     }
 
@@ -238,9 +251,11 @@ final class CombatCatalog {
             if (section.contains("trigger")) {
                 Trigger trigger = Trigger.valueOf(required(section.getString("trigger"), key + ".trigger").toUpperCase(Locale.ROOT));
                 if (trigger != Trigger.SNEAK_SWAP_HANDS) throw new IllegalArgumentException("Talisman " + key + " must use SNEAK_SWAP_HANDS");
-                actives.add(new ActiveDefinition(key, item(section, key), trigger, section.getInt("cooldown-seconds", 0), mechanics(section, key)));
+                actives.add(new ActiveDefinition(key, item(section, key), trigger, section.getInt("cooldown-seconds", 0),
+                        mechanics(section, key, ACTIVE_MECHANIC_TYPES, "active")));
             } else {
-                passives.add(new PassiveDefinition(key, "护符", item(section, key), mechanics(section, key)));
+                passives.add(new PassiveDefinition(key, "护符", item(section, key),
+                        mechanics(section, key, PASSIVE_MECHANIC_TYPES, "passive")));
             }
         }
     }
@@ -274,14 +289,19 @@ final class CombatCatalog {
         }
     }
 
-    private static List<Mechanic> mechanics(ConfigurationSection section, String key) {
+    private static List<Mechanic> mechanics(ConfigurationSection section, String key,
+                                             java.util.Set<String> allowedTypes, String mechanicKind) {
         ConfigurationSection mechanics = section.getConfigurationSection("mechanics");
         if (mechanics == null) throw new IllegalArgumentException("Missing mechanics in " + key);
         List<Mechanic> loaded = new ArrayList<>();
         for (String type : mechanics.getKeys(false)) {
             ConfigurationSection values = mechanics.getConfigurationSection(type);
             if (values == null) throw new IllegalArgumentException("Mechanic " + key + "." + type + " must be a section");
-            loaded.add(new Mechanic(type, new LinkedHashMap<>(values.getValues(false))));
+            String normalizedType = required(type, key + " mechanic type").toUpperCase(Locale.ROOT);
+            if (!allowedTypes.contains(normalizedType)) {
+                throw new IllegalArgumentException("Unknown " + mechanicKind + " mechanic in " + key + ": " + type);
+            }
+            loaded.add(new Mechanic(normalizedType, new LinkedHashMap<>(values.getValues(false))));
         }
         return loaded;
     }
@@ -297,7 +317,7 @@ final class CombatCatalog {
     }
 
     private static double number(Object value, String key) {
-        if (value instanceof Number number) return number.doubleValue();
+        if (value instanceof Number number && Double.isFinite(number.doubleValue())) return number.doubleValue();
         throw new IllegalArgumentException("Missing or invalid number " + key);
     }
 

@@ -259,11 +259,16 @@ public final class KsPluginBridge {
     }
 
     /**
-     * 从 Token 获取在线玩家（已验证）。
+     * 从 Token 获取在线玩家（已验证）。只能在全局 tick 线程调用；Web/异步
+     * 处理器应读取 {@link KsAuthManager.Session#playerUuid}，再通过实体调度器操作玩家。
      */
+    @Deprecated(forRemoval = false)
     public Player getPlayerFromToken(String token) {
         var session = validateToken(token);
         if (session == null) return null;
+        if (!Bukkit.isGlobalTickThread()) {
+            throw new IllegalStateException("getPlayerFromToken must run on the global tick thread");
+        }
         return Bukkit.getPlayer(session.playerUuid);
     }
 

@@ -130,15 +130,34 @@
 <!-- Sub: Overview -->
 <div class="bank-sub active" id="bank-sub-overview">
 <div class="stats-row" id="myBankKpis"></div>
+<div class="card"><h3>📊 个人金融总览</h3><div id="bankGameplayOverview" style="color:#888;font-size:12px;">正在读取存款、贷款与征信...</div></div>
 <div class="card" id="ks-card-depwd"><h3>存款 / 取款</h3>
 <div class="form-row">
-<label>银行ID<br><input id="depBankId" placeholder="银行ID"/></label>
+<label>选择银行<br><select id="depBankId"><option value="">正在加载银行...</option></select></label>
 <label>金额<br><input id="depAmount" type="number" step="1" value="1000"/></label>
 <button class="btn btn-sm" onclick="doDeposit()">存款</button>
 <button class="btn btn-sm btn-danger" onclick="doWithdraw()">取款</button>
 </div>
 </div>
+<div class="card"><h3>💎 定期存款与大额存单</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">资金从所选银行的活期账户转入存单；提前支取会损失部分或全部未到期利息，不扣本金。</p>
+<div class="form-row">
+<label>银行<br><select id="termBankId" onchange="loadDepositProducts()"><option value="">请选择银行</option></select></label>
+<label>存款产品<br><select id="termProductCode"><option value="">请先选择银行</option></select></label>
+<label>金额<br><input id="termDepositAmount" type="number" min="1" step="1" value="1000"/></label>
+<label><input id="termAutoRenew" type="checkbox"/> 到期自动续存</label>
+<button class="btn btn-sm btn-success" onclick="openTermDeposit()">开立存单</button>
+</div>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>存单</th><th>银行/产品</th><th>本金</th><th>整期收益率</th><th>到期时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="termDepositBody"></tbody></table></div>
+</div>
 <div class="card"><h3>我的银行账户</h3><div class="ks-entity-grid" id="bankCards"></div></div>
+<div class="card"><h3>📊 银行股权与收购市场</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">增资认购与股份转让统一使用目标银行的活期账户结算；持股比例决定分红与控制权。</p>
+<div id="bankEquityPortfolio" style="color:#888;font-size:12px;">正在读取持股...</div>
+<div class="form-row" style="margin-top:8px;"><label>银行<br><select id="equityBankId" onchange="loadBankEquityMarket()"><option value="">请选择银行</option></select></label><button class="btn btn-sm" onclick="loadBankEquityMarket()">刷新股份市场</button></div>
+<div id="bankEquityCapTable" style="color:#888;font-size:12px;margin-top:8px;"></div>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>挂牌</th><th>类型</th><th>卖方</th><th>股份</th><th>单价</th><th>总价</th><th>操作</th></tr></thead><tbody id="bankEquityOfferBody"></tbody></table></div>
+</div>
 <div class="card"><h3>王国开发银行</h3><div id="guidanceBankCard" style="color:#888;font-size:12px;">正在读取引导贷款政策...</div></div>
 <div class="card"><h3>🏷 抵押物拍卖</h3>
 <button class="btn btn-sm" onclick="loadCollateralAuctions()">刷新拍卖</button>
@@ -149,7 +168,7 @@
 </div>
 <div class="card"><h3>我的贷款申请</h3>
 <p style="color:#888;font-size:11px;margin-bottom:8px;">在"全部银行"中选择银行并点击"申请贷款"提交，等待银行审批后会自动放款到此处的"我的贷款"。</p>
-<div class="table-wrap"><table><thead><tr><th>申请ID</th><th>银行ID</th><th>金额</th><th>期限(天)</th><th>状态</th><th>申请时间</th></tr></thead><tbody id="myLoanReqBody"></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>申请ID</th><th>银行ID</th><th>金额</th><th>期限(天)</th><th>状态</th><th>申请时间</th><th>操作</th></tr></thead><tbody id="myLoanReqBody"></tbody></table></div>
 </div>
 </div>
 <!-- Sub: Browse All Banks -->
@@ -177,9 +196,16 @@
 </div>
 <!-- Sub: Manage -->
 <div class="bank-sub" id="bank-sub-manage">
+<div class="card"><h3>📈 银行经营驾驶舱</h3>
+<div class="form-row"><label>选择我管理的银行<br><select id="bankOpsBankId" onchange="loadBankOperations()"><option value="">请选择银行</option></select></label><button class="btn btn-sm" onclick="loadBankOperations()">刷新经营数据</button></div>
+<div id="bankOperationsPanel" style="color:#888;font-size:12px;margin-top:8px;">选择银行后查看流动性、资本和坏账评级。</div>
+<div class="form-row" style="margin-top:10px;"><label>股东分红金额<br><input id="bankDividendAmount" type="number" min="0" step="1" placeholder="不得超过可分配利润"/></label><button class="btn btn-sm btn-success" onclick="declareBankDividend()">宣布分红</button></div>
+<div class="form-row"><label>股份操作<br><select id="bankShareOfferType"><option value="PRIMARY">增资发行</option><option value="SECONDARY">出售本人股份</option></select></label><label>股份数<br><input id="bankShareOfferShares" type="number" min="1" step="1" value="10000"/></label><label>每股价格<br><input id="bankShareOfferPrice" type="number" min="0.01" step="0.01" value="1"/></label><button class="btn btn-sm" onclick="createBankShareOffering()">发布股份挂牌</button></div>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>批次</th><th>金额</th><th>股东数</th><th>状态</th><th>时间</th></tr></thead><tbody id="bankDividendBody"></tbody></table></div>
+</div>
 <div class="card" id="ks-bank-members"><h3>👥 银行成员管理</h3>
 <p style="color:#888;font-size:11px;margin-bottom:10px;">选择一个你拥有的银行来管理成员</p>
-<label>银行ID<br><input id="mgmtBankId" placeholder="输入银行ID后点加载" style="margin-bottom:8px;"/></label>
+<label>选择银行<br><select id="mgmtBankId" style="margin-bottom:8px;"><option value="">请选择银行</option></select></label>
 <button class="btn btn-sm" onclick="loadBankMembers()">🔍 加载成员</button>
 <div class="form-row" style="margin-top:8px;">
 <label>新成员 ID<br><input id="newBankMemberUuid" class="player-picker" placeholder="输入玩家 ID"/></label>
@@ -192,7 +218,7 @@
 </div>
 <div class="card" id="ks-bank-invite"><h3>📨 邀请玩家合资</h3>
 <div class="form-row">
-<label>银行ID<br><input id="inviteBankId2" placeholder="你的银行ID"/></label>
+<label>选择银行<br><select id="inviteBankId2"><option value="">请选择银行</option></select></label>
 <label>受邀人UUID<br><input id="inviteeBankUuid" class="player-picker" placeholder="玩家名/UUID"/></label>
 <button class="btn btn-sm" onclick="sendBankInvite()">发送邀请</button>
 </div>
@@ -200,7 +226,7 @@
 <div class="card" id="ks-bank-rates"><h3>📈 设置本行利率</h3>
 <p style="color:#888;font-size:11px;margin-bottom:8px;">利率必须落在央行允许的浮动区间内，超出会被拒绝。</p>
 <div class="form-row">
-<label>银行ID<br><input id="setRateBankId" placeholder="你的银行ID"/></label>
+<label>选择银行<br><select id="setRateBankId"><option value="">请选择银行</option></select></label>
 <label>贷款利率<br><input id="setRateLoan" type="number" step="0.001" placeholder="如 0.05"/></label>
 <label>存款利率（每结算周期）<br><input id="setRateDeposit" type="number" step="0.001" placeholder="如 0.01"/></label>
 <label>本行准备金率<br><input id="setReserveRatio" type="number" min="0" max="1" step="0.01" placeholder="如 0.15"/></label>
@@ -210,7 +236,7 @@
 <div class="card" id="ks-bank-loan-issue"><h3>💰 发放贷款</h3>
 <p style="color:#888;font-size:11px;margin-bottom:8px;">仅银行所有者或拥有 APPROVE_LOAN 权限的成员可放贷。</p>
 <div class="form-row">
-<label>银行ID<br><input id="loanIssueBankId" placeholder="你的银行ID"/></label>
+<label>选择银行<br><select id="loanIssueBankId"><option value="">请选择银行</option></select></label>
 <label>借款人UUID<br><input id="loanBorrower" class="player-picker" placeholder="玩家名/UUID"/></label>
 <label>本金<br><input id="loanPrincipal" type="number" step="1" value="10000"/></label>
 <label>期限(天)<br><input id="loanTermDays" type="number" value="30"/></label>
@@ -220,11 +246,16 @@
 <div class="card" id="ks-bank-loan-requests"><h3>📋 待审批贷款申请</h3>
 <p style="color:#888;font-size:11px;margin-bottom:8px;">玩家在"全部银行"自助提交的贷款申请，批准后自动放款。</p>
 <div class="form-row">
-<label>银行ID<br><input id="loanReqBankId" placeholder="你的银行ID"/></label>
+<label>选择银行<br><select id="loanReqBankId"><option value="">请选择银行</option></select></label>
 <button class="btn btn-sm" onclick="loadLoanRequests()">🔍 加载申请</button>
 </div>
 <div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>申请ID</th><th>申请人</th><th>金额</th><th>期限(天)</th><th>申请时间</th><th>操作</th></tr></thead><tbody id="loanReqBody"></tbody></table></div>
 </div>
+</div>
+<div class="card"><h3>🧾 贷款展期与重组申请</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">借款人最多申请两次 7/14/30 天展期；批准后展期费用计入剩余应还，旧还款计划会重新生成。</p>
+<button class="btn btn-sm" onclick="loadRestructureRequests()">刷新展期申请</button>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>申请</th><th>贷款</th><th>借款人</th><th>展期</th><th>费用</th><th>时间</th><th>操作</th></tr></thead><tbody id="restructureRequestBody"></tbody></table></div>
 </div>
 </div>
 
@@ -573,7 +604,7 @@
 <div id="houseVoxelStatus" style="font-size:11px;color:#888;margin-bottom:6px;">加载中...</div>
 <div id="houseVoxelSize" style="font-size:11px;color:#9ad;margin-bottom:6px;"></div>
 <div id="houseVoxelCanvasWrap" style="width:100%;height:480px;background:#07080C;border-radius:10px;overflow:hidden;"></div>
-<p style="color:#666;font-size:10px;margin-top:6px;">鼠标拖拽旋转 / 滚轮缩放。方块材质从官方资源贴图 CDN 加载；楼梯/台阶/栅栏/墙/活板门/门/栅栏门已用简化外形+真实贴图渲染（门/栅栏门固定按关闭姿态，楼梯不区分转角形状）；床/按钮/压力板/地毯/铁轨等仍用近似颜色立方体。</p>
+<p style="color:#666;font-size:10px;margin-top:6px;">售楼沙盘先显示道路、地块和楼栋占位，再异步装配每栋建筑的缓存外观；点击楼栋可查看房源状态、尺寸与挂牌价。左键旋转，右键或 Shift+左键平移，滚轮缩放，双击复位。</p>
 </div>
 </div>
 
@@ -661,7 +692,7 @@
 
 </div>
 
-<script src="assets/player-core.js"></script>
+<script src="assets/player-core.js?v=20260721-bank-gameplay1"></script>
 <script src="assets/player-player-picker.js"></script>
 <script src="assets/player-labels.js"></script>
 <script src="assets/player-smart-inputs.js"></script>

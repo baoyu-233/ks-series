@@ -199,8 +199,19 @@ public final class EditSession {
                 return;
             }
 
-            ItemStack newItem = ItemSerializer.fromItemData(template.item);
-            ItemSerializer.applyExtendedData(newItem, template.item);
+            ItemStack current = item();
+            ItemStack newItem;
+            if (current == null || current.getType().isAir()) {
+                newItem = ItemSerializer.fromItemData(template.item);
+                if (newItem != null) ItemSerializer.applyExtendedData(newItem, template.item);
+            } else {
+                newItem = ItemSerializer.applyTemplatePreservingBody(current, template.item);
+            }
+            if (newItem == null) {
+                p.sendMessage(TextUtil.parse("&c无法创建物品，模板数据可能有误。"));
+                new MainMenu(plugin, this).open();
+                return;
+            }
             setItem(newItem);
             p.sendMessage(TextUtil.parse("&a✅ 模板已加载: &e" + code
                     + " &7(作者: " + (template.createdBy != null ? template.createdBy.name : "未知") + ")"));

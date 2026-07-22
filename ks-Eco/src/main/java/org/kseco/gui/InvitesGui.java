@@ -15,8 +15,10 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.jetbrains.annotations.NotNull;
 import org.kseco.KsEco;
+import org.kseco.database.PortableSqlMutation;
 
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.*;
@@ -149,34 +151,77 @@ public final class InvitesGui implements InventoryHolder {
 
     /** 响应邀请（接受或拒绝） */
     private void respond(Player player, String inviteId, boolean accept) {
-        String safeId = inviteId.replace("'", "''");
-        String uuid = player.getUniqueId().toString().replace("'", "''");
-        try (Connection conn = plugin.ksCore().dataStore().getConnection();
-             Statement st = conn.createStatement()) {
+        String uuid = player.getUniqueId().toString();
+        try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
+            if (conn == null) throw new java.sql.SQLException("database unavailable");
+            conn.setAutoCommit(false);
             // 先查邀请信息
-            ResultSet rs = st.executeQuery(
-                    "SELECT * FROM ks_ent_invites WHERE id='" + safeId + "' AND invitee_uuid='" + uuid + "' AND status='PENDING'");
-            if (!rs.next()) {
-                player.sendMessage("§c邀请已过期或不存在。");
-                return;
+            String entId;
+            String bankId;
+            try (PreparedStatement query = conn.prepareStatement(
+                    "SELECT enterprise_id,bank_id FROM ks_ent_invites "
+                            + "WHERE id=? AND invitee_uuid=? AND status='PENDING'")) {
+                query.setString(1, inviteId);
+                query.setString(2, uuid);
+                try (ResultSet rs = query.executeQuery()) {
+                    if (!rs.next()) {
+                        conn.rollback();
+                        player.sendMessage("§c邀请已过期或不存在。");
+                        return;
+                    }
+                    entId = rs.getString("enterprise_id");
+                    bankId = rs.getString("bank_id");
+                }
             }
-            String entId = rs.getString("enterprise_id");
-            String bankId = rs.getString("bank_id");
             long now = System.currentTimeMillis() / 1000;
 
+            String nextStatus = accept ? "ACCEPTED" : "DECLINED";
+            try (PreparedStatement update = conn.prepareStatement(
+                    "UPDATE ks_ent_invites SET status=?,responded_at=? "
+                            + "WHERE id=? AND invitee_uuid=? AND status='PENDING'")) {
+                update.setString(1, nextStatus);
+                update.setLong(2, now);
+                update.setString(3, inviteId);
+                update.setString(4, uuid);
+                if (update.executeUpdate() != 1) {
+                    conn.rollback();
+                    player.sendMessage("§c邀请已被处理。");
+                    return;
+                }
+            }
             if (accept) {
-                st.executeUpdate("UPDATE ks_ent_invites SET status='ACCEPTED', responded_at=" + now + " WHERE id='" + safeId + "'");
                 // 添加为成员
                 if (entId != null && !entId.isEmpty()) {
-                    st.executeUpdate("INSERT OR IGNORE INTO ks_ent_members (enterprise_id, player_uuid, player_name, role, joined_at) VALUES ('"
-                            + entId.replace("'", "''") + "','" + uuid + "','" + player.getName().replace("'", "''") + "','CO_OWNER'," + now + ")");
+                    PortableSqlMutation.insertIfAbsent(conn,
+                            "SELECT 1 FROM ks_ent_members WHERE enterprise_id=? AND player_uuid=?", exists -> {
+                                exists.setString(1, entId);
+                                exists.setString(2, uuid);
+                            }, "INSERT INTO ks_ent_members "
+                                    + "(enterprise_id,player_uuid,player_name,role,joined_at) VALUES (?,?,?,?,?)", insert -> {
+                                insert.setString(1, entId);
+                                insert.setString(2, uuid);
+                                insert.setString(3, player.getName());
+                                insert.setString(4, "CO_OWNER");
+                                insert.setLong(5, now);
+                            });
                 } else if (bankId != null && !bankId.isEmpty()) {
-                    st.executeUpdate("INSERT OR IGNORE INTO ks_bank_members (bank_id, player_uuid, player_name, role, joined_at) VALUES ('"
-                            + bankId.replace("'", "''") + "','" + uuid + "','" + player.getName().replace("'", "''") + "','CO_OWNER'," + now + ")");
+                    PortableSqlMutation.insertIfAbsent(conn,
+                            "SELECT 1 FROM ks_bank_members WHERE bank_id=? AND player_uuid=?", exists -> {
+                                exists.setString(1, bankId);
+                                exists.setString(2, uuid);
+                            }, "INSERT INTO ks_bank_members "
+                                    + "(bank_id,player_uuid,player_name,role,joined_at) VALUES (?,?,?,?,?)", insert -> {
+                                insert.setString(1, bankId);
+                                insert.setString(2, uuid);
+                                insert.setString(3, player.getName());
+                                insert.setString(4, "CO_OWNER");
+                                insert.setLong(5, now);
+                            });
                 }
+                conn.commit();
                 player.sendMessage("§a已接受邀请！你现在是共同所有者了。");
             } else {
-                st.executeUpdate("UPDATE ks_ent_invites SET status='DECLINED', responded_at=" + now + " WHERE id='" + safeId + "'");
+                conn.commit();
                 player.sendMessage("§7已拒绝邀请。");
             }
 

@@ -5,6 +5,9 @@ import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
+import org.kseco.database.BusinessSchemaDialect;
+import org.kseco.database.DatabaseDialect;
+import org.kseco.database.PortableSqlMutation;
 
 import java.sql.*;
 import java.util.*;
@@ -125,36 +128,51 @@ public final class BlindBoxManager {
         // ensureAllTables() 也会建；此处双保险，幂等
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
-            try (var s = conn.createStatement()) {
-                s.execute("CREATE TABLE IF NOT EXISTS ks_bb_pools (id TEXT PRIMARY KEY, name TEXT NOT NULL, pool_type TEXT NOT NULL DEFAULT 'ITEM', price REAL NOT NULL DEFAULT 100, enabled INTEGER DEFAULT 1, pity_max INTEGER DEFAULT 50, description TEXT DEFAULT '', owner_type TEXT NOT NULL DEFAULT 'PUBLIC', allowed_categories TEXT DEFAULT '', allowed_industries TEXT DEFAULT '', created_at INTEGER NOT NULL)");
-                s.execute("CREATE TABLE IF NOT EXISTS ks_bb_loot (id TEXT PRIMARY KEY, pool_id TEXT NOT NULL, item_material TEXT NOT NULL, item_data BLOB, display_name TEXT DEFAULT '', weight INTEGER NOT NULL DEFAULT 1, rarity TEXT NOT NULL DEFAULT 'COMMON', quantity INTEGER DEFAULT 1, created_at INTEGER NOT NULL)");
-                s.execute("CREATE TABLE IF NOT EXISTS ks_bb_pity (uuid TEXT NOT NULL, pool_id TEXT NOT NULL, count_since_rare INTEGER DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY(uuid, pool_id))");
-                s.execute("CREATE TABLE IF NOT EXISTS ks_bb_pity_rarity (uuid TEXT NOT NULL, pool_id TEXT NOT NULL, rarity TEXT NOT NULL, count_since_hit INTEGER DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY(uuid, pool_id, rarity))");
-                s.execute("CREATE TABLE IF NOT EXISTS ks_bb_log (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL, pool_id TEXT NOT NULL, item_material TEXT NOT NULL, rarity TEXT NOT NULL, pulled_at INTEGER NOT NULL)");
-            }
-            // 迁移：加 bundle 列（SQLite 不支持 IF NOT EXISTS for ALTER，忽略重复列错误）
-            try (var s = conn.createStatement()) {
-                s.execute("ALTER TABLE ks_bb_loot ADD COLUMN bundle_id TEXT DEFAULT NULL");
-            } catch (SQLException ignored) {} // 列已存在时忽略
-            try (var s = conn.createStatement()) {
-                s.execute("ALTER TABLE ks_bb_loot ADD COLUMN bundle_slot INTEGER DEFAULT 0");
-            } catch (SQLException ignored) {}
-            // 地块福利联动：限定只有拥有对应类型地块（AGRICULTURAL/INDUSTRIAL，逗号分隔可多选）的玩家/企业才能抽此池
-            try (var s = conn.createStatement()) {
-                s.execute("ALTER TABLE ks_bb_pools ADD COLUMN required_land_zone_types TEXT DEFAULT ''");
-            } catch (SQLException ignored) {}
-            try (var s = conn.createStatement()) {
-                s.execute("ALTER TABLE ks_bb_pools ADD COLUMN pity_rules TEXT DEFAULT ''");
-            } catch (SQLException ignored) {}
-            try (var s = conn.createStatement()) {
-                s.execute("ALTER TABLE ks_bb_pools ADD COLUMN limited_only INTEGER NOT NULL DEFAULT 0");
-            } catch (SQLException ignored) {}
-            try (var s = conn.createStatement()) {
-                s.execute("ALTER TABLE ks_bb_pools ADD COLUMN min_enterprise_level INTEGER NOT NULL DEFAULT 1");
-            } catch (SQLException ignored) {}
+            initializeSchema(conn);
         } catch (SQLException e) {
             plugin.getLogger().log(Level.WARNING, "盲盒表创建失败", e);
         }
+    }
+
+    static void initializeSchema(Connection connection) throws SQLException {
+        initializeSchema(connection, BusinessSchemaDialect.detect(connection));
+    }
+
+    static void initializeSchema(Connection connection, DatabaseDialect dialect) throws SQLException {
+        String number = BusinessSchemaDialect.floatingPointType(dialect);
+        String binary = BusinessSchemaDialect.binaryType(dialect);
+        String identity = BusinessSchemaDialect.identityPrimaryKey(dialect);
+        try (var statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE IF NOT EXISTS ks_bb_pools (id VARCHAR(128) PRIMARY KEY, name VARCHAR(128) NOT NULL, pool_type VARCHAR(32) NOT NULL DEFAULT 'ITEM', price " + number + " NOT NULL DEFAULT 100, enabled INTEGER DEFAULT 1, pity_max INTEGER DEFAULT 50, description VARCHAR(2048) DEFAULT '', owner_type VARCHAR(32) NOT NULL DEFAULT 'PUBLIC', allowed_categories VARCHAR(2048) DEFAULT '', allowed_industries VARCHAR(2048) DEFAULT '', created_at BIGINT NOT NULL)");
+            statement.execute("CREATE TABLE IF NOT EXISTS ks_bb_loot (id VARCHAR(128) PRIMARY KEY, pool_id VARCHAR(128) NOT NULL, item_material VARCHAR(128) NOT NULL, item_data " + binary + ", display_name VARCHAR(256) DEFAULT '', weight INTEGER NOT NULL DEFAULT 1, rarity VARCHAR(32) NOT NULL DEFAULT 'COMMON', quantity INTEGER DEFAULT 1, created_at BIGINT NOT NULL)");
+            statement.execute("CREATE TABLE IF NOT EXISTS ks_bb_pity (uuid VARCHAR(36) NOT NULL, pool_id VARCHAR(128) NOT NULL, count_since_rare INTEGER DEFAULT 0, updated_at BIGINT NOT NULL, PRIMARY KEY(uuid,pool_id))");
+            statement.execute("CREATE TABLE IF NOT EXISTS ks_bb_pity_rarity (uuid VARCHAR(36) NOT NULL, pool_id VARCHAR(128) NOT NULL, rarity VARCHAR(32) NOT NULL, count_since_hit INTEGER DEFAULT 0, updated_at BIGINT NOT NULL, PRIMARY KEY(uuid,pool_id,rarity))");
+            statement.execute("CREATE TABLE IF NOT EXISTS ks_bb_log (id " + identity + ", uuid VARCHAR(36) NOT NULL, pool_id VARCHAR(128) NOT NULL, item_material VARCHAR(128) NOT NULL, rarity VARCHAR(32) NOT NULL, pulled_at BIGINT NOT NULL)");
+        }
+        BusinessSchemaDialect.addColumnIfMissing(connection, "ks_bb_loot", "bundle_id", "VARCHAR(128)");
+        BusinessSchemaDialect.addColumnIfMissing(connection, "ks_bb_loot", "bundle_slot", "INTEGER DEFAULT 0");
+        BusinessSchemaDialect.addColumnIfMissing(connection, "ks_bb_pools", "required_land_zone_types", "VARCHAR(2048) DEFAULT ''");
+        BusinessSchemaDialect.addColumnIfMissing(connection, "ks_bb_pools", "pity_rules", "VARCHAR(4096) DEFAULT ''");
+        BusinessSchemaDialect.addColumnIfMissing(connection, "ks_bb_pools", "limited_only", "INTEGER NOT NULL DEFAULT 0");
+        BusinessSchemaDialect.addColumnIfMissing(connection, "ks_bb_pools", "min_enterprise_level", "INTEGER NOT NULL DEFAULT 1");
+    }
+
+    static void upsertPity(Connection connection, String uuid, String poolId, int count, long updatedAt)
+            throws SQLException {
+        PortableSqlMutation.upsert(connection,
+                "UPDATE ks_bb_pity SET count_since_rare=?,updated_at=? WHERE uuid=? AND pool_id=?",
+                ps -> { ps.setInt(1, count); ps.setLong(2, updatedAt); ps.setString(3, uuid); ps.setString(4, poolId); },
+                "INSERT INTO ks_bb_pity (count_since_rare,updated_at,uuid,pool_id) VALUES (?,?,?,?)",
+                ps -> { ps.setInt(1, count); ps.setLong(2, updatedAt); ps.setString(3, uuid); ps.setString(4, poolId); });
+    }
+
+    static void upsertPityRarity(Connection connection, String uuid, String poolId, String rarity,
+                                 int count, long updatedAt) throws SQLException {
+        PortableSqlMutation.upsert(connection,
+                "UPDATE ks_bb_pity_rarity SET count_since_hit=?,updated_at=? WHERE uuid=? AND pool_id=? AND rarity=?",
+                ps -> { ps.setInt(1, count); ps.setLong(2, updatedAt); ps.setString(3, uuid); ps.setString(4, poolId); ps.setString(5, rarity); },
+                "INSERT INTO ks_bb_pity_rarity (count_since_hit,updated_at,uuid,pool_id,rarity) VALUES (?,?,?,?,?)",
+                ps -> { ps.setInt(1, count); ps.setLong(2, updatedAt); ps.setString(3, uuid); ps.setString(4, poolId); ps.setString(5, rarity); });
     }
 
     // ================================================================
@@ -589,35 +607,41 @@ public final class BlindBoxManager {
         String normalizedPityRules = normalizePityRules(pityRules, pityMax);
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return false;
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_bb_pools (id, name, pool_type, price, enabled, pity_max, pity_rules, description, " +
-                    "owner_type, allowed_categories, allowed_industries, required_land_zone_types, min_enterprise_level, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) " +
-                    "ON CONFLICT(id) DO UPDATE SET name=excluded.name, pool_type=excluded.pool_type, " +
-                    "price=excluded.price, enabled=excluded.enabled, pity_max=excluded.pity_max, pity_rules=excluded.pity_rules, " +
-                    "description=excluded.description, owner_type=excluded.owner_type, " +
-                    "allowed_categories=excluded.allowed_categories, allowed_industries=excluded.allowed_industries, " +
-                    "required_land_zone_types=excluded.required_land_zone_types, min_enterprise_level=excluded.min_enterprise_level")) {
-                ps.setString(1, id);
-                ps.setString(2, name);
-                ps.setString(3, poolType);
-                ps.setDouble(4, price);
-                ps.setInt(5, enabled ? 1 : 0);
-                ps.setInt(6, pityMax);
-                ps.setString(7, normalizedPityRules);
-                ps.setString(8, description != null ? description : "");
-                ps.setString(9, ownerType != null ? ownerType : "PUBLIC");
-                ps.setString(10, allowedCategories != null ? allowedCategories : "");
-                ps.setString(11, allowedIndustries != null ? allowedIndustries : "");
-                ps.setString(12, requiredLandZoneTypes != null ? requiredLandZoneTypes : "");
-                ps.setInt(13, minEnterpriseLevel);
-                ps.setLong(14, now);
-                ps.executeUpdate();
-                return true;
-            }
+            PortableSqlMutation.upsert(conn,
+                    "UPDATE ks_bb_pools SET name=?,pool_type=?,price=?,enabled=?,pity_max=?,pity_rules=?,description=?,owner_type=?,allowed_categories=?,allowed_industries=?,required_land_zone_types=?,min_enterprise_level=? WHERE id=?",
+                    ps -> bindPoolMutation(ps, name, poolType, price, enabled, pityMax, normalizedPityRules,
+                            description, ownerType, allowedCategories, allowedIndustries, requiredLandZoneTypes,
+                            minEnterpriseLevel, id, false, now),
+                    "INSERT INTO ks_bb_pools (name,pool_type,price,enabled,pity_max,pity_rules,description,owner_type,allowed_categories,allowed_industries,required_land_zone_types,min_enterprise_level,id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ps -> bindPoolMutation(ps, name, poolType, price, enabled, pityMax, normalizedPityRules,
+                            description, ownerType, allowedCategories, allowedIndustries, requiredLandZoneTypes,
+                            minEnterpriseLevel, id, true, now));
+            return true;
         } catch (SQLException e) {
             plugin.getLogger().warning("保存盲盒池失败: " + e.getMessage());
         }
         return false;
+    }
+
+    private static void bindPoolMutation(PreparedStatement statement, String name, String poolType, double price,
+                                         boolean enabled, int pityMax, String pityRules, String description,
+                                         String ownerType, String allowedCategories, String allowedIndustries,
+                                         String requiredLandZoneTypes, int minEnterpriseLevel, String id,
+                                         boolean insert, long createdAt) throws SQLException {
+        statement.setString(1, name);
+        statement.setString(2, poolType);
+        statement.setDouble(3, price);
+        statement.setInt(4, enabled ? 1 : 0);
+        statement.setInt(5, pityMax);
+        statement.setString(6, pityRules);
+        statement.setString(7, description == null ? "" : description);
+        statement.setString(8, ownerType == null ? "PUBLIC" : ownerType);
+        statement.setString(9, allowedCategories == null ? "" : allowedCategories);
+        statement.setString(10, allowedIndustries == null ? "" : allowedIndustries);
+        statement.setString(11, requiredLandZoneTypes == null ? "" : requiredLandZoneTypes);
+        statement.setInt(12, minEnterpriseLevel);
+        statement.setString(13, id);
+        if (insert) statement.setLong(14, createdAt);
     }
 
     public boolean upsertPool(String id, String name, String poolType, double price,
@@ -1003,9 +1027,6 @@ public final class BlindBoxManager {
 
     private List<Map<String, Object>> materializeLootViews(List<LootSnapshot> snapshots,
                                                             boolean includePreviewItem) {
-        if (!Bukkit.isPrimaryThread()) {
-            throw new IllegalStateException("盲盒物品视图只能在服务器线程构造");
-        }
         List<LootFull> decoded = decodeLootSnapshots(snapshots);
         List<Map<String, Object>> out = new ArrayList<>(decoded.size());
         for (LootFull entry : decoded) {
@@ -1027,10 +1048,10 @@ public final class BlindBoxManager {
     }
 
     private void completeOnServerThread(Runnable callback) {
-        if (Bukkit.isPrimaryThread()) {
+        if (plugin.scheduler().isGlobalThread()) {
             callback.run();
         } else if (plugin.isEnabled()) {
-            Bukkit.getScheduler().runTask(plugin, callback);
+            plugin.scheduler().runGlobal(callback);
         }
     }
 
@@ -1139,26 +1160,11 @@ public final class BlindBoxManager {
                 ps.setString(3, material); ps.setString(4, rarity); ps.setLong(5, now);
                 ps.executeUpdate();
             }
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_bb_pity (uuid, pool_id, count_since_rare, updated_at) VALUES (?,?,?,?) " +
-                    "ON CONFLICT(uuid, pool_id) DO UPDATE SET count_since_rare=excluded.count_since_rare, updated_at=excluded.updated_at")) {
-                ps.setString(1, uuidKey); ps.setString(2, poolId);
-                ps.setInt(3, nextPity); ps.setLong(4, now);
-                ps.executeUpdate();
-            }
+            upsertPity(conn, uuidKey, poolId, nextPity, now);
             for (String ruleRarity : rules.keySet()) {
                 int before = beforeCounts.getOrDefault(ruleRarity, 0);
                 int next = resultRank >= rarityRank(ruleRarity) ? 0 : before + 1;
-                try (var ps = conn.prepareStatement(
-                        "INSERT INTO ks_bb_pity_rarity (uuid, pool_id, rarity, count_since_hit, updated_at) VALUES (?,?,?,?,?) " +
-                        "ON CONFLICT(uuid, pool_id, rarity) DO UPDATE SET count_since_hit=excluded.count_since_hit, updated_at=excluded.updated_at")) {
-                    ps.setString(1, uuidKey);
-                    ps.setString(2, poolId);
-                    ps.setString(3, ruleRarity);
-                    ps.setInt(4, next);
-                    ps.setLong(5, now);
-                    ps.executeUpdate();
-                }
+                upsertPityRarity(conn, uuidKey, poolId, ruleRarity, next, now);
             }
             conn.commit();
         } catch (SQLException e) {
@@ -1342,14 +1348,16 @@ public final class BlindBoxManager {
     private void pullBatchAsync(UUID playerUuid, String poolId, int quantity, String sourceTag,
                                 boolean chargePoolPrice, boolean enforceLimitedOnly,
                                 Consumer<List<PullResult>> callback) {
-        if (!Bukkit.isPrimaryThread()) {
-            Bukkit.getScheduler().runTask(plugin, () -> pullBatchAsync(playerUuid, poolId, quantity, sourceTag,
-                    chargePoolPrice, enforceLimitedOnly, callback));
-            return;
-        }
         Player online = playerUuid == null ? null : Bukkit.getPlayer(playerUuid);
         if (online == null || !online.isOnline()) {
             callback.accept(List.of(PullResult.error("玩家不在线")));
+            return;
+        }
+        if (!plugin.scheduler().isEntityThread(online)) {
+            plugin.scheduler().runEntity(online,
+                    () -> pullBatchAsync(playerUuid, poolId, quantity, sourceTag,
+                            chargePoolPrice, enforceLimitedOnly, callback),
+                    () -> callback.accept(List.of(PullResult.error("玩家已离线"))));
             return;
         }
         if (poolId == null || poolId.isBlank()) {
@@ -1367,12 +1375,12 @@ public final class BlindBoxManager {
                 Map<String, Object> pool = getPool(poolId);
                 String error = validateAsyncPool(pool, playerUuid, enforceLimitedOnly);
                 if (error != null) {
-                    finishPullBatch(operationKey, callback, List.of(PullResult.error(error)));
+                    finishPullBatch(playerUuid, operationKey, callback, List.of(PullResult.error(error)));
                     return;
                 }
                 List<LootSnapshot> loots = loadLootSnapshots(poolId);
                 if (loots.isEmpty()) {
-                    finishPullBatch(operationKey, callback, List.of(PullResult.error("该盲盒池暂无可抽物品")));
+                    finishPullBatch(playerUuid, operationKey, callback, List.of(PullResult.error("该盲盒池暂无可抽物品")));
                     return;
                 }
                 LinkedHashMap<String, Integer> rules = pityRulesForPool(pool);
@@ -1387,19 +1395,18 @@ public final class BlindBoxManager {
                 PullBatchPreparation prepared = new PullBatchPreparation(
                         Collections.unmodifiableMap(new LinkedHashMap<>(pool)), List.copyOf(draws),
                         new LinkedHashMap<>(rules), Map.copyOf(pityCounts));
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    Player currentPlayer = Bukkit.getPlayer(playerUuid);
-                    if (currentPlayer == null || !currentPlayer.isOnline()) {
+                plugin.scheduler().runEntity(online, () -> {
+                    if (!online.isOnline()) {
                         activeAsyncPulls.remove(operationKey);
                         callback.accept(List.of(PullResult.error("玩家已离线")));
                         return;
                     }
-                    settlePreparedPullBatch(operationKey, currentPlayer, playerUuid, poolId, sourceTag,
+                    settlePreparedPullBatch(operationKey, online, playerUuid, poolId, sourceTag,
                             chargePoolPrice, prepared, callback);
-                });
+                }, () -> activeAsyncPulls.remove(operationKey));
             } catch (RuntimeException e) {
                 plugin.getLogger().warning("准备盲盒异步抽取失败: " + e.getMessage());
-                finishPullBatch(operationKey, callback, List.of(PullResult.error("准备抽取失败")));
+                finishPullBatch(playerUuid, operationKey, callback, List.of(PullResult.error("准备抽取失败")));
             }
         });
     }
@@ -1460,7 +1467,7 @@ public final class BlindBoxManager {
 
         plugin.asyncWorkPool().executeDatabase(() -> {
             persistPullBatch(playerUuid.toString(), poolId, logs, prepared.pityRules(), prepared.finalPityCounts());
-            finishPullBatch(operationKey, callback, List.copyOf(results));
+            finishPullBatch(playerUuid, operationKey, callback, List.copyOf(results));
         });
     }
 
@@ -1483,27 +1490,9 @@ public final class BlindBoxManager {
                     }
                     ps.executeBatch();
                 }
-                try (var ps = conn.prepareStatement(
-                        "INSERT INTO ks_bb_pity (uuid, pool_id, count_since_rare, updated_at) VALUES (?,?,?,?) " +
-                                "ON CONFLICT(uuid, pool_id) DO UPDATE SET count_since_rare=excluded.count_since_rare, updated_at=excluded.updated_at")) {
-                    ps.setString(1, uuidKey);
-                    ps.setString(2, poolId);
-                    ps.setInt(3, finalCounts.getOrDefault(RARITY_RARE, 0));
-                    ps.setLong(4, now);
-                    ps.executeUpdate();
-                }
-                try (var ps = conn.prepareStatement(
-                        "INSERT INTO ks_bb_pity_rarity (uuid, pool_id, rarity, count_since_hit, updated_at) VALUES (?,?,?,?,?) " +
-                                "ON CONFLICT(uuid, pool_id, rarity) DO UPDATE SET count_since_hit=excluded.count_since_hit, updated_at=excluded.updated_at")) {
-                    for (String rarity : rules.keySet()) {
-                        ps.setString(1, uuidKey);
-                        ps.setString(2, poolId);
-                        ps.setString(3, rarity);
-                        ps.setInt(4, finalCounts.getOrDefault(rarity, 0));
-                        ps.setLong(5, now);
-                        ps.addBatch();
-                    }
-                    ps.executeBatch();
+                upsertPity(conn, uuidKey, poolId, finalCounts.getOrDefault(RARITY_RARE, 0), now);
+                for (String rarity : rules.keySet()) {
+                    upsertPityRarity(conn, uuidKey, poolId, rarity, finalCounts.getOrDefault(rarity, 0), now);
                 }
                 conn.commit();
                 return true;
@@ -1517,11 +1506,12 @@ public final class BlindBoxManager {
         }
     }
 
-    private void finishPullBatch(String operationKey, Consumer<List<PullResult>> callback, List<PullResult> results) {
-        Bukkit.getScheduler().runTask(plugin, () -> {
+    private void finishPullBatch(UUID playerUuid, String operationKey,
+                                 Consumer<List<PullResult>> callback, List<PullResult> results) {
+        plugin.scheduler().runPlayer(playerUuid, ignored -> {
             activeAsyncPulls.remove(operationKey);
             callback.accept(results);
-        });
+        }, () -> activeAsyncPulls.remove(operationKey));
     }
 
     /** 给予 toGive 中所有物品，背包满则暂存。返回 [invFull, stored] */
@@ -1558,11 +1548,11 @@ public final class BlindBoxManager {
     private int getPityCountSync(UUID uuid, String poolId) { return getPityCount(uuid, poolId); }
 
     private void syncCb(Consumer<PullResult> cb, PullResult r) {
-        Bukkit.getScheduler().runTask(plugin, () -> cb.accept(r));
+        plugin.scheduler().runGlobal(() -> cb.accept(r));
     }
 
     private void syncListCb(Consumer<List<PullResult>> cb, PullResult r) {
-        Bukkit.getScheduler().runTask(plugin, () -> cb.accept(List.of(r)));
+        plugin.scheduler().runGlobal(() -> cb.accept(List.of(r)));
     }
 
     /**

@@ -2,6 +2,7 @@ name: ks-core
 version: 1.1.0
 main: org.kscore.KsCore
 api-version: '1.21'
+folia-supported: ${folia.supported}
 description: ks-Series 核心 Web 网关 — 统一路由分发、Token 鉴权、子插件管理、跨服数据中枢预留
 authors: [you]
 loadbefore: [KS-ItemEditor, ksHWP, ks-Eco]

@@ -16,6 +16,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.jetbrains.annotations.NotNull;
 import org.kseco.KsEco;
+import org.kseco.database.PortableSqlMutation;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -686,7 +687,6 @@ public final class BankGui implements InventoryHolder {
         // 央行基准利率 ± 浮动限制 + 全局利率区间校验（与 web 端 /api/bank/rates/set 同一套规则）
         double baseRate = 0.035, adjustLimit = 0.02;
         double rateMin = 0.01, rateMax = 0.20;
-        String bid = bankId.replace("'", "''");
         try (Connection conn = plugin.ksCore().dataStore().getConnection();
              Statement st = conn.createStatement()) {
             try (ResultSet rs = st.executeQuery("SELECT base_rate FROM ks_bank_cb_rates ORDER BY set_at DESC LIMIT 1")) {
@@ -694,12 +694,13 @@ public final class BankGui implements InventoryHolder {
             }
             try (Statement st2 = conn.createStatement();
                  ResultSet rs2 = st2.executeQuery(
-                         "SELECT key, value FROM ks_bank_cb_config WHERE key IN ('rate_adjust_limit','rate_min','rate_max')")) {
+                         "SELECT config_key, config_value FROM ks_bank_cb_config "
+                                 + "WHERE config_key IN ('rate_adjust_limit','rate_min','rate_max')")) {
                 while (rs2.next()) {
-                    switch (rs2.getString("key")) {
-                        case "rate_adjust_limit" -> adjustLimit = rs2.getDouble("value");
-                        case "rate_min" -> rateMin = rs2.getDouble("value");
-                        case "rate_max" -> rateMax = rs2.getDouble("value");
+                    switch (rs2.getString("config_key")) {
+                        case "rate_adjust_limit" -> adjustLimit = rs2.getDouble("config_value");
+                        case "rate_min" -> rateMin = rs2.getDouble("config_value");
+                        case "rate_max" -> rateMax = rs2.getDouble("config_value");
                     }
                 }
             } catch (Exception ignored) {}
@@ -723,12 +724,35 @@ public final class BankGui implements InventoryHolder {
                 return;
             }
 
-            try (Statement st3 = conn.createStatement()) {
-                // banks 表是生效来源；ks_bank_rates 同步写以兼容 web 展示
-                st3.executeUpdate("UPDATE ks_bank_banks SET loan_rate=" + loanRate + ", interest_rate=" + depositRate
-                        + " WHERE id='" + bid + "'");
-                st3.executeUpdate("INSERT OR REPLACE INTO ks_bank_rates (bank_id, loan_rate, deposit_rate) VALUES ('"
-                        + bid + "', " + loanRate + ", " + depositRate + ")");
+            conn.setAutoCommit(false);
+            try {
+                try (var bank = conn.prepareStatement(
+                        "UPDATE ks_bank_banks SET loan_rate=?,interest_rate=? WHERE id=?")) {
+                    bank.setDouble(1, loanRate);
+                    bank.setDouble(2, depositRate);
+                    bank.setString(3, bankId);
+                    if (bank.executeUpdate() != 1) throw new java.sql.SQLException("bank no longer exists");
+                }
+                long now = System.currentTimeMillis() / 1000;
+                PortableSqlMutation.upsert(conn,
+                        "UPDATE ks_bank_rates SET loan_rate=?,deposit_rate=?,updated_at=? WHERE bank_id=?", update -> {
+                            update.setDouble(1, loanRate);
+                            update.setDouble(2, depositRate);
+                            update.setLong(3, now);
+                            update.setString(4, bankId);
+                        }, "INSERT INTO ks_bank_rates (bank_id,loan_rate,deposit_rate,updated_at) VALUES (?,?,?,?)",
+                        insert -> {
+                            insert.setString(1, bankId);
+                            insert.setDouble(2, loanRate);
+                            insert.setDouble(3, depositRate);
+                            insert.setLong(4, now);
+                        });
+                conn.commit();
+            } catch (Exception failure) {
+                conn.rollback();
+                throw failure;
+            } finally {
+                conn.setAutoCommit(true);
             }
             player.sendMessage(String.format("§a利率已更新：贷款 %.2f%% / 存款 %.2f%%（每结算周期）",
                     loanRate * 100, depositRate * 100));
@@ -777,9 +801,12 @@ public final class BankGui implements InventoryHolder {
     private boolean isBankOwnerOrAdminGui(Player player, String bankId) {
         if (player.hasPermission("kseco.admin")) return true;
         try (Connection conn = plugin.ksCore().dataStore().getConnection();
-             Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT owner_uuids FROM ks_bank_banks WHERE id='" + bankId.replace("'", "''") + "'")) {
-            return rs.next() && String.valueOf(rs.getString("owner_uuids")).contains(player.getUniqueId().toString());
+             var query = conn.prepareStatement("SELECT owner_uuids FROM ks_bank_banks WHERE id=?")) {
+            query.setString(1, bankId);
+            try (ResultSet rs = query.executeQuery()) {
+                return rs.next() && String.valueOf(rs.getString("owner_uuids"))
+                        .contains(player.getUniqueId().toString());
+            }
         } catch (Exception e) { return false; }
     }
 
@@ -801,12 +828,14 @@ public final class BankGui implements InventoryHolder {
             }
         }
         if (targetUuid == null) { player.sendMessage("§c未找到玩家: " + targetName); return; }
-        String bid = bankId.replace("'", "''");
-        try (Connection conn = plugin.ksCore().dataStore().getConnection();
-             Statement st = conn.createStatement()) {
-            try (ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM ks_bank_members WHERE bank_id='" + bid
-                    + "' AND player_uuid='" + targetUuid + "'")) {
+        try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
+            try (var query = conn.prepareStatement(
+                    "SELECT COUNT(*) FROM ks_bank_members WHERE bank_id=? AND player_uuid=?")) {
+                query.setString(1, bankId);
+                query.setString(2, targetUuid.toString());
+                try (ResultSet rs = query.executeQuery()) {
                 if (rs.next() && rs.getInt(1) > 0) { player.sendMessage("§c该玩家已是本行成员。"); return; }
+                }
             }
             // 与 web 规则一致：新成员只能以 MEMBER 加入，晋升走岗位/权限管理
             try (var ps = conn.prepareStatement(
@@ -846,10 +875,12 @@ public final class BankGui implements InventoryHolder {
         }
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
             // 禁止移除所有者（与 web 规则一致）
-            try (Statement st = conn.createStatement();
-                 ResultSet rs = st.executeQuery("SELECT owner_uuids FROM ks_bank_banks WHERE id='" + bankId.replace("'", "''") + "'")) {
-                if (rs.next() && String.valueOf(rs.getString("owner_uuids")).contains(memberUuid)) {
+            try (var query = conn.prepareStatement("SELECT owner_uuids FROM ks_bank_banks WHERE id=?")) {
+                query.setString(1, bankId);
+                try (ResultSet rs = query.executeQuery()) {
+                    if (rs.next() && String.valueOf(rs.getString("owner_uuids")).contains(memberUuid)) {
                     player.sendMessage("§c不能移除银行所有者。"); return;
+                    }
                 }
             }
             try (var ps = conn.prepareStatement("DELETE FROM ks_bank_members WHERE bank_id=? AND player_uuid=?")) {
@@ -883,12 +914,23 @@ public final class BankGui implements InventoryHolder {
                 if (!check.executeQuery().next()) { player.sendMessage("§c目标不是本行成员。"); return; }
             }
             if (grant) {
-                try (var ps = conn.prepareStatement(
-                        "INSERT OR REPLACE INTO ks_bank_permissions (bank_id,player_uuid,permission,granted_by,granted_at) VALUES (?,?,?,?,?)")) {
-                    ps.setString(1, bankId); ps.setString(2, memberUuid); ps.setString(3, permission);
-                    ps.setString(4, player.getUniqueId().toString()); ps.setLong(5, System.currentTimeMillis() / 1000);
-                    ps.executeUpdate();
-                }
+                long now = System.currentTimeMillis() / 1000;
+                PortableSqlMutation.upsert(conn,
+                        "UPDATE ks_bank_permissions SET granted_by=?,granted_at=? "
+                                + "WHERE bank_id=? AND player_uuid=? AND permission=?", update -> {
+                            update.setString(1, player.getUniqueId().toString());
+                            update.setLong(2, now);
+                            update.setString(3, bankId);
+                            update.setString(4, memberUuid);
+                            update.setString(5, permission);
+                        }, "INSERT INTO ks_bank_permissions "
+                                + "(bank_id,player_uuid,permission,granted_by,granted_at) VALUES (?,?,?,?,?)", insert -> {
+                            insert.setString(1, bankId);
+                            insert.setString(2, memberUuid);
+                            insert.setString(3, permission);
+                            insert.setString(4, player.getUniqueId().toString());
+                            insert.setLong(5, now);
+                        });
                 player.sendMessage("§a已授予 " + BANK_PERM_CN.getOrDefault(permission, permission) + "。");
             } else {
                 try (var ps = conn.prepareStatement("DELETE FROM ks_bank_permissions WHERE bank_id=? AND player_uuid=? AND permission=?")) {
@@ -1179,7 +1221,7 @@ public final class BankGui implements InventoryHolder {
 
             event.setCancelled(true);
             String msg = event.getMessage().trim();
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 Player player = Bukkit.getPlayer(playerId);
                 if (player == null) return;
                 if (msg.equalsIgnoreCase("cancel")) {

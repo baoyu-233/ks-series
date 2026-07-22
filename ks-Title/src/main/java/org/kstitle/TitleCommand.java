@@ -51,6 +51,8 @@ import java.util.stream.Collectors;
  */
 public final class TitleCommand implements CommandExecutor, TabCompleter {
 
+    private static final int MAX_CARD_AMOUNT = 2_304;
+
     private final KsTitle plugin;
 
     public TitleCommand(KsTitle plugin) {
@@ -441,7 +443,10 @@ public final class TitleCommand implements CommandExecutor, TabCompleter {
         int id = Integer.parseInt(args[3]);
         if (plugin.titleManager().getDef(id) == null) { sender.sendMessage("§c称号不存在: #" + id); return; }
         long duration = DurationParser.parseMillis(args[4]);
-        int amount = args.length >= 6 ? Math.max(1, Integer.parseInt(args[5])) : 1;
+        int amount = args.length >= 6 ? Integer.parseInt(args[5]) : 1;
+        if (amount < 1 || amount > MAX_CARD_AMOUNT) {
+            throw new IllegalArgumentException("amount must be between 1 and " + MAX_CARD_AMOUNT);
+        }
 
         int remaining = amount;
         while (remaining > 0) {

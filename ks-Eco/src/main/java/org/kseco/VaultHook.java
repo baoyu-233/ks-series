@@ -6,6 +6,7 @@ import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.lang.reflect.Method;
+import java.util.UUID;
 
 /**
  * Vault 经济对接 — 100% 反射调用，零编译依赖。
@@ -67,12 +68,14 @@ public final class VaultHook {
     }
 
     public boolean isAvailable() {
-        return available && economy != null;
+        return walletAvailable(available && economy != null, directBuiltin() != null);
     }
 
     // ---- 便捷方法（全部反射调用） ----
 
     public double getBalance(OfflinePlayer player) {
+        BuiltinEconomy direct = directBuiltin();
+        if (!available && direct != null) return direct.getBalance(player.getUniqueId());
         if (!available) return 0.0;
         try {
             return (double) getBalanceMethod.invoke(economy, player);
@@ -82,7 +85,10 @@ public final class VaultHook {
     }
 
     public boolean has(OfflinePlayer player, double amount) {
-        if (!available || !validAmount(amount, true)) return false;
+        if (!validAmount(amount, true)) return false;
+        BuiltinEconomy direct = directBuiltin();
+        if (!available && direct != null) return direct.getBalance(player.getUniqueId()) >= amount;
+        if (!available) return false;
         try {
             return (boolean) hasMethod.invoke(economy, player, amount);
         } catch (Exception e) {
@@ -91,25 +97,51 @@ public final class VaultHook {
     }
 
     public boolean withdraw(OfflinePlayer player, double amount) {
-        if (!available || !validAmount(amount, true)) return false;
+        if (!validAmount(amount, true)) return false;
+        BuiltinEconomy direct = directBuiltin();
+        if (!available && direct != null) {
+            boolean success = direct.withdraw(player.getUniqueId(), player.getName(), amount);
+            if (success && plugin instanceof KsEco eco) {
+                eco.publishCrossServerInvalidation("balance", player.getUniqueId().toString());
+            }
+            return success;
+        }
+        if (!available) return false;
         if (amount == 0.0d) return true;
         try {
             Object response = withdrawMethod.invoke(economy, player, amount);
             // EconomyResponse.transactionSuccess()
             Method successMethod = response.getClass().getMethod("transactionSuccess");
-            return (boolean) successMethod.invoke(response);
+            boolean success = (boolean) successMethod.invoke(response);
+            if (success && plugin instanceof KsEco eco) {
+                eco.publishCrossServerInvalidation("balance", player.getUniqueId().toString());
+            }
+            return success;
         } catch (Exception e) {
             return false;
         }
     }
 
     public boolean deposit(OfflinePlayer player, double amount) {
-        if (!available || !validAmount(amount, true)) return false;
+        if (!validAmount(amount, true)) return false;
+        BuiltinEconomy direct = directBuiltin();
+        if (!available && direct != null) {
+            boolean success = amount == 0.0d
+                    || direct.deposit(player.getUniqueId(), player.getName(), amount);
+            if (success && plugin instanceof KsEco eco) {
+                eco.publishCrossServerInvalidation("balance", player.getUniqueId().toString());
+            }
+            return success;
+        }
+        if (!available) return false;
         if (amount == 0.0d) return true;
         try {
             Object response = depositMethod.invoke(economy, player, amount);
             Method successMethod = response.getClass().getMethod("transactionSuccess");
             boolean ok = (boolean) successMethod.invoke(response);
+            if (ok && plugin instanceof KsEco eco) {
+                eco.publishCrossServerInvalidation("balance", player.getUniqueId().toString());
+            }
             if (!ok) {
                 Method errMethod = response.getClass().getMethod("errorMessage");
                 String err = (String) errMethod.invoke(response);
@@ -123,7 +155,7 @@ public final class VaultHook {
     }
 
     public boolean transfer(OfflinePlayer from, OfflinePlayer to, double amount) {
-        if (!available || !validAmount(amount, false) || !has(from, amount)) return false;
+        if (!isAvailable() || !validAmount(amount, false) || !has(from, amount)) return false;
         if (!withdraw(from, amount)) return false;
         if (!deposit(to, amount)) {
             deposit(from, amount); // 回滚
@@ -139,6 +171,7 @@ public final class VaultHook {
     }
 
     public String format(double amount) {
+        if (!available && directBuiltin() != null) return String.format("%.2f 金币", amount);
         if (!available) return String.format("%.2f", amount);
         try {
             return (String) formatMethod.invoke(economy, amount);
@@ -148,6 +181,7 @@ public final class VaultHook {
     }
 
     public String currencyName() {
+        if (!available && directBuiltin() != null) return "金币";
         if (!available) return "金币";
         try {
             String name = (String) currencyNamePluralMethod.invoke(economy);
@@ -158,11 +192,46 @@ public final class VaultHook {
     }
 
     public String getName() {
+        if (!available && directBuiltin() != null) return "ks-Eco内置经济";
         if (!available) return "无";
         try {
             return (String) getNameMethod.invoke(economy);
         } catch (Exception e) {
             return "未知";
         }
+    }
+
+    private BuiltinEconomy directBuiltin() {
+        if (!(plugin instanceof KsEco eco) || !eco.foliaRuntime()) return null;
+        BuiltinEconomy builtin = eco.builtinEconomy();
+        return builtin != null && builtin.isRegistered() ? builtin : null;
+    }
+
+    static boolean walletAvailable(boolean externalVault, boolean directBuiltin) {
+        return externalVault || directBuiltin;
+    }
+
+    boolean directBuiltinActive() {
+        return !available && directBuiltin() != null;
+    }
+
+    boolean withdrawDirect(UUID playerUuid, String playerName, double amount) {
+        BuiltinEconomy direct = directBuiltin();
+        if (direct == null || !validAmount(amount, true)) return false;
+        boolean success = direct.withdraw(playerUuid, playerName, amount);
+        if (success && plugin instanceof KsEco eco) {
+            eco.publishCrossServerInvalidation("balance", playerUuid.toString());
+        }
+        return success;
+    }
+
+    boolean depositDirect(UUID playerUuid, String playerName, double amount) {
+        BuiltinEconomy direct = directBuiltin();
+        if (direct == null || !validAmount(amount, true)) return false;
+        boolean success = amount == 0.0d || direct.deposit(playerUuid, playerName, amount);
+        if (success && plugin instanceof KsEco eco) {
+            eco.publishCrossServerInvalidation("balance", playerUuid.toString());
+        }
+        return success;
     }
 }

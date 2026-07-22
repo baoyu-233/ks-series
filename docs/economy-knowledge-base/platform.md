@@ -27,7 +27,7 @@
 - 物品价值依赖完整 `ItemStack`：名称、Lore、附魔、属性、CustomModelData、PDC 和潜影盒内容都不能退化成 Material 名称。
 - 背包溢出进入 `ks_eco_storage`；正常结算不能静默丢物品。
 - 市场交易、官方收购、测试交易、补偿、盲盒和企业资金操作必须留下可解释记录。
-- 数据库提交与外部 Vault 结算之间仍缺少统一的持久化 settlement journal，这是当前系统性风险。
+- 玩家市场、采购单、限时销售、个人工程、个人/企业房产、银行拍卖、贷款放款/还款和副本关键支付已使用各自的持久 settlement journal 或同库事务；外部 Vault 调用在进程崩溃瞬间仍可能无法由数据库单独证明结果，此类状态必须进入人工复核，其他旧 Vault 路径仍需逐项收口。
 
 ## 线程契约
 
@@ -59,8 +59,6 @@
 
 ## 当前部署基线
 
-快速部署事实见 `docs/CODEX_MEMORY.md`。截至 2026-07-16，测试服 `ks-Eco-1.1.0.jar` 的已记录 SHA-256 为：
-
-`51EF3C7017FF67B424CC67EACBA6B54044ED245ACC4B033D462C39E78F578CF8`
-
-Paper 未由 Codex 自动启动；游戏内结算仍需人工重启后验证。
+快速部署事实见 `docs/CODEX_MEMORY.md`。截至 2026-07-22，测试服 `ks-Eco-1.1.0.jar` SHA-256 为
+`4973DCCF548F7E9F5A4CD9CFC75D8D5B8BDA9D5D4C55988D32A7E4A0651DD195`，银行 Extra SHA-256 为
+`5025BF69C9B25CE8EE7CCD6F838CC9CADECFEABAACAA6AEC6FF38B1B5C3EAF9F`。Paper 已完成重启，六个 Extra 正常启用；玩家/管理员银行 Web 入口完成实际点击验证，但不可逆清算和真实资金操作未执行。

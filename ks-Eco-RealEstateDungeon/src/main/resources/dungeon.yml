@@ -14,18 +14,18 @@ revive:
   exponent: 1.8                 # [即时] 指数增长倍率: cost = base * exponent^(n-1)
   max_revives_per_player: 10    # [即时] 每人最大复活次数
 
-# 网格系统（虚空世界）
+# 实例世界请求参数（网格生命周期由 ks-InstanceWorld 持久化和管理）
 grid:
   world_name: "ks-dungeon-world"  # [副本] 虚空世界名
   spacing: 5000                   # [副本] 网格间距
   max_grids: 64                   # [副本] 最大网格数
-  clean_timeout_seconds: 120      # [即时] 副本结束后网格回收延迟
   instance_timeout_minutes: 60    # [即时] 副本超时（模板 timeLimit 可覆盖）
 
-# 地图（FAWE 贴 schematic，需服务器装 FastAsyncWorldEdit；可选 MythicMobs 刷怪）
-# 授图流程：建好房间 → 刷怪点放告示牌(第1行[mm] 第2行 怪物名:等级) → 玩家出生点放[spawn]牌
+# 地图由 ks-InstanceWorld 通过 FAWE 粘贴；经济副本只解释返回的战斗标记。
+# 兼容格式：[mm]/怪物名:等级/boss；通用格式：[marker]/mm/怪物名:等级/boss；出生点使用 [spawn]。
 #          → //copy（站在出生点）→ //schem save <图名> → 把图名填进模板的「地图」字段
 map:
   base_y: 64           # [副本] 贴图基准高度，clipboard 原点对齐到 (网格中心X, base_y, 网格中心Z)
   arena_radius: 256    # [副本] 清场/清画布水平半径（以网格中心为原点）。须 ≥ 单个 schematic 水平尺寸的一半
-  spawn_mobs: true     # [即时] 是否扫描 [mm] 告示牌并刷 MythicMobs
+  prepare_timeout_seconds: 120 # [副本] 世界加载、清画布、贴图和标记扫描的总超时
+  spawn_mobs: true     # [即时] 是否解释通用 marker 并调用 MythicMobs 刷怪

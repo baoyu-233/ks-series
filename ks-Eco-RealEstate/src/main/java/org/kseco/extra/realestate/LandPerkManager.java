@@ -9,7 +9,10 @@ import org.bukkit.block.Furnace;
 import org.bukkit.block.data.Ageable;
 import org.bukkit.scheduler.BukkitTask;
 import org.kseco.KsEco;
+import org.kseco.database.BusinessSchemaDialect;
+import org.kseco.database.PortableSqlMutation;
 
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -132,29 +135,30 @@ public final class LandPerkManager {
             try (var s = conn.createStatement()) {
                 s.execute("""
                     CREATE TABLE IF NOT EXISTS ks_re_land_perk_config (
-                        perk_key TEXT PRIMARY KEY,
-                        perk_value REAL NOT NULL,
+                        perk_key VARCHAR(128) PRIMARY KEY,
+                        perk_value DOUBLE NOT NULL,
                         updated_at INTEGER NOT NULL
                     )
                 """);
                 s.execute("""
                     CREATE TABLE IF NOT EXISTS ks_re_plot_perks (
-                        plot_id TEXT PRIMARY KEY,
+                        plot_id VARCHAR(64) PRIMARY KEY,
                         agri_enabled INTEGER NOT NULL DEFAULT 0,
                         industry_enabled INTEGER NOT NULL DEFAULT 0,
                         agri_growth_interval_ticks INTEGER NOT NULL DEFAULT 0,
                         agri_growth_steps INTEGER NOT NULL DEFAULT 0,
                         agri_growth_samples INTEGER NOT NULL DEFAULT 0,
-                        agri_harvest_yield_bonus_chance REAL,
-                        agri_official_premium_pct REAL,
-                        industry_furnace_speed_pct REAL,
-                        industry_furnace_bonus_output_chance REAL,
-                        industry_bidding_reputation_bonus_pct REAL,
+                        agri_harvest_yield_bonus_chance DOUBLE,
+                        agri_official_premium_pct DOUBLE,
+                        industry_furnace_speed_pct DOUBLE,
+                        industry_furnace_bonus_output_chance DOUBLE,
+                        industry_bidding_reputation_bonus_pct DOUBLE,
                         updated_at INTEGER NOT NULL
                     )
                 """);
-                try { s.execute("ALTER TABLE ks_re_plot_perks ADD COLUMN agri_growth_samples INTEGER NOT NULL DEFAULT 0"); } catch (SQLException ignored) {}
             }
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_re_plot_perks", "agri_growth_samples",
+                    "INTEGER NOT NULL DEFAULT 0");
         } catch (SQLException e) {
             eco.getLogger().warning("[LandPerk] init table failed: " + e.getMessage());
         }
@@ -183,14 +187,11 @@ public final class LandPerkManager {
         long now = System.currentTimeMillis() / 1000;
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return false;
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_re_land_perk_config (perk_key, perk_value, updated_at) VALUES (?,?,?) " +
-                    "ON CONFLICT(perk_key) DO UPDATE SET perk_value=excluded.perk_value, updated_at=excluded.updated_at")) {
-                ps.setString(1, key);
-                ps.setDouble(2, value);
-                ps.setLong(3, now);
-                ps.executeUpdate();
-            }
+            PortableSqlMutation.upsert(conn,
+                    "UPDATE ks_re_land_perk_config SET perk_value=?,updated_at=? WHERE perk_key=?",
+                    ps -> { ps.setDouble(1, value); ps.setLong(2, now); ps.setString(3, key); },
+                    "INSERT INTO ks_re_land_perk_config (perk_key,perk_value,updated_at) VALUES (?,?,?)",
+                    ps -> { ps.setString(1, key); ps.setDouble(2, value); ps.setLong(3, now); });
         } catch (SQLException e) {
             eco.getLogger().warning("[LandPerk] set config failed: " + e.getMessage());
             return false;
@@ -200,6 +201,7 @@ public final class LandPerkManager {
         perkConfig = next;
         ownershipCache.clear();
         nextGrowthRunAt.clear();
+        eco.publishCrossServerInvalidation("real-estate", "all");
         return true;
     }
 
@@ -271,24 +273,13 @@ public final class LandPerkManager {
 
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return false;
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_re_plot_perks (plot_id, agri_enabled, industry_enabled, agri_growth_interval_ticks, agri_growth_steps, agri_growth_samples, agri_harvest_yield_bonus_chance, agri_official_premium_pct, industry_furnace_speed_pct, industry_furnace_bonus_output_chance, industry_bidding_reputation_bonus_pct, updated_at) " +
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) " +
-                    "ON CONFLICT(plot_id) DO UPDATE SET agri_enabled=excluded.agri_enabled, industry_enabled=excluded.industry_enabled, agri_growth_interval_ticks=excluded.agri_growth_interval_ticks, agri_growth_steps=excluded.agri_growth_steps, agri_growth_samples=excluded.agri_growth_samples, agri_harvest_yield_bonus_chance=excluded.agri_harvest_yield_bonus_chance, agri_official_premium_pct=excluded.agri_official_premium_pct, industry_furnace_speed_pct=excluded.industry_furnace_speed_pct, industry_furnace_bonus_output_chance=excluded.industry_furnace_bonus_output_chance, industry_bidding_reputation_bonus_pct=excluded.industry_bidding_reputation_bonus_pct, updated_at=excluded.updated_at")) {
-                ps.setString(1, plotId);
-                ps.setInt(2, agri ? 1 : 0);
-                ps.setInt(3, industry ? 1 : 0);
-                ps.setInt(4, intervalTicks);
-                ps.setInt(5, steps);
-                ps.setInt(6, samples);
-                ps.setDouble(7, harvest);
-                ps.setDouble(8, premium);
-                ps.setDouble(9, furnaceSpeed);
-                ps.setDouble(10, furnaceBonus);
-                ps.setDouble(11, bidBonus);
-                ps.setLong(12, now);
-                ps.executeUpdate();
-            }
+            PortableSqlMutation.upsert(conn,
+                    "UPDATE ks_re_plot_perks SET agri_enabled=?,industry_enabled=?,agri_growth_interval_ticks=?,agri_growth_steps=?,agri_growth_samples=?,agri_harvest_yield_bonus_chance=?,agri_official_premium_pct=?,industry_furnace_speed_pct=?,industry_furnace_bonus_output_chance=?,industry_bidding_reputation_bonus_pct=?,updated_at=? WHERE plot_id=?",
+                    ps -> bindPlotPerk(ps, agri, industry, intervalTicks, steps, samples, harvest, premium,
+                            furnaceSpeed, furnaceBonus, bidBonus, now, plotId, false),
+                    "INSERT INTO ks_re_plot_perks (agri_enabled,industry_enabled,agri_growth_interval_ticks,agri_growth_steps,agri_growth_samples,agri_harvest_yield_bonus_chance,agri_official_premium_pct,industry_furnace_speed_pct,industry_furnace_bonus_output_chance,industry_bidding_reputation_bonus_pct,updated_at,plot_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ps -> bindPlotPerk(ps, agri, industry, intervalTicks, steps, samples, harvest, premium,
+                            furnaceSpeed, furnaceBonus, bidBonus, now, plotId, true));
         } catch (SQLException e) {
             eco.getLogger().warning("[LandPerk] set plot perk failed: " + e.getMessage());
             return false;
@@ -299,6 +290,10 @@ public final class LandPerkManager {
     }
 
     public void refreshPlotPerkCache() {
+        refreshPlotPerkCache(true);
+    }
+
+    private void refreshPlotPerkCache(boolean publish) {
         Map<String, PlotPerk> next = new ConcurrentHashMap<>();
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) { plotPerks = next; return; }
@@ -323,6 +318,33 @@ public final class LandPerkManager {
             }
         } catch (SQLException ignored) {}
         plotPerks = next;
+        if (publish) eco.publishCrossServerInvalidation("real-estate", "all");
+    }
+
+    public void refreshSharedCachesFromRemote() {
+        refreshPerkConfigCache();
+        refreshPlotPerkCache(false);
+        ownershipCache.clear();
+        nextGrowthRunAt.clear();
+    }
+
+    private static void bindPlotPerk(PreparedStatement ps, boolean agri, boolean industry,
+                                     int intervalTicks, int steps, int samples, double harvest,
+                                     double premium, double furnaceSpeed, double furnaceBonus,
+                                     double bidBonus, long now, String plotId, boolean insert)
+            throws SQLException {
+        ps.setInt(1, agri ? 1 : 0);
+        ps.setInt(2, industry ? 1 : 0);
+        ps.setInt(3, intervalTicks);
+        ps.setInt(4, steps);
+        ps.setInt(5, samples);
+        ps.setDouble(6, harvest);
+        ps.setDouble(7, premium);
+        ps.setDouble(8, furnaceSpeed);
+        ps.setDouble(9, furnaceBonus);
+        ps.setDouble(10, bidBonus);
+        ps.setLong(11, now);
+        ps.setString(12, plotId);
     }
 
     public boolean isEligibleForZonePerk(UUID actor, String world, int x, int z, String zoneType) {

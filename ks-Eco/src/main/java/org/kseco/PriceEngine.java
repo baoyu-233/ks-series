@@ -1,6 +1,8 @@
 package org.kseco;
 
 import org.bukkit.Material;
+import org.kseco.database.PortableSqlMutation;
+import org.kseco.database.PriceEngineSchema;
 
 import java.sql.*;
 import java.util.*;
@@ -32,9 +34,9 @@ public final class PriceEngine {
 
     private final KsEco plugin;
     /** 内存缓存：material → PricePoint（当前价格快照） */
-    private final Map<String, PricePoint> priceCache = new ConcurrentHashMap<>();
+    private volatile Map<String, PricePoint> priceCache = new ConcurrentHashMap<>();
     /** 内存缓存：material → VolatilityState（漂移/导向/供需压力状态） */
-    private final Map<String, VolatilityState> volatilityState = new ConcurrentHashMap<>();
+    private volatile Map<String, VolatilityState> volatilityState = new ConcurrentHashMap<>();
 
     private final Random random = new Random();
 
@@ -47,25 +49,22 @@ public final class PriceEngine {
         this.plugin = plugin;
         ensureTables();
         loadGlobalSettings();
-        loadVolatilityStates();
         // 初始化默认物品价格
         for (var item : plugin.ecoConfig().getDefaultBuyItems()) {
             priceCache.put(item.material(), new PricePoint(
                     item.basePrice(), item.basePrice(), item.basePrice()));
         }
         loadPersistedOfficialPrices();
+        loadVolatilityStates();
     }
 
     private void ensureTables() {
-        try (var conn = plugin.ksCore().dataStore().getConnection();
-             var stmt = conn.createStatement()) {
-            stmt.execute("CREATE TABLE IF NOT EXISTS ks_eco_trades (id TEXT PRIMARY KEY, item_material TEXT, item_signature TEXT, quantity INTEGER, unit_price REAL, buyer_uuid TEXT, seller_uuid TEXT, timestamp INTEGER, trade_type TEXT)");
-            stmt.execute("CREATE INDEX IF NOT EXISTS idx_eco_trades_material_time ON ks_eco_trades(item_material, timestamp)");
-            try { stmt.execute("ALTER TABLE ks_eco_trades ADD COLUMN is_test INTEGER DEFAULT 0"); } catch (SQLException ignored) {}
-            stmt.execute("CREATE TABLE IF NOT EXISTS ks_eco_price_volatility (material TEXT PRIMARY KEY, drift_value REAL DEFAULT 0, trend_bias REAL DEFAULT 0, last_buy_price REAL DEFAULT 0, updated_at INTEGER)");
-            stmt.execute("CREATE TABLE IF NOT EXISTS ks_eco_price_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-            stmt.execute("CREATE TABLE IF NOT EXISTS ks_official_prices (material TEXT PRIMARY KEY, buy_price REAL DEFAULT 0, sell_price REAL DEFAULT 0, category TEXT DEFAULT '', updated_at INTEGER DEFAULT (strftime('%s','now')))");
-        } catch (Exception ignored) {}
+        try (var conn = plugin.ksCore().dataStore().getConnection()) {
+            if (conn == null) throw new SQLException("database unavailable");
+            PriceEngineSchema.initialize(conn);
+        } catch (SQLException failure) {
+            throw new IllegalStateException("Dynamic price schema initialization failed", failure);
+        }
     }
 
     private void loadGlobalSettings() {
@@ -77,7 +76,7 @@ public final class PriceEngine {
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
             try (var stmt = conn.createStatement()) {
-                ResultSet rs = stmt.executeQuery("SELECT key, value FROM ks_eco_price_settings");
+                ResultSet rs = stmt.executeQuery("SELECT config_key,config_value FROM ks_eco_price_settings");
                 while (rs.next()) {
                     String key = rs.getString(1);
                     String value = rs.getString(2);
@@ -95,14 +94,28 @@ public final class PriceEngine {
     }
 
     private void loadVolatilityStates() {
+        loadVolatilityStates(priceCache, volatilityState);
+    }
+
+    private void loadVolatilityStates(
+            Map<String, PricePoint> prices,
+            Map<String, VolatilityState> states
+    ) {
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
             try (var stmt = conn.createStatement()) {
-                ResultSet rs = stmt.executeQuery("SELECT material, drift_value, trend_bias, last_buy_price FROM ks_eco_price_volatility");
+                ResultSet rs = stmt.executeQuery("SELECT material, drift_value, trend_bias, last_buy_price,"
+                        + "current_buy_price,market_average FROM ks_eco_price_volatility");
                 while (rs.next()) {
                     String mat = rs.getString(1).toUpperCase();
-                    volatilityState.put(mat, new VolatilityState(
+                    states.put(mat, new VolatilityState(
                             rs.getDouble(2), rs.getDouble(3), 0.0, 0.0, rs.getDouble(4)));
+                    PricePoint configured = prices.get(mat);
+                    double current = rs.getDouble(5);
+                    if (configured != null && current > 0.0d) {
+                        prices.put(mat, new PricePoint(
+                                configured.basePrice, current, Math.max(0.0d, rs.getDouble(6))));
+                    }
                 }
             }
         } catch (SQLException e) {
@@ -113,11 +126,11 @@ public final class PriceEngine {
     private void persistSetting(String key, String value) {
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
-            try (var ps = conn.prepareStatement("INSERT OR REPLACE INTO ks_eco_price_settings (key, value) VALUES (?, ?)")) {
-                ps.setString(1, key);
-                ps.setString(2, value);
-                ps.executeUpdate();
-            }
+            PortableSqlMutation.upsert(conn,
+                    "UPDATE ks_eco_price_settings SET config_value=? WHERE config_key=?",
+                    ps -> { ps.setString(1, value); ps.setString(2, key); },
+                    "INSERT INTO ks_eco_price_settings (config_key,config_value) VALUES (?,?)",
+                    ps -> { ps.setString(1, key); ps.setString(2, value); });
         } catch (SQLException e) {
             plugin.getLogger().warning("保存市场波动设置(" + key + ")失败: " + e.getMessage());
         }
@@ -131,15 +144,7 @@ public final class PriceEngine {
     private void persistVolatilityState(String material, VolatilityState state) {
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
-            try (var ps = conn.prepareStatement(
-                    "INSERT OR REPLACE INTO ks_eco_price_volatility (material, drift_value, trend_bias, last_buy_price, updated_at) VALUES (?,?,?,?,?)")) {
-                ps.setString(1, material);
-                ps.setDouble(2, state.driftValue);
-                ps.setDouble(3, state.trendBias);
-                ps.setDouble(4, state.previousBuyPrice);
-                ps.setLong(5, System.currentTimeMillis() / 1000);
-                ps.executeUpdate();
-            }
+            upsertVolatility(conn, material, state, priceCache.get(material), System.currentTimeMillis() / 1000);
         } catch (SQLException e) {
             plugin.getLogger().warning("保存物品波动状态失败: " + e.getMessage());
         }
@@ -171,34 +176,62 @@ public final class PriceEngine {
         }
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return false;
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_official_prices (material,buy_price,category,updated_at) VALUES (?,?,?,?) " +
-                            "ON CONFLICT(material) DO UPDATE SET buy_price=excluded.buy_price, " +
-                            "category=excluded.category, updated_at=excluded.updated_at")) {
-                ps.setString(1, mat);
-                ps.setDouble(2, price);
-                ps.setString(3, parsedCategory(mat));
-                ps.setLong(4, System.currentTimeMillis() / 1000);
-                if (ps.executeUpdate() != 1) return false;
-            }
+            String category = parsedCategory(mat);
+            long now = System.currentTimeMillis() / 1000;
+            PortableSqlMutation.upsert(conn,
+                    "UPDATE ks_official_prices SET buy_price=?,category=?,updated_at=? WHERE material=?",
+                    ps -> { ps.setDouble(1, price); ps.setString(2, category); ps.setLong(3, now); ps.setString(4, mat); },
+                    "INSERT INTO ks_official_prices (material,buy_price,category,updated_at) VALUES (?,?,?,?)",
+                    ps -> { ps.setString(1, mat); ps.setDouble(2, price); ps.setString(3, category); ps.setLong(4, now); });
         } catch (SQLException e) {
             plugin.getLogger().warning("保存官方收购价失败: " + e.getMessage());
             return false;
         }
         registerItem(mat, price);
+        plugin.publishCrossServerInvalidation("price", mat);
         return true;
     }
 
+    /** Rebuilds all database-owned price state after a remote invalidation. */
+    public void reloadSharedState() {
+        loadGlobalSettings();
+        Map<String, PricePoint> loadedPrices = new ConcurrentHashMap<>();
+        for (var item : plugin.ecoConfig().getDefaultBuyItems()) {
+            loadedPrices.put(item.material(), new PricePoint(
+                    item.basePrice(), item.basePrice(), item.basePrice()));
+        }
+        loadPersistedOfficialPrices(loadedPrices);
+        Map<String, VolatilityState> loadedStates = new ConcurrentHashMap<>();
+        loadVolatilityStates(loadedPrices, loadedStates);
+        priceCache = loadedPrices;
+        volatilityState = loadedStates;
+    }
+
     private void loadPersistedOfficialPrices() {
+        loadPersistedOfficialPrices(priceCache);
+    }
+
+    private void loadPersistedOfficialPrices(Map<String, PricePoint> prices) {
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
             try (var ps = conn.prepareStatement("SELECT material,buy_price FROM ks_official_prices");
                  var rs = ps.executeQuery()) {
-                while (rs.next()) registerItem(rs.getString(1), rs.getDouble(2));
+                while (rs.next()) registerItem(prices, rs.getString(1), rs.getDouble(2));
             }
         } catch (SQLException e) {
             plugin.getLogger().warning("读取官方收购价覆盖配置失败: " + e.getMessage());
         }
+    }
+
+    private static void registerItem(Map<String, PricePoint> prices, String material, double buyPrice) {
+        if (material == null || material.isBlank() || !Double.isFinite(buyPrice) || buyPrice < 0) return;
+        String mat = material.toUpperCase(Locale.ROOT);
+        if (buyPrice == 0.0d) {
+            prices.remove(mat);
+            return;
+        }
+        PricePoint old = prices.get(mat);
+        prices.put(mat, new PricePoint(buyPrice, buyPrice, old != null ? old.marketAvg : buyPrice));
     }
 
     private static String parsedCategory(String material) {
@@ -429,29 +462,11 @@ public final class PriceEngine {
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
             conn.setAutoCommit(false);
-            try (PreparedStatement persist = conn.prepareStatement(
-                    "INSERT OR REPLACE INTO ks_eco_price_volatility (material, drift_value, trend_bias, last_buy_price, updated_at) VALUES (?,?,?,?,?)")) {
-                long now = System.currentTimeMillis() / 1000;
-                Map<String, double[]> refreshStats = loadRefreshStats(conn, priceCache.keySet(), now);
-                for (var entry : priceCache.entrySet()) {
-                    String mat = entry.getKey();
-                    double base = entry.getValue().basePrice;
-                    double oldBuyPrice = entry.getValue().buyPrice;
-                    VolatilityState state = volatilityState.getOrDefault(mat, VolatilityState.EMPTY);
-                    double[] stats = refreshStats.getOrDefault(mat, new double[]{0.0,
-                            plugin.ecoConfig().getVolatilityDefaultBaselineQty(), 0.0});
-                    double recentQty = stats[0], baseline = stats[1];
-                    double newDrift = stepDrift(state.driftValue, state.trendBias);
-                    double newBuyPrice = computeBuyPrice(base, newDrift, computeSupplyPressure(recentQty, baseline));
-                    double marketAvg = stats[2];
-                    priceCache.put(mat, new PricePoint(base, newBuyPrice, marketAvg));
-                    VolatilityState newState = new VolatilityState(newDrift, state.trendBias, recentQty, baseline, oldBuyPrice);
-                    volatilityState.put(mat, newState);
-                    bindVolatilityState(persist, mat, newState, now);
-                    persist.addBatch();
-                }
-                persist.executeBatch();
+            try {
+                RefreshResult result = stageRefresh(conn);
                 conn.commit();
+                applyRefresh(result);
+                plugin.publishCrossServerInvalidation("price", "all");
             } catch (SQLException e) {
                 conn.rollback();
                 throw e;
@@ -461,6 +476,66 @@ public final class PriceEngine {
         } catch (SQLException e) {
             plugin.getLogger().warning("Price refresh failed: " + e.getMessage());
         }
+    }
+
+    /** Stages a price refresh inside the caller-owned fenced transaction. */
+    public RefreshResult stageRefresh(Connection conn) throws SQLException {
+        Objects.requireNonNull(conn, "conn");
+        Map<String, PricePoint> priceSnapshot = Map.copyOf(priceCache);
+        Map<String, VolatilityState> stateSnapshot = Map.copyOf(volatilityState);
+        long now = System.currentTimeMillis() / 1000;
+        Map<String, double[]> refreshStats = loadRefreshStats(conn, priceSnapshot.keySet(), now);
+        Map<String, PricePoint> stagedPrices = new HashMap<>();
+        Map<String, VolatilityState> stagedStates = new HashMap<>();
+        for (var entry : priceSnapshot.entrySet()) {
+            String mat = entry.getKey();
+            double base = entry.getValue().basePrice;
+            double oldBuyPrice = entry.getValue().buyPrice;
+            VolatilityState state = stateSnapshot.getOrDefault(mat, VolatilityState.EMPTY);
+            double[] stats = refreshStats.getOrDefault(mat, new double[]{0.0,
+                    plugin.ecoConfig().getVolatilityDefaultBaselineQty(), 0.0});
+            double recentQty = stats[0], baseline = stats[1];
+            double newDrift = stepDrift(state.driftValue, state.trendBias);
+            double newBuyPrice = computeBuyPrice(base, newDrift, computeSupplyPressure(recentQty, baseline));
+            double marketAvg = stats[2];
+            VolatilityState newState = new VolatilityState(
+                    newDrift, state.trendBias, recentQty, baseline, oldBuyPrice);
+            stagedPrices.put(mat, new PricePoint(base, newBuyPrice, marketAvg));
+            stagedStates.put(mat, newState);
+            upsertVolatility(conn, mat, newState, stagedPrices.get(mat), now);
+        }
+        return new RefreshResult(stagedPrices, stagedStates);
+    }
+
+    /** Applies a refresh only after its database transaction has committed. */
+    public void applyRefresh(RefreshResult result) {
+        Objects.requireNonNull(result, "result");
+        priceCache.putAll(result.prices());
+        volatilityState.putAll(result.states());
+    }
+
+    private static void upsertVolatility(Connection connection, String material, VolatilityState state,
+                                         PricePoint price, long now)
+            throws SQLException {
+        double currentBuyPrice = price == null ? 0.0d : price.buyPrice;
+        double marketAverage = price == null ? 0.0d : price.marketAvg;
+        PortableSqlMutation.upsert(connection,
+                "UPDATE ks_eco_price_volatility SET drift_value=?,trend_bias=?,last_buy_price=?,"
+                        + "current_buy_price=?,market_average=?,updated_at=? "
+                        + "WHERE material=?",
+                ps -> {
+                    ps.setDouble(1, state.driftValue); ps.setDouble(2, state.trendBias);
+                    ps.setDouble(3, state.previousBuyPrice); ps.setDouble(4, currentBuyPrice);
+                    ps.setDouble(5, marketAverage); ps.setLong(6, now); ps.setString(7, material);
+                },
+                "INSERT INTO ks_eco_price_volatility "
+                        + "(material,drift_value,trend_bias,last_buy_price,current_buy_price,market_average,updated_at) "
+                        + "VALUES (?,?,?,?,?,?,?)",
+                ps -> {
+                    ps.setString(1, material); ps.setDouble(2, state.driftValue); ps.setDouble(3, state.trendBias);
+                    ps.setDouble(4, state.previousBuyPrice); ps.setDouble(5, currentBuyPrice);
+                    ps.setDouble(6, marketAverage); ps.setLong(7, now);
+                });
     }
 
     private void insertTradeRow(String material, int quantity, double unitPrice,
@@ -539,23 +614,8 @@ public final class PriceEngine {
             return;
         }
 
-        double fallbackBaseline = plugin.ecoConfig().getVolatilityDefaultBaselineQty();
-        for (TradeRecord trade : valid) {
-            if (trade.tradeType() == null || !trade.tradeType().contains("SELL")) continue;
-            String material = trade.material().toUpperCase(Locale.ROOT);
-            volatilityState.compute(material, (key, current) -> {
-                VolatilityState state = current == null ? VolatilityState.EMPTY : current;
-                double baseline = state.baseline > 0.0 ? state.baseline : fallbackBaseline;
-                double newRecentQty = state.recentQty + trade.quantity();
-                double supplyPressure = computeSupplyPressure(newRecentQty, baseline);
-                priceCache.computeIfPresent(material, (ignored, price) -> new PricePoint(
-                        price.basePrice,
-                        computeBuyPrice(price.basePrice, state.driftValue, supplyPressure),
-                        price.marketAvg));
-                return new VolatilityState(state.driftValue, state.trendBias, newRecentQty,
-                        baseline, state.previousBuyPrice);
-            });
-        }
+        // Trade history is authoritative. Cached prices change only in the fenced
+        // cluster refresh, otherwise two nodes could apply different local deltas.
     }
 
     /**
@@ -587,10 +647,7 @@ public final class PriceEngine {
      * 管理员强制设定某物品价格。
      */
     public void forcePrice(String material, double price) {
-        if (material == null || material.isBlank() || !Double.isFinite(price) || price <= 0) return;
-        PricePoint old = priceCache.get(material.toUpperCase());
-        double base = old != null ? old.basePrice : price;
-        priceCache.put(material.toUpperCase(), new PricePoint(base, price, price));
+        setOfficialBuyPrice(material, price);
     }
 
     // ---- 市场波动管理接口（供 web 管理端调用） ----
@@ -603,6 +660,7 @@ public final class PriceEngine {
         VolatilityState updated = new VolatilityState(old.driftValue, clamped, old.recentQty, old.baseline, old.previousBuyPrice);
         volatilityState.put(mat, updated);
         persistVolatilityState(mat, updated);
+        plugin.publishCrossServerInvalidation("price", mat);
     }
 
     public void clearTrendBias(String material) {
@@ -624,6 +682,7 @@ public final class PriceEngine {
             }
         }
         persistGlobalSettings();
+        plugin.publishCrossServerInvalidation("price", "settings");
     }
 
     public boolean isVolatilityEnabled() { return volatilityEnabled; }
@@ -636,6 +695,7 @@ public final class PriceEngine {
     public void setPriceRefreshMinutes(int minutes) {
         this.priceRefreshMinutes = Math.max(1, minutes);
         persistSetting("price_refresh_minutes", String.valueOf(this.priceRefreshMinutes));
+        plugin.publishCrossServerInvalidation("price", "settings");
     }
 
     public boolean isTestModeEnabled() { return testModeEnabled; }
@@ -644,6 +704,7 @@ public final class PriceEngine {
     public void setTestModeEnabled(boolean enabled) {
         this.testModeEnabled = enabled;
         persistSetting("test_mode_enabled", String.valueOf(enabled));
+        plugin.publishCrossServerInvalidation("price", "settings");
     }
 
     /** 给 web 管理端用的完整快照：全局设置 + 每个物品的漂移/导向/供需压力/趋势状态。 */
@@ -676,6 +737,13 @@ public final class PriceEngine {
 
     public record TradeRecord(String material, int quantity, double unitPrice,
                               String buyerUuid, String sellerUuid, String tradeType) {}
+
+    public record RefreshResult(Map<String, PricePoint> prices, Map<String, VolatilityState> states) {
+        public RefreshResult {
+            prices = Map.copyOf(prices);
+            states = Map.copyOf(states);
+        }
+    }
 
     public static class PricePoint {
         public final double basePrice;

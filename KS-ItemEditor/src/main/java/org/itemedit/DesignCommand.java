@@ -103,25 +103,24 @@ public final class DesignCommand implements CommandExecutor {
         }
 
         ItemStack hand = player.getInventory().getItemInMainHand();
-        boolean isNewItem = hand.getType().isAir();
+        boolean isNewItem = hand == null || hand.getType().isAir();
 
+        ItemStack applied;
         if (isNewItem) {
             // 从模板创建新物品
-            hand = ItemSerializer.fromItemData(template.item);
+            applied = ItemSerializer.fromItemData(template.item);
+            if (applied != null) ItemSerializer.applyExtendedData(applied, template.item);
         } else {
-            // 在现有物品上应用模板
-            hand = ItemSerializer.fromItemData(template.item);
+            // 在现有物品上叠加模板的外观/词条，保留数量、耐久、容器内容与第三方数据
+            applied = ItemSerializer.applyTemplatePreservingBody(hand, template.item);
         }
 
-        if (hand == null) {
+        if (applied == null) {
             player.sendMessage(TextUtil.parse("&c无法创建物品，模板数据可能有误。"));
             return true;
         }
 
-        // 应用扩展数据（FE 附魔、IA 模型）
-        ItemSerializer.applyExtendedData(hand, template.item);
-
-        player.getInventory().setItemInMainHand(hand);
+        player.getInventory().setItemInMainHand(applied);
         player.sendMessage(TextUtil.parse("&a✅ 模板已加载: &e" + code + "\n"
                 + "&7  作者: &f" + (template.createdBy != null ? template.createdBy.name : "未知")
                 + (template.adminTemplate ? " &c[管理员模板]" : "")));

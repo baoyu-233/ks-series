@@ -3,18 +3,18 @@ package org.kseco;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
+import org.kseco.database.CompensationSchema;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Consumer;
 
-/** Durable, once-per-player compensation plans backed by the shared SQLite store. */
+/** Durable, once-per-player compensation plans backed by the shared business store. */
 public final class CompensationManager {
     private final KsEco plugin;
 
@@ -41,34 +41,8 @@ public final class CompensationManager {
     }
 
     private void createTables() {
-        try (Connection conn = plugin.ksCore().dataStore().getConnection();
-             Statement statement = conn.createStatement()) {
-            statement.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_compensation_plans (
-                        id TEXT PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        item_material TEXT NOT NULL,
-                        item_data BLOB NOT NULL,
-                        item_amount INTEGER NOT NULL DEFAULT 1,
-                        item_max_stack INTEGER NOT NULL DEFAULT 64,
-                        enabled INTEGER NOT NULL DEFAULT 1,
-                        starts_at INTEGER NOT NULL DEFAULT 0,
-                        ends_at INTEGER NOT NULL DEFAULT 0,
-                        created_at INTEGER NOT NULL,
-                        updated_at INTEGER NOT NULL
-                    )
-                    """);
-            statement.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_compensation_claims (
-                        plan_id TEXT NOT NULL,
-                        player_uuid TEXT NOT NULL,
-                        player_name TEXT NOT NULL,
-                        claimed_at INTEGER NOT NULL,
-                        storage_id TEXT NOT NULL,
-                        PRIMARY KEY (plan_id, player_uuid)
-                    )
-                    """);
-            statement.execute("CREATE INDEX IF NOT EXISTS idx_ks_comp_claim_player ON ks_compensation_claims(player_uuid)");
+        try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
+            CompensationSchema.initialize(conn);
         } catch (SQLException e) {
             plugin.getLogger().warning("创建补偿系统数据表失败: " + e.getMessage());
         }
@@ -115,7 +89,6 @@ public final class CompensationManager {
     }
 
     public void create(ItemStack source, int expiryDays, Consumer<OperationResult> callback) {
-        if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Compensation item snapshot must run on the server thread");
         if (source == null || source.getType().isAir()) {
             callback.accept(new OperationResult(false, "请先手持要发放的特殊物品"));
             return;
@@ -170,7 +143,6 @@ public final class CompensationManager {
     }
 
     public void replaceItem(String id, ItemStack source, Consumer<OperationResult> callback) {
-        if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Compensation item snapshot must run on the server thread");
         if (source == null || source.getType().isAir()) { callback.accept(new OperationResult(false, "请先手持替换物品")); return; }
         ItemStack snapshot = source.clone();
         int amount = Math.max(1, Math.min(64, snapshot.getAmount()));
@@ -296,7 +268,6 @@ public final class CompensationManager {
     }
 
     private List<Plan> decode(List<RawPlan> rows) {
-        if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Compensation items must decode on the server thread");
         List<Plan> result = new ArrayList<>(rows.size());
         for (RawPlan row : rows) {
             ItemStack item;
@@ -320,7 +291,7 @@ public final class CompensationManager {
     public long now() { return System.currentTimeMillis() / 1000L; }
 
     private void sync(Runnable action) {
-        Bukkit.getScheduler().runTask(plugin, action);
+        plugin.scheduler().runGlobal(action);
     }
 
     @FunctionalInterface private interface SqlAction { void run(Connection conn) throws SQLException; }

@@ -975,7 +975,7 @@ public final class PoliticGui implements InventoryHolder {
 
             event.setCancelled(true);
             String msg = event.getMessage().trim();
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 Player player = Bukkit.getPlayer(playerId);
                 if (player == null) return;
                 if (msg.equalsIgnoreCase("cancel")) {

@@ -51,7 +51,7 @@ public final class KsCore extends JavaPlugin {
 
         // 注册公告栏游戏命令 /announce
         if (getCommand("announce") != null) {
-            getCommand("announce").setExecutor(new AnnounceCommand(announcementManager, ksConfig));
+            getCommand("announce").setExecutor(new AnnounceCommand(this, announcementManager, ksConfig));
         }
 
         getLogger().info("ks-core 已启用。Web 网关: " +

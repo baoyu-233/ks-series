@@ -34,18 +34,22 @@ public final class PurchaseOrderManager {
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
             try (Statement st = conn.createStatement()) {
-                st.execute("CREATE TABLE IF NOT EXISTS ks_eco_purchase_orders (id TEXT PRIMARY KEY, buyer_uuid TEXT NOT NULL, buyer_name TEXT NOT NULL, item_material TEXT NOT NULL, item_signature TEXT, item_data BLOB NOT NULL, exact_nbt INTEGER NOT NULL DEFAULT 0, unit_price REAL NOT NULL, remaining INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE', created_at INTEGER NOT NULL)");
-                st.execute("CREATE TABLE IF NOT EXISTS ks_eco_purchase_order_pending_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, buyer_uuid TEXT NOT NULL, item_data BLOB NOT NULL, item_material TEXT NOT NULL, quantity INTEGER NOT NULL, source TEXT NOT NULL, stored_at INTEGER NOT NULL)");
+                st.execute("CREATE TABLE IF NOT EXISTS ks_eco_purchase_orders (id VARCHAR(64) PRIMARY KEY, buyer_uuid TEXT NOT NULL, buyer_name TEXT NOT NULL, item_material TEXT NOT NULL, item_signature TEXT, item_data BLOB NOT NULL, exact_nbt INTEGER NOT NULL DEFAULT 0, unit_price REAL NOT NULL, remaining INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE', created_at INTEGER NOT NULL)");
+                st.execute("CREATE TABLE IF NOT EXISTS ks_eco_purchase_order_pending_items (id VARCHAR(64) PRIMARY KEY, reservation_id TEXT, order_id TEXT NOT NULL, buyer_uuid TEXT NOT NULL, item_data BLOB NOT NULL, item_material TEXT NOT NULL, quantity INTEGER NOT NULL, source TEXT NOT NULL, stored_at INTEGER NOT NULL)");
+                try { st.execute("ALTER TABLE ks_eco_purchase_order_pending_items ADD COLUMN reservation_id TEXT"); }
+                catch (SQLException ignored) { }
             }
+            PurchaseOrderReservationStore.initialize(conn);
         } catch (SQLException e) {
             plugin.getLogger().warning("Purchase-order table initialization failed: " + e.getMessage());
         }
+        plugin.scheduler().runGlobalLater(this::recoverPendingReservations, 40L);
     }
 
     /** Snapshots Bukkit state and withdraws escrow on the server thread, then inserts the order on the DB lane. */
     public void createAsync(Player buyer, ItemStack template, boolean exactNbt, double unitPrice, int quantity,
                             Consumer<OperationResult> callback) {
-        requirePrimaryThread();
+        plugin.scheduler().requireEntityThread(buyer, "Purchase-order creation");
         if (buyer == null || template == null || template.getType().isAir()
                 || !Double.isFinite(unitPrice) || unitPrice <= 0 || unitPrice > MAX_UNIT_PRICE || quantity == 0) {
             callback.accept(OperationResult.fail("求购参数无效"));
@@ -92,7 +96,7 @@ public final class PurchaseOrderManager {
         try {
             plugin.asyncWorkPool().executeDatabase(() -> {
                 boolean inserted = insertOrder(request);
-                runOnMain(() -> {
+                runOnPlayer(request.buyerUuid(), () -> {
                     boolean refunded = true;
                     if (!inserted && request.escrow() > 0) {
                         refunded = refund(request.buyerUuid(), request.escrow(), "创建求购单数据库写入失败");
@@ -134,7 +138,6 @@ public final class PurchaseOrderManager {
     }
 
     public List<Order> materializeOrders(List<OrderSnapshot> snapshots) {
-        requirePrimaryThread();
         List<Order> result = new ArrayList<>(snapshots.size());
         for (OrderSnapshot snapshot : snapshots) {
             try {
@@ -157,7 +160,6 @@ public final class PurchaseOrderManager {
     }
 
     public int availableQuantity(Order order, ItemStack hand) {
-        requirePrimaryThread();
         if (order == null || hand == null || hand.getType().isAir()) return 0;
         int available;
         if (matches(order, hand)) {
@@ -177,7 +179,7 @@ public final class PurchaseOrderManager {
      */
     public void fulfillAsync(Player seller, Order order, ItemStack hand, int requestedQuantity,
                              Consumer<FulfillmentResult> callback) {
-        requirePrimaryThread();
+        plugin.scheduler().requireEntityThread(seller, "Purchase-order fulfillment");
         if (seller == null || order == null || hand == null || hand.getType().isAir()) {
             callback.accept(FulfillmentResult.fail("请先在主手持有符合求购条件的物品"));
             return;
@@ -234,7 +236,7 @@ public final class PurchaseOrderManager {
         }
 
         FulfillmentRequest request = new FulfillmentRequest(
-                seller.getUniqueId(), order.id(), order.buyerUuid(), quantity, payment,
+                UUID.randomUUID().toString(), seller.getUniqueId(), order.id(), order.buyerUuid(), quantity, payment,
                 order.remaining() < 0, originalHandData, updatedHandData, List.copyOf(storedStacks)
         );
         String callbackId = UUID.randomUUID().toString();
@@ -242,7 +244,7 @@ public final class PurchaseOrderManager {
         try {
             plugin.asyncWorkPool().executeDatabase(() -> {
                 ReservationResult reservation = reserveAndStore(request);
-                runOnMain(() -> settleReservation(request, reservation, callbackId));
+                runOnPlayer(request.sellerUuid(), () -> settleReservation(request, reservation, callbackId));
             });
         } catch (RejectedExecutionException rejected) {
             fulfillmentCallbacks.remove(callbackId);
@@ -252,7 +254,7 @@ public final class PurchaseOrderManager {
 
     /** Cancels on the database lane and performs the Vault refund only after returning to the server thread. */
     public void cancelAsync(Player buyer, Order order, Consumer<OperationResult> callback) {
-        requirePrimaryThread();
+        plugin.scheduler().requireEntityThread(buyer, "Purchase-order cancellation");
         if (buyer == null || order == null || !buyer.getUniqueId().equals(order.buyerUuid())) {
             callback.accept(OperationResult.fail("你不是该求购单的发布者"));
             return;
@@ -263,7 +265,7 @@ public final class PurchaseOrderManager {
         try {
             plugin.asyncWorkPool().executeDatabase(() -> {
                 CancelReservation cancelled = cancelAndGetRemaining(order.id(), buyerUuid);
-                runOnMain(() -> settleCancellation(order.id(), buyerUuid, cancelled, callbackId));
+                runOnPlayer(buyerUuid, () -> settleCancellation(order.id(), buyerUuid, cancelled, callbackId));
             });
         } catch (RejectedExecutionException rejected) {
             operationCallbacks.remove(callbackId);
@@ -321,18 +323,25 @@ public final class PurchaseOrderManager {
                     }
                 }
 
+                PurchaseOrderReservationStore.insert(conn,
+                        new PurchaseOrderReservationStore.Reservation(request.reservationId(), request.orderId(),
+                                request.buyerUuid(), request.sellerUuid(), request.quantity(), request.payment(),
+                                request.unlimited(), PurchaseOrderReservationStore.RESERVED, ""),
+                        request.originalHandData(), request.updatedHandData(), System.currentTimeMillis() / 1000);
+
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT INTO ks_eco_purchase_order_pending_items (id,order_id,buyer_uuid,item_data,item_material,quantity,source,stored_at) VALUES (?,?,?,?,?,?,?,?)")) {
+                        "INSERT INTO ks_eco_purchase_order_pending_items (id,reservation_id,order_id,buyer_uuid,item_data,item_material,quantity,source,stored_at) VALUES (?,?,?,?,?,?,?,?,?)")) {
                     long now = System.currentTimeMillis() / 1000;
                     for (StoredStack stack : request.storedStacks()) {
                         ps.setString(1, stack.id());
-                        ps.setString(2, request.orderId());
-                        ps.setString(3, request.buyerUuid().toString());
-                        ps.setBytes(4, stack.itemData());
-                        ps.setString(5, stack.material());
-                        ps.setInt(6, stack.quantity());
-                        ps.setString(7, "PURCHASE_ORDER:" + request.orderId());
-                        ps.setLong(8, now);
+                        ps.setString(2, request.reservationId());
+                        ps.setString(3, request.orderId());
+                        ps.setString(4, request.buyerUuid().toString());
+                        ps.setBytes(5, stack.itemData());
+                        ps.setString(6, stack.material());
+                        ps.setInt(7, stack.quantity());
+                        ps.setString(8, "PURCHASE_ORDER:" + request.orderId());
+                        ps.setLong(9, now);
                         ps.addBatch();
                     }
                     ps.executeBatch();
@@ -353,7 +362,6 @@ public final class PurchaseOrderManager {
     }
 
     private void settleReservation(FulfillmentRequest request, ReservationResult reservation, String callbackId) {
-        requirePrimaryThread();
         if (!reservation.success()) {
             completeFulfillment(callbackId, FulfillmentResult.fail(reservation.error()));
             return;
@@ -385,22 +393,79 @@ public final class PurchaseOrderManager {
 
         boolean buyerCharged = false;
         if (request.unlimited()) {
+            if (!transitionReservation(request.reservationId(), PurchaseOrderReservationStore.RESERVED,
+                    PurchaseOrderReservationStore.BUYER_CHARGE_CLAIMED, "")) {
+                compensateAsync(request, reservation.storageIds(), false,
+                        FulfillmentResult.fail("无法认领求购方扣款，交易已取消"), callbackId);
+                return;
+            }
             OfflinePlayer buyer = Bukkit.getOfflinePlayer(request.buyerUuid());
-            if (!plugin.vaultHook().has(buyer, request.payment())
-                    || !plugin.vaultHook().withdraw(buyer, request.payment())) {
+            final boolean withdrawn;
+            try {
+                withdrawn = plugin.vaultHook().has(buyer, request.payment())
+                        && plugin.vaultHook().withdraw(buyer, request.payment());
+            } catch (Throwable uncertain) {
+                markReservationReview(request.reservationId(), PurchaseOrderReservationStore.BUYER_CHARGE_CLAIMED,
+                        "buyer withdrawal outcome unknown: " + safeMessage(uncertain));
+                completeFulfillment(callbackId, FulfillmentResult.fail(
+                        "求购方扣款结果未知，交易已转人工核对"));
+                return;
+            }
+            if (!withdrawn) {
+                transitionReservation(request.reservationId(), PurchaseOrderReservationStore.BUYER_CHARGE_CLAIMED,
+                        PurchaseOrderReservationStore.RESERVED, "buyer withdrawal rejected");
                 compensateAsync(request, reservation.storageIds(), false,
                         FulfillmentResult.fail("求购方余额不足"), callbackId);
+                return;
+            }
+            if (!transitionReservation(request.reservationId(), PurchaseOrderReservationStore.BUYER_CHARGE_CLAIMED,
+                    PurchaseOrderReservationStore.BUYER_CHARGED, "")) {
+                markReservationReview(request.reservationId(), PurchaseOrderReservationStore.BUYER_CHARGE_CLAIMED,
+                        "buyer charged but state finalization failed");
+                completeFulfillment(callbackId, FulfillmentResult.fail(
+                        "求购方已扣款但结算状态异常，请联系管理员"));
                 return;
             }
             buyerCharged = true;
         }
 
+        String prePayoutState = buyerCharged
+                ? PurchaseOrderReservationStore.BUYER_CHARGED
+                : PurchaseOrderReservationStore.RESERVED;
+        if (!transitionReservation(request.reservationId(), prePayoutState,
+                PurchaseOrderReservationStore.SELLER_PAYOUT_CLAIMED, "")) {
+            compensateAsync(request, reservation.storageIds(), buyerCharged,
+                    FulfillmentResult.fail("无法认领卖家结算，交易已取消"), callbackId);
+            return;
+        }
         seller.getInventory().setItemInMainHand(updatedHand == null ? null : updatedHand.clone());
-        if (!plugin.vaultHook().deposit(seller, request.payment())) {
+        final boolean sellerPaid;
+        try {
+            sellerPaid = plugin.vaultHook().deposit(seller, request.payment());
+        } catch (Throwable uncertain) {
+            markReservationReview(request.reservationId(), PurchaseOrderReservationStore.SELLER_PAYOUT_CLAIMED,
+                    "seller payout outcome unknown: " + safeMessage(uncertain));
+            seller.updateInventory();
+            completeFulfillment(callbackId, FulfillmentResult.fail(
+                    "卖家付款结果未知，物品与款项已转人工核对"));
+            return;
+        }
+        if (!sellerPaid) {
             seller.getInventory().setItemInMainHand(originalHand.clone());
             seller.updateInventory();
+            transitionReservation(request.reservationId(), PurchaseOrderReservationStore.SELLER_PAYOUT_CLAIMED,
+                    prePayoutState, "seller payout rejected");
             compensateAsync(request, reservation.storageIds(), buyerCharged,
                     FulfillmentResult.fail("卖家收款失败，物品已恢复"), callbackId);
+            return;
+        }
+        if (!transitionReservation(request.reservationId(), PurchaseOrderReservationStore.SELLER_PAYOUT_CLAIMED,
+                PurchaseOrderReservationStore.SELLER_PAID, "")) {
+            markReservationReview(request.reservationId(), PurchaseOrderReservationStore.SELLER_PAYOUT_CLAIMED,
+                    "seller paid but state finalization failed");
+            seller.updateInventory();
+            completeFulfillment(callbackId, FulfillmentResult.fail(
+                    "卖家已收款但交付状态异常，请联系管理员"));
             return;
         }
         seller.updateInventory();
@@ -415,7 +480,7 @@ public final class PurchaseOrderManager {
         try {
             plugin.asyncWorkPool().executeDatabase(() -> {
                 boolean finalized = finalizeReservation(request, pendingIds);
-                runOnMain(() -> {
+                runOnPlayer(request.sellerUuid(), () -> {
                     if (!finalized) {
                         plugin.getLogger().severe("Purchase-order delivery finalization requires administrator review: order="
                                 + request.orderId() + " seller=" + request.sellerUuid());
@@ -427,6 +492,7 @@ public final class PurchaseOrderManager {
                 });
             });
         } catch (RejectedExecutionException rejected) {
+            if (scheduleDatabaseRetry(() -> finalizeReservationAsync(request, pendingIds, success, callbackId))) return;
             plugin.getLogger().severe("Purchase-order delivery finalization queue rejected: order=" + request.orderId());
             completeFulfillment(callbackId,
                     FulfillmentResult.fail("卖家已收款，但买家物品入账无法排队，请联系管理员"));
@@ -458,6 +524,11 @@ public final class PurchaseOrderManager {
                         if (delete.executeUpdate() != 1) throw new SQLException("Failed to clear pending delivery " + id);
                     }
                 }
+                if (!PurchaseOrderReservationStore.transition(conn, request.reservationId(),
+                        PurchaseOrderReservationStore.SELLER_PAID,
+                        PurchaseOrderReservationStore.FINALIZED, "", System.currentTimeMillis() / 1000)) {
+                    throw new SQLException("Reservation finalization state changed");
+                }
                 conn.commit();
                 return true;
             } catch (SQLException e) {
@@ -478,10 +549,11 @@ public final class PurchaseOrderManager {
         try {
             plugin.asyncWorkPool().executeDatabase(() -> {
                 CompensationResult compensation = compensateReservation(request, storageIds, buyerCharged);
-                runOnMain(() -> {
+                runOnPlayer(request.sellerUuid(), () -> {
                     boolean refunded = true;
                     if (compensation.success() && compensation.refundBuyer()) {
-                        refunded = refund(request.buyerUuid(), request.payment(), "求购成交补偿");
+                        refunded = refundReservedBuyer(request.reservationId(), request.buyerUuid(),
+                                request.payment(), "求购成交补偿");
                     }
                     if (!compensation.success() || !refunded) {
                         plugin.getLogger().severe("Purchase-order compensation requires administrator review: order="
@@ -494,6 +566,7 @@ public final class PurchaseOrderManager {
                 });
             });
         } catch (RejectedExecutionException rejected) {
+            if (scheduleDatabaseRetry(() -> compensateAsync(request, storageIds, buyerCharged, failure, callbackId))) return;
             plugin.getLogger().severe("Purchase-order compensation queue rejected: order=" + request.orderId());
             completeFulfillment(callbackId,
                     FulfillmentResult.fail(failure.message() + "；自动补偿排队失败，请联系管理员"));
@@ -526,9 +599,18 @@ public final class PurchaseOrderManager {
                         restored = ps.executeUpdate() == 1;
                     }
                 }
+                String expected = buyerCharged
+                        ? PurchaseOrderReservationStore.BUYER_CHARGED
+                        : PurchaseOrderReservationStore.RESERVED;
+                String next = buyerCharged
+                        ? PurchaseOrderReservationStore.BUYER_REFUND_READY
+                        : PurchaseOrderReservationStore.COMPENSATED;
+                if (!PurchaseOrderReservationStore.transition(conn, request.reservationId(), expected,
+                        next, "fulfillment compensated", System.currentTimeMillis() / 1000)) {
+                    throw new SQLException("Reservation compensation state changed");
+                }
                 conn.commit();
-                return new CompensationResult(true,
-                        request.unlimited() ? buyerCharged : !restored);
+                return new CompensationResult(true, buyerCharged);
             } catch (SQLException e) {
                 rollback(conn);
                 plugin.getLogger().warning("Compensate purchase-order fulfillment failed: " + e.getMessage());
@@ -581,9 +663,154 @@ public final class PurchaseOrderManager {
         }
     }
 
+    private void recoverPendingReservations() {
+        if (!plugin.scheduler().isGlobalThread()) {
+            throw new IllegalStateException("Purchase-order recovery must run on the global tick thread");
+        }
+        try {
+            plugin.asyncWorkPool().executeDatabase(() -> {
+                try {
+                    int legacyPending = 0;
+                    int review = 0;
+                    List<PurchaseOrderReservationStore.Reservation> refunds = new ArrayList<>();
+                    try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+                        if (connection == null) return;
+                        try (PreparedStatement legacy = connection.prepareStatement(
+                                "SELECT COUNT(*) FROM ks_eco_purchase_order_pending_items " +
+                                        "WHERE reservation_id IS NULL OR reservation_id=''")) {
+                            try (ResultSet rows = legacy.executeQuery()) {
+                                if (rows.next()) legacyPending = rows.getInt(1);
+                            }
+                        }
+                        review = PurchaseOrderReservationStore.markInterruptedClaimsForReview(
+                                connection, System.currentTimeMillis() / 1000);
+                    }
+                    List<PurchaseOrderReservationStore.Reservation> open;
+                    try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+                        if (connection == null) return;
+                        open = PurchaseOrderReservationStore.open(connection);
+                    }
+                    for (PurchaseOrderReservationStore.Reservation reservation : open) {
+                        switch (reservation.status()) {
+                            case PurchaseOrderReservationStore.RESERVED ->
+                                    compensateRecoveredReservation(reservation, false);
+                            case PurchaseOrderReservationStore.BUYER_CHARGED -> {
+                                if (compensateRecoveredReservation(reservation, true)) refunds.add(reservation);
+                            }
+                            case PurchaseOrderReservationStore.SELLER_PAID ->
+                                    finalizeRecoveredReservation(reservation);
+                            case PurchaseOrderReservationStore.BUYER_REFUND_READY -> refunds.add(reservation);
+                            default -> { }
+                        }
+                    }
+                    int finalLegacyPending = legacyPending;
+                    int finalReview = review;
+                    runOnMain(() -> {
+                        if (finalLegacyPending > 0) {
+                            plugin.getLogger().severe("Purchase-order legacy pending rows require manual review: "
+                                    + finalLegacyPending);
+                        }
+                        if (finalReview > 0) {
+                            plugin.getLogger().severe("Purchase-order external outcomes require manual review: "
+                                    + finalReview);
+                        }
+                        for (PurchaseOrderReservationStore.Reservation reservation : refunds) {
+                            refundReservedBuyer(reservation.id(), reservation.buyerUuid(),
+                                    reservation.payment(), "求购单启动恢复退款");
+                        }
+                    });
+                } catch (SQLException failure) {
+                    plugin.getLogger().warning("Purchase-order startup recovery failed: " + failure.getMessage());
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            if (scheduleDatabaseRetry(this::recoverPendingReservations)) return;
+            plugin.getLogger().severe("Purchase-order startup recovery queue rejected");
+        }
+    }
+
+    private boolean compensateRecoveredReservation(PurchaseOrderReservationStore.Reservation reservation,
+                                                   boolean buyerCharged) {
+        try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+            if (connection == null) return false;
+            connection.setAutoCommit(false);
+            try {
+                try (PreparedStatement delete = connection.prepareStatement(
+                        "DELETE FROM ks_eco_purchase_order_pending_items WHERE reservation_id=?")) {
+                    delete.setString(1, reservation.id());
+                    delete.executeUpdate();
+                }
+                if (!reservation.unlimited()) {
+                    try (PreparedStatement restore = connection.prepareStatement(
+                            "UPDATE ks_eco_purchase_orders SET remaining=remaining+? " +
+                                    "WHERE id=? AND status='ACTIVE'")) {
+                        restore.setInt(1, reservation.quantity());
+                        restore.setString(2, reservation.orderId());
+                        if (restore.executeUpdate() != 1) throw new SQLException("order quantity restore failed");
+                    }
+                }
+                String expected = buyerCharged
+                        ? PurchaseOrderReservationStore.BUYER_CHARGED
+                        : PurchaseOrderReservationStore.RESERVED;
+                String next = buyerCharged
+                        ? PurchaseOrderReservationStore.BUYER_REFUND_READY
+                        : PurchaseOrderReservationStore.COMPENSATED;
+                if (!PurchaseOrderReservationStore.transition(connection, reservation.id(), expected, next,
+                        "startup recovery compensation", System.currentTimeMillis() / 1000)) {
+                    throw new SQLException("reservation recovery state changed");
+                }
+                connection.commit();
+                return true;
+            } catch (SQLException | RuntimeException failure) {
+                rollback(connection);
+                throw failure;
+            } finally {
+                restoreAutoCommit(connection);
+            }
+        } catch (SQLException failure) {
+            plugin.getLogger().warning("Compensate recovered purchase order failed: " + failure.getMessage());
+            return false;
+        }
+    }
+
+    private boolean finalizeRecoveredReservation(PurchaseOrderReservationStore.Reservation reservation) {
+        try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+            if (connection == null) return false;
+            connection.setAutoCommit(false);
+            try {
+                try (PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO ks_eco_storage (id,owner_uuid,item_data,item_material,quantity,source,stored_at) " +
+                                "SELECT id,buyer_uuid,item_data,item_material,quantity,source,stored_at " +
+                                "FROM ks_eco_purchase_order_pending_items WHERE reservation_id=?")) {
+                    insert.setString(1, reservation.id());
+                    if (insert.executeUpdate() <= 0) throw new SQLException("recovered delivery rows missing");
+                }
+                try (PreparedStatement delete = connection.prepareStatement(
+                        "DELETE FROM ks_eco_purchase_order_pending_items WHERE reservation_id=?")) {
+                    delete.setString(1, reservation.id());
+                    if (delete.executeUpdate() <= 0) throw new SQLException("recovered pending rows not cleared");
+                }
+                if (!PurchaseOrderReservationStore.transition(connection, reservation.id(),
+                        PurchaseOrderReservationStore.SELLER_PAID,
+                        PurchaseOrderReservationStore.FINALIZED, "", System.currentTimeMillis() / 1000)) {
+                    throw new SQLException("recovered delivery state changed");
+                }
+                connection.commit();
+                return true;
+            } catch (SQLException | RuntimeException failure) {
+                rollback(connection);
+                throw failure;
+            } finally {
+                restoreAutoCommit(connection);
+            }
+        } catch (SQLException failure) {
+            plugin.getLogger().warning("Finalize recovered purchase order failed: " + failure.getMessage());
+            return false;
+        }
+    }
+
     private void settleCancellation(String orderId, UUID buyerUuid, CancelReservation cancelled,
                                     String callbackId) {
-        requirePrimaryThread();
         if (!cancelled.success()) {
             completeOperation(callbackId, OperationResult.fail("撤销失败，求购单可能已经结束"));
             return;
@@ -594,27 +821,41 @@ public final class PurchaseOrderManager {
             return;
         }
 
+        reactivateCancellationAsync(orderId, buyerUuid, callbackId);
+    }
+
+    private void reactivateCancellationAsync(String orderId, UUID buyerUuid, String callbackId) {
         try {
             plugin.asyncWorkPool().executeDatabase(() -> {
                 boolean restored = reactivateCancelledOrder(orderId, buyerUuid);
-                runOnMain(() -> completeOperation(callbackId, restored
+                runOnPlayer(buyerUuid, () -> completeOperation(callbackId, restored
                         ? OperationResult.fail("退款失败，求购单已恢复为进行中")
                         : OperationResult.fail("退款与订单恢复均失败，请联系管理员")));
             });
         } catch (RejectedExecutionException rejected) {
+            if (scheduleDatabaseRetry(() -> reactivateCancellationAsync(orderId, buyerUuid, callbackId))) return;
             plugin.getLogger().severe("Purchase-order cancellation rollback queue rejected: order=" + orderId);
             completeOperation(callbackId, OperationResult.fail("退款失败且恢复操作无法排队，请联系管理员"));
         }
     }
 
+    private boolean scheduleDatabaseRetry(Runnable retry) {
+        try {
+            plugin.scheduler().runGlobalLater(retry, 10L);
+            return true;
+        } catch (RuntimeException schedulingFailure) {
+            plugin.getLogger().severe("Purchase-order database retry could not be scheduled: "
+                    + safeMessage(schedulingFailure));
+            return false;
+        }
+    }
+
     private void completeOperation(String callbackId, OperationResult result) {
-        requirePrimaryThread();
         Consumer<OperationResult> callback = operationCallbacks.remove(callbackId);
         if (callback != null) callback.accept(result);
     }
 
     private void completeFulfillment(String callbackId, FulfillmentResult result) {
-        requirePrimaryThread();
         Consumer<FulfillmentResult> callback = fulfillmentCallbacks.remove(callbackId);
         if (callback != null) callback.accept(result);
     }
@@ -675,8 +916,56 @@ public final class PurchaseOrderManager {
         return refunded;
     }
 
+    private boolean transitionReservation(String reservationId, String expected, String next, String error) {
+        try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+            return connection != null && PurchaseOrderReservationStore.transition(connection,
+                    reservationId, expected, next, error, System.currentTimeMillis() / 1000);
+        } catch (SQLException failure) {
+            plugin.getLogger().warning("Purchase-order reservation transition failed: " + failure.getMessage());
+            return false;
+        }
+    }
+
+    private void markReservationReview(String reservationId, String expected, String error) {
+        if (!transitionReservation(reservationId, expected,
+                PurchaseOrderReservationStore.REVIEW_REQUIRED, error)) {
+            plugin.getLogger().severe("Purchase-order reservation review state could not be persisted: "
+                    + reservationId + " error=" + error);
+        }
+    }
+
+    private boolean refundReservedBuyer(String reservationId, UUID buyerUuid, double amount, String reason) {
+        if (!transitionReservation(reservationId, PurchaseOrderReservationStore.BUYER_REFUND_READY,
+                PurchaseOrderReservationStore.BUYER_REFUND_CLAIMED, "")) return false;
+        final boolean refunded;
+        try {
+            refunded = refund(buyerUuid, amount, reason);
+        } catch (Throwable uncertain) {
+            markReservationReview(reservationId, PurchaseOrderReservationStore.BUYER_REFUND_CLAIMED,
+                    "buyer refund outcome unknown: " + safeMessage(uncertain));
+            return false;
+        }
+        if (refunded) {
+            return transitionReservation(reservationId, PurchaseOrderReservationStore.BUYER_REFUND_CLAIMED,
+                    PurchaseOrderReservationStore.COMPENSATED, "");
+        }
+        transitionReservation(reservationId, PurchaseOrderReservationStore.BUYER_REFUND_CLAIMED,
+                PurchaseOrderReservationStore.BUYER_REFUND_READY, "buyer refund rejected");
+        return false;
+    }
+
+    private static String safeMessage(Throwable failure) {
+        return failure == null || failure.getMessage() == null ? "unknown" : failure.getMessage();
+    }
+
     private void runOnMain(Runnable task) {
-        Bukkit.getScheduler().runTask(plugin, task);
+        plugin.scheduler().runGlobal(task);
+    }
+
+    private void runOnPlayer(UUID playerUuid, Runnable task) {
+        plugin.scheduler().runPlayer(playerUuid, ignored -> task.run(), () -> {
+            plugin.getLogger().warning("Purchase-order player callback retired: " + playerUuid);
+        });
     }
 
     private static boolean sameStack(ItemStack left, ItemStack right) {
@@ -699,11 +988,6 @@ public final class PurchaseOrderManager {
         }
     }
 
-    private static void requirePrimaryThread() {
-        if (!Bukkit.isPrimaryThread()) {
-            throw new IllegalStateException("Purchase-order Bukkit operations must run on the server thread");
-        }
-    }
 
     public record Order(String id, UUID buyerUuid, String buyerName, org.bukkit.Material material, String signature,
                         ItemStack template, boolean exactNbt, double unitPrice, int remaining) {
@@ -781,6 +1065,7 @@ public final class PurchaseOrderManager {
     }
 
     private record FulfillmentRequest(
+            String reservationId,
             UUID sellerUuid,
             String orderId,
             UUID buyerUuid,

@@ -1,0 +1,34 @@
+ashen_forgeward_talisman:
+  item:
+    type: TALISMAN
+    id: KS_FORGEWARD_TALISMAN
+  trigger: SNEAK_SWAP_HANDS
+  cooldown-seconds: 55
+  mechanics:
+    ANCHOR_GUARD:
+      duration-millis: 4000
+      damage-multiplier: 0.82
+
+stormcliff_wayfinder_talisman:
+  item:
+    type: TALISMAN
+    id: KS_WAYFINDER_TALISMAN
+  trigger: SNEAK_SWAP_HANDS
+  cooldown-seconds: 50
+  mechanics:
+    SIGNAL_AURA:
+      range: 10.0
+      duration-ticks: 80
+      speed-amplifier: 1
+      haste-amplifier: 0
+
+stormcliff_stormshelter_talisman:
+  item:
+    type: TALISMAN
+    id: KS_STORMSHELTER_TALISMAN
+  trigger: SNEAK_SWAP_HANDS
+  cooldown-seconds: 70
+  mechanics:
+    ANCHOR_GUARD:
+      duration-millis: 2000
+      damage-multiplier: 0.65

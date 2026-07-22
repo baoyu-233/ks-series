@@ -108,8 +108,8 @@ public final class ExchangeGui implements InventoryHolder {
             build();
             if (player.isOnline()) player.openInventory(inventory);
         };
-        if (Bukkit.isPrimaryThread()) reopenTask.run();
-        else Bukkit.getScheduler().runTask(plugin, reopenTask);
+        if (plugin.scheduler().isEntityThread(player)) reopenTask.run();
+        else plugin.scheduler().runEntity(player, reopenTask, () -> { });
     }
 
     // ---- Build ----
@@ -648,7 +648,7 @@ public final class ExchangeGui implements InventoryHolder {
             if (!hasPending) return;
 
             event.setCancelled(true);
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 Player player = Bukkit.getPlayer(playerId);
                 if (player == null) {
                     pendingName.remove(playerId);

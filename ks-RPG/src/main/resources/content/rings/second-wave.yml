@@ -1,0 +1,38 @@
+ashen_coalheart_ring:
+  item:
+    type: RING
+    id: KS_RING_OF_COALHEART
+  mechanics:
+    LAST_STAND_ABSORPTION:
+      health-threshold: 0.22
+      cooldown-millis: 90000
+      absorption: 10.0
+
+ashen_temper_ring:
+  item:
+    type: RING
+    id: KS_RING_OF_TEMPER
+  mechanics:
+    LOW_HEALTH_RESISTANCE:
+      health-threshold: 0.28
+      cooldown-millis: 45000
+      duration-ticks: 100
+      amplifier: 0
+
+stormcliff_crosswind_ring:
+  item:
+    type: RING
+    id: KS_RING_OF_CROSSWIND
+  mechanics:
+    NEXT_ATTACK_ENABLE:
+      enabled: true
+    COOLDOWN_MULTIPLIER:
+      multiplier: 0.98
+
+stormcliff_static_echo_ring:
+  item:
+    type: RING
+    id: KS_RING_OF_STATIC_ECHO
+  mechanics:
+    MARK_RESONANCE:
+      cooldown-reduction-millis: 1800

@@ -69,6 +69,12 @@ public final class PoliticExtra implements KsEcoExtraModule {
         eco.getLogger().info("[政治系统] 模块已停用。");
     }
 
+    @Override
+    public void onCrossServerInvalidation(String namespace, String key) {
+        if (!"politic".equals(namespace) || eco == null || politicManager == null) return;
+        eco.asyncWorkPool().executeDatabase(politicManager::refreshSharedStateFromRemote);
+    }
+
     // --- public getters for EcoWebHandler reflection ---
     public PoliticManager politicManager() { return politicManager; }
     public ProposalManager proposalManager() { return proposalManager; }

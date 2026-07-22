@@ -8,6 +8,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Randomly acquires market listings priced below the protected market floor. */
@@ -35,7 +36,7 @@ public final class OfficialMarketSweepManager {
                     sweepRunning.set(false);
                     return;
                 }
-                Bukkit.getScheduler().runTask(plugin, () -> processNext(sample, 0,
+                plugin.scheduler().runGlobal(() -> processNext(sample, 0,
                         plugin.marketValueService().newMarketFloorSession()));
             } catch (RuntimeException exception) {
                 sweepRunning.set(false);
@@ -66,7 +67,7 @@ public final class OfficialMarketSweepManager {
             sweepRunning.set(false);
             return;
         }
-        Bukkit.getScheduler().runTaskLater(plugin,
+        plugin.scheduler().runGlobalLater(
                 () -> processNext(sample, next, valuationSession), 1L);
     }
 
@@ -97,7 +98,7 @@ public final class OfficialMarketSweepManager {
             }
             ListingManager.Listing loadedListing = latest;
             RuntimeException failure = loadFailure;
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runGlobal(() -> {
                 if (failure != null) {
                     plugin.getLogger().warning("Could not load market listing during official sweep: "
                             + failure.getMessage());
@@ -156,7 +157,7 @@ public final class OfficialMarketSweepManager {
             }
             OfficialWarehouseManager.Acquisition claimed = acquisition;
             RuntimeException failure = valuationFailure;
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            Runnable settle = () -> {
                 try {
                     if (failure != null) throw failure;
                     if (claimed != null) settleAcquisition(claimed);
@@ -166,7 +167,9 @@ public final class OfficialMarketSweepManager {
                 } finally {
                     finishEvaluation(listingId, completion);
                 }
-            });
+            };
+            if (claimed != null) plugin.scheduler().runEntityOrGlobal(claimed.sellerUuid(), settle);
+            else plugin.scheduler().runGlobal(settle);
         });
     }
 
@@ -196,9 +199,21 @@ public final class OfficialMarketSweepManager {
             });
             return;
         }
-        plugin.asyncWorkPool().executeDatabase(() -> plugin.priceEngine().recordTrade(
-                acquisition.material(), acquisition.quantity(), acquisition.unitPrice(), "OFFICIAL",
-                acquisition.sellerUuid().toString(), "OFFICIAL_MARKET_SWEEP"));
+        try {
+            plugin.asyncWorkPool().executeDatabase(() -> {
+                if (!plugin.officialWarehouseManager().markAcquisitionPaid(acquisition)) {
+                    plugin.getLogger().severe("Paid official acquisition remains pending settlement: "
+                            + acquisition.listingId());
+                    return;
+                }
+                plugin.priceEngine().recordTrade(
+                        acquisition.material(), acquisition.quantity(), acquisition.unitPrice(), "OFFICIAL",
+                        acquisition.sellerUuid().toString(), "OFFICIAL_MARKET_SWEEP");
+            });
+        } catch (RejectedExecutionException rejected) {
+            plugin.getLogger().severe("Paid official acquisition finalization queue rejected: "
+                    + acquisition.listingId());
+        }
         var onlineSeller = Bukkit.getPlayer(acquisition.sellerUuid());
         if (onlineSeller != null) {
             onlineSeller.sendMessage("§a你的低价挂单已由官方收购，收入: "

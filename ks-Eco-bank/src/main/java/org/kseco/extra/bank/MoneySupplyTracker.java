@@ -31,17 +31,7 @@ public final class MoneySupplyTracker {
     private void createTable() {
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
-            try (Statement stmt = conn.createStatement()) {
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_bank_money_supply (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        m0 REAL NOT NULL,
-                        m1 REAL NOT NULL,
-                        m2 REAL NOT NULL,
-                        snapshot_at INTEGER NOT NULL
-                    )
-                """);
-            }
+            BankSchema.ensureMoneySupplyTable(conn);
         } catch (SQLException e) {
             eco.getLogger().warning("[货币供应] 创建表失败: " + e.getMessage());
         }
@@ -67,7 +57,7 @@ public final class MoneySupplyTracker {
             throw new IllegalStateException("Money supply capture must run on the server thread");
         }
         double m0 = estimateM0();
-        eco.asyncWorkPool().execute(() -> {
+        eco.asyncWorkPool().executeDatabase(() -> {
             double m1Deposits = getTotalDemandDeposits();
             double m2Deposits = getTotalTimeDeposits();
             persistSnapshot(m0, m1Deposits, m2Deposits);
@@ -133,8 +123,23 @@ public final class MoneySupplyTracker {
     }
 
     private double getTotalTimeDeposits() {
-        // 简化：定期存款暂时与活期合并（未来可扩展）
-        return 0;
+        double total = 0;
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return 0;
+            try (PreparedStatement statement = conn.prepareStatement(
+                    "SELECT player_uuid,principal FROM ks_bank_term_deposits WHERE status='ACTIVE'");
+                 ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    String playerUuid = rows.getString("player_uuid");
+                    if (!EconomyStatsFilter.shouldExcludePlayer(eco, playerUuid, null)) {
+                        total += rows.getDouble("principal");
+                    }
+                }
+            }
+        } catch (SQLException failure) {
+            eco.getLogger().warning("[货币供应] 读取定期存款失败: " + failure.getMessage());
+        }
+        return total;
     }
 
     public record MoneySupply(double m0, double m1, double m2) {}

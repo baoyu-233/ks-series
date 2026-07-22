@@ -203,7 +203,7 @@ public final class OfficialBuyAdminGui implements InventoryHolder {
             if (!PENDING.containsKey(playerId)) return;
             event.setCancelled(true);
             String input = event.getMessage().trim();
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 PendingPrice pending = PENDING.remove(playerId);
                 Player player = Bukkit.getPlayer(playerId);
                 if (pending == null || player == null) return;

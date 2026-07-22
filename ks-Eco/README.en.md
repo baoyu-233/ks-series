@@ -17,6 +17,8 @@ test-trade intervention.
 - `/ks-Eco` Web management routes for economy and optional Extra modules. Personal wealth rankings exclude central-bank
   and system identities.
 - Runtime loading of JARs from `plugins/ks-Eco/extra/`.
+- JDBC outbox/inbox, database polling, heartbeats, versioned cache invalidation, idempotent operation claims, and fenced leases.
+- Exact minor-unit currency ledger, idempotent entries, one-way exchange rules, and backward-compatible market/limited-sale `currency_id` fields.
 
 ## Thread And Settlement Boundary
 
@@ -25,6 +27,15 @@ test-trade intervention.
   so buyers cannot claim delivery before seller settlement.
 - Blind-box administration loads raw rows on the database lane and decodes `ItemStack` values only on the server thread.
 - A durable journal is still planned for the process-crash window between SQLite commits and external Vault settlement.
+
+## Current Wiring Limits
+
+- SQLite remains the local default. Most existing business SQL still contains SQLite-specific syntax and has not been
+  integration-tested against live MySQL, MariaDB, or PostgreSQL instances.
+- The outbox/inbox/poller/cache/lease layer is tested infrastructure, but it is not fully wired into P0 balance,
+  market, storage, blind-box, enterprise, or pricing settlement paths.
+- `CASH` remains owned by Vault or the built-in economy. Legacy rows default to `CASH`; non-`CASH` market and
+  limited-sale settlement fails before charging until the runtime bridge is connected.
 
 ## Commands
 
@@ -51,4 +62,7 @@ totalOffset = clamp(driftValue * maxFluctuation - supplyPressure * maxFluctuatio
 officialBuy = round(basePrice * (1 + totalOffset), 2)
 ```
 
-Test trades are marked `is_test` and do not contaminate official history. Build with `cd ks-Eco && mvn clean package`.
+Test trades are marked `is_test` and do not contaminate official history. On 2026-07-18, Maven test and package/install
+passed; Surefire found no framework tests, while five standalone currency/cross-server/SQL/polling contract suites passed.
+All 22 Web JavaScript files, source YAML, and packaged/local Web resource checks passed. No JAR was deployed and Paper
+was not started.

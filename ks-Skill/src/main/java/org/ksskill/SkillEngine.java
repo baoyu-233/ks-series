@@ -26,6 +26,7 @@ public final class SkillEngine {
      * @param causeName 伤害类型名（DamageCause），非伤害触发传 null
      */
     public void run(Player player, TriggerType type, String causeName) {
+        if (!PlayerEligibility.isEligible(player)) return;
         var defs = registry.byTrigger(type);
         if (defs.isEmpty()) return;
         for (SkillDef def : defs) {

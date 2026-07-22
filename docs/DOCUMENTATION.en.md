@@ -16,6 +16,7 @@ companion. Every document should link to both versions at the top.
 | [指令参考](../COMMANDS.md) | [Command reference](../COMMANDS.en.md) |
 | [测试指南](../TESTING.md) | [Testing guide](../TESTING.en.md) |
 | [性能报告](../PERF_REPORT.md) | [Performance report](../PERF_REPORT.en.md) |
+| [2026-07-18 Bug Hunt 报告](BUG-HUNT-2026-07-18.md) | [2026-07-18 Bug Hunt report](BUG-HUNT-2026-07-18.en.md) |
 
 ## Knowledge Bases
 

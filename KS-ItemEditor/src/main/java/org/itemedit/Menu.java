@@ -30,6 +30,12 @@ public abstract class Menu implements InventoryHolder {
 
     public abstract void handle(InventoryClickEvent event);
 
+    boolean isOwnedBy(Player player) {
+        return player != null
+                && session.player() == player
+                && plugin.session(player) == session;
+    }
+
     public void open() {
         Player p = session.player();
         if (p == null) return;

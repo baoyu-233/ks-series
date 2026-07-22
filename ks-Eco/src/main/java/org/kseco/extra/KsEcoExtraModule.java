@@ -28,4 +28,11 @@ public interface KsEcoExtraModule {
 
     /** 模块被停用时调用 */
     void onDisable();
+
+    /**
+     * Non-blocking cross-server cache signal delivered on Paper's server thread.
+     * Implementations that need SQL must enqueue it through KsEco's database lane.
+     */
+    default void onCrossServerInvalidation(String namespace, String key) {
+    }
 }

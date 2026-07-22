@@ -1,0 +1,67 @@
+# Regional sidegrades for the Ashen Frontier and Stormcliff.
+# These definitions intentionally reuse generic mechanics already owned by ks-RPG.
+ashen_cinderward_blade:
+  item:
+    type: SWORD
+    id: KS_CINDERWARD_BLADE
+  trigger: SNEAK_RIGHT_CLICK
+  cooldown-seconds: 10
+  mechanics:
+    ARC_SLASH:
+      range: 4.0
+      cone-cosine: 0.30
+      flat-damage: 6.0
+      attack-scale: 0.55
+      haste-ticks: 0
+      speed-ticks: 60
+      next-attack-duration-millis: 3500
+      next-attack-multiplier: 1.06
+
+ashen_forgebreaker_maul:
+  item:
+    type: HAMMER
+    id: KS_FORGEBREAKER_MAUL
+  trigger: SNEAK_RIGHT_CLICK
+  cooldown-seconds: 15
+  mechanics:
+    HAMMER_QUAKE:
+      range: 3.75
+      cone-cosine: 0.35
+      flat-damage: 9.0
+      attack-scale: 0.55
+      slow-ticks: 100
+      slow-amplifier: 2
+      weakness-duration-millis: 6000
+      weakness-damage-multiplier: 1.05
+
+stormcliff_stormrelay_pike:
+  item:
+    type: SPEAR
+    id: KS_STORMRELAY_PIKE
+  trigger: SNEAK_RIGHT_CLICK
+  cooldown-seconds: 14
+  mechanics:
+    RELAY_DASH:
+      dash-velocity: 1.35
+      dash-y: 0.24
+      range: 5.5
+      ray-radius: 0.55
+      flat-damage: 7.0
+      attack-scale: 0.50
+      relay-duration-millis: 4000
+      ally-damage-multiplier: 1.08
+      next-attack-duration-millis: 4000
+      next-attack-multiplier: 1.06
+
+stormcliff_stormwatch_bow:
+  item:
+    type: BOW
+    id: KS_STORMWATCH_BOW
+  trigger: SNEAK_RIGHT_CLICK
+  cooldown-seconds: 16
+  mechanics:
+    MARK_ARROW:
+      arrow-speed: 3.5
+      mark-duration-millis: 4000
+      ally-damage-multiplier: 1.06
+      pierce-level: 2

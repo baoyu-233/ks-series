@@ -199,7 +199,7 @@ public final class PriceInputMenu implements InventoryHolder {
 
             event.setCancelled(true); // Don't broadcast the price to chat
             String msg = event.getMessage().trim();
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 ItemStack handItem = pendingPriceInput.remove(playerId);
                 Player player = Bukkit.getPlayer(playerId);
                 if (handItem == null || player == null) return;

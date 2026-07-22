@@ -24,6 +24,11 @@ import java.util.*;
  */
 public final class TitleWebHandler implements HttpHandler {
 
+    private static final int MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024;
+    private static final int MAX_IA_IMAGE_DIMENSION = 1024;
+    private static final long MAX_IA_IMAGE_PIXELS = 1024L * 1024L;
+    private static final int MAX_IA_IMAGES_PER_REQUEST = 32;
+
     private final KsTitle plugin;
     private final Gson gson = new Gson();
 
@@ -82,6 +87,8 @@ public final class TitleWebHandler implements HttpHandler {
             }
 
             route(exchange, subPath, method, query);
+        } catch (IllegalArgumentException e) {
+            try { sendJson(exchange, 400, Map.of("error", e.getMessage())); } catch (IOException ignored) {}
         } catch (Exception e) {
             try { sendJson(exchange, 500, Map.of("error", e.getMessage())); } catch (IOException ignored) {}
         }
@@ -402,6 +409,15 @@ public final class TitleWebHandler implements HttpHandler {
         int scaleRatio = req.get("scaleRatio") != null ? (int) dbl(req, "scaleRatio") : 10;
 
         List<Map<String, Object>> images = (List<Map<String, Object>>) req.get("images");
+        if (images == null || images.isEmpty()) {
+            sendJson(exchange, 400, Map.of("error", "missing images"));
+            return;
+        }
+        if (images.size() > MAX_IA_IMAGES_PER_REQUEST) {
+            sendJson(exchange, 400, Map.of("error",
+                    "too many images; max " + MAX_IA_IMAGES_PER_REQUEST + " per request"));
+            return;
+        }
         List<IaImage> decodedImages = new ArrayList<>();
         for (Map<String, Object> img : images) {
             String name = sanitizeIaName(String.valueOf(img.get("name")));
@@ -409,8 +425,11 @@ public final class TitleWebHandler implements HttpHandler {
             if (name.isEmpty()) continue;
             try {
                 byte[] bytes = Base64.getDecoder().decode(base64);
-                BufferedImage image = ImageIO.read(new ByteArrayInputStream(bytes));
+                BufferedImage image = readBoundedImage(bytes, name);
                 if (image != null) decodedImages.add(new IaImage(name, image));
+            } catch (IllegalArgumentException e) {
+                sendJson(exchange, 400, Map.of("error", e.getMessage()));
+                return;
             } catch (Exception e) {
                 plugin.getLogger().warning("IA图片解码失败 " + name + ": " + e.getMessage());
             }
@@ -470,7 +489,11 @@ public final class TitleWebHandler implements HttpHandler {
 
     private String readBody(HttpExchange exchange) throws IOException {
         try (InputStream is = exchange.getRequestBody()) {
-            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
+            byte[] bytes = is.readNBytes(MAX_REQUEST_BODY_BYTES + 1);
+            if (bytes.length > MAX_REQUEST_BODY_BYTES) {
+                throw new IllegalArgumentException("request body exceeds " + MAX_REQUEST_BODY_BYTES + " bytes");
+            }
+            return new String(bytes, StandardCharsets.UTF_8);
         }
     }
 
@@ -502,8 +525,30 @@ public final class TitleWebHandler implements HttpHandler {
 
     private double dbl(Map<String, Object> m, String key) {
         Object v = m.get(key);
-        if (v instanceof Number n) return n.doubleValue();
-        try { return Double.parseDouble(String.valueOf(v)); } catch (Exception e) { return 0; }
+        double value;
+        if (v instanceof Number n) value = n.doubleValue();
+        else {
+            try { value = Double.parseDouble(String.valueOf(v)); }
+            catch (Exception e) { throw new IllegalArgumentException(key + " must be numeric"); }
+        }
+        if (!Double.isFinite(value)) throw new IllegalArgumentException(key + " must be finite");
+        return value;
+    }
+
+    private double boundedDouble(Map<String, Object> m, String key, double min, double max) {
+        double value = dbl(m, key);
+        if (value < min || value > max) {
+            throw new IllegalArgumentException(key + " must be between " + min + " and " + max);
+        }
+        return value;
+    }
+
+    private int intValue(Map<String, Object> m, String key, int min, int max) {
+        double value = dbl(m, key);
+        if (value != Math.rint(value) || value < min || value > max) {
+            throw new IllegalArgumentException(key + " must be an integer between " + min + " and " + max);
+        }
+        return (int) value;
     }
 
     private boolean bool(Map<String, Object> m, String key) {
@@ -517,7 +562,7 @@ public final class TitleWebHandler implements HttpHandler {
             .replaceAll("[^a-z0-9_-]+", "_")
             .replaceAll("_+", "_")
             .replaceAll("^[-_]+|[-_]+$", "");
-        return safe;
+        return safe.length() <= 64 ? safe : safe.substring(0, 64);
     }
 
     private record IaImage(String name, BufferedImage image) {}
@@ -539,6 +584,34 @@ public final class TitleWebHandler implements HttpHandler {
         }
         if (maxX < minX || maxY < minY) return new Bounds(0, 0, maxWidth, maxHeight);
         return new Bounds(minX, minY, Math.max(1, maxX - minX + 1), Math.max(1, maxY - minY + 1));
+    }
+
+    private BufferedImage readBoundedImage(byte[] bytes, String name) throws IOException {
+        try (javax.imageio.stream.ImageInputStream input =
+                     ImageIO.createImageInputStream(new ByteArrayInputStream(bytes))) {
+            if (input == null) return null;
+            Iterator<javax.imageio.ImageReader> readers = ImageIO.getImageReaders(input);
+            if (!readers.hasNext()) return null;
+            javax.imageio.ImageReader reader = readers.next();
+            try {
+                reader.setInput(input, true, true);
+                int width = reader.getWidth(0);
+                int height = reader.getHeight(0);
+                long pixels = (long) width * (long) height;
+                if (width <= 0 || height <= 0
+                        || width > MAX_IA_IMAGE_DIMENSION
+                        || height > MAX_IA_IMAGE_DIMENSION
+                        || pixels > MAX_IA_IMAGE_PIXELS) {
+                    throw new IllegalArgumentException(
+                            "image too large: " + name + " (" + width + "x" + height
+                                    + "); max " + MAX_IA_IMAGE_DIMENSION + "px per side and "
+                                    + MAX_IA_IMAGE_PIXELS + " pixels");
+                }
+                return reader.read(0);
+            } finally {
+                reader.dispose();
+            }
+        }
     }
 
     private Bounds findContentBounds(BufferedImage image) {

@@ -53,6 +53,16 @@ public final class RefineCommand implements CommandExecutor {
             return true;
         }
 
+        RefineSession existing = plugin.refineSessions().get(player.getUniqueId());
+        if (existing != null && !existing.isHandled()) {
+            player.sendMessage(TextUtil.parse("&c你已有进行中的精炼会话。请先完成或取消当前精炼，不要覆盖手中的物品。"));
+            ConfigurationSection reopenConfig = plugin.getConfig().getConfigurationSection("refine");
+            if (reopenConfig != null) {
+                new RefineMenu(plugin, existing, reopenConfig).open();
+            }
+            return true;
+        }
+
         // 创建精炼会话（自动从手中取出物品）
         RefineSession session = new RefineSession(plugin, player);
         plugin.refineSessions().put(player.getUniqueId(), session);

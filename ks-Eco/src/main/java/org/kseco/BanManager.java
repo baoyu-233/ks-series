@@ -30,7 +30,7 @@ public final class BanManager {
             if (conn == null) return;
             conn.createStatement().execute(
                 "CREATE TABLE IF NOT EXISTS ks_eco_bans (" +
-                "  id TEXT PRIMARY KEY," +
+                "  id VARCHAR(64) PRIMARY KEY," +
                 "  player_uuid TEXT NOT NULL," +
                 "  player_name TEXT NOT NULL," +
                 "  ban_type TEXT NOT NULL," +

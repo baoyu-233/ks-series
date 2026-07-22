@@ -1,5 +1,16 @@
 # 第一赛季材料经济。战斗凭证是账号绑定的进度记录，不会出现在此处，
 # 也不能兑换、交易或作为 MMOItems 物品存在。
+season:
+  # 赛季运行时默认关闭。开启后当前只初始化本地存储，不会创建赛季、启动事件或修改玩家数据。
+  enabled: false
+  storage:
+    sqlite-file: season.db
+    busy-timeout-ms: 5000
+  reputation:
+    weekly-cap: 1000
+    catchup-cap: 3000
+    late-join-catchup-per-week: 600
+
 qualities:
   KS_STANDARD: "普通：基础制造装备与野外材料。"
   KS_REFINED: "精制：机器辅助升级材料与首批饰品。"
@@ -75,7 +86,7 @@ exchange:
 # 外部插件通过 Bukkit ServicesManager 读取 RpgProgressionApi；配置型首领/地牢
 # 也可由控制台执行：ksrpg proof grant <玩家名> <凭证ID>。
   trailblazer_blade:
-    display: "24 Field Scrap + 8 Frost Scale -> Trailblazer Blade"
+    display: "24 野外废料 + 8 霜鳞 -> 开拓者长剑"
     inputs:
       scrap:
         kind: mmoitem
@@ -92,7 +103,7 @@ exchange:
       id: KS_TRAILBLAZER_BLADE
       amount: 1
   icefall_shortbow:
-    display: "20 Field Scrap + 8 Frost Scale -> Icefall Shortbow"
+    display: "20 野外废料 + 8 霜鳞 -> 冰痕短弓"
     inputs:
       scrap:
         kind: mmoitem
@@ -109,7 +120,7 @@ exchange:
       id: KS_ICEFALL_SHORTBOW
       amount: 1
   salvager_maul:
-    display: "28 Field Scrap + 10 Frost Scale -> Salvager Maul"
+    display: "28 野外废料 + 10 霜鳞 -> 拾荒战锤"
     inputs:
       scrap:
         kind: mmoitem
@@ -126,7 +137,7 @@ exchange:
       id: KS_SALVAGER_MAUL
       amount: 1
   relay_pike:
-    display: "12 Frost Scale + 2 Refined Alloy + 1 Conductive Coil -> Relay Pike"
+    display: "12 霜鳞 + 2 精炼合金 + 1 导能线圈 -> 接力长矛"
     inputs:
       scale:
         kind: mmoitem
@@ -148,7 +159,7 @@ exchange:
       id: KS_RELAY_PIKE
       amount: 1
   quarry_maul:
-    display: "16 Frost Scale + 3 Refined Alloy + 1 Whelp Core -> Quarry Maul"
+    display: "16 霜鳞 + 3 精炼合金 + 1 幼龙核心 -> 采掘重锤"
     inputs:
       scale:
         kind: mmoitem
@@ -170,7 +181,7 @@ exchange:
       id: KS_QUARRY_MAUL
       amount: 1
   windward_bow:
-    display: "12 Frost Scale + 2 Refined Alloy + 1 Conductive Coil -> Windward Bow"
+    display: "12 霜鳞 + 2 精炼合金 + 1 导能线圈 -> 望风短弓"
     inputs:
       scale:
         kind: mmoitem
@@ -190,6 +201,242 @@ exchange:
     output:
       type: BOW
       id: KS_WINDWARD_BOW
+      amount: 1
+  cinderward_blade:
+    display: "14 灰烬鳞片 + 2 精炼合金 + 4 烈焰粉 -> 烬卫长剑"
+    inputs:
+      scale:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_CINDER_SCALE
+        amount: 14
+      alloy:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_REFINED_ALLOY
+        amount: 2
+      blaze:
+        kind: vanilla
+        material: BLAZE_POWDER
+        amount: 4
+    output:
+      type: SWORD
+      id: KS_CINDERWARD_BLADE
+      amount: 1
+  forgebreaker_maul:
+    display: "18 灰烬鳞片 + 3 精炼合金 + 1 炉心 -> 破炉战锤"
+    inputs:
+      scale:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_CINDER_SCALE
+        amount: 18
+      alloy:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_REFINED_ALLOY
+        amount: 3
+      heart:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_FORGE_HEART
+        amount: 1
+    output:
+      type: HAMMER
+      id: KS_FORGEBREAKER_MAUL
+      amount: 1
+  forgeward_talisman:
+    display: "12 灰烬鳞片 + 1 稳固核心 + 8 黑曜石 -> 炉卫护符"
+    inputs:
+      scale:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_CINDER_SCALE
+        amount: 12
+      core:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_STABILIZED_CORE
+        amount: 1
+      obsidian:
+        kind: vanilla
+        material: OBSIDIAN
+        amount: 8
+    output:
+      type: TALISMAN
+      id: KS_FORGEWARD_TALISMAN
+      amount: 1
+  coalheart_ring:
+    display: "8 灰烬鳞片 + 1 精炼合金 + 4 黑曜石 -> 炭心之戒"
+    inputs:
+      scale:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_CINDER_SCALE
+        amount: 8
+      alloy:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_REFINED_ALLOY
+        amount: 1
+      obsidian:
+        kind: vanilla
+        material: OBSIDIAN
+        amount: 4
+    output:
+      type: RING
+      id: KS_RING_OF_COALHEART
+      amount: 1
+  temper_ring:
+    display: "10 灰烬鳞片 + 1 精炼合金 + 1 炉心 -> 淬火之戒"
+    inputs:
+      scale:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_CINDER_SCALE
+        amount: 10
+      alloy:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_REFINED_ALLOY
+        amount: 1
+      heart:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_FORGE_HEART
+        amount: 1
+    output:
+      type: RING
+      id: KS_RING_OF_TEMPER
+      amount: 1
+  stormrelay_pike:
+    display: "14 风暴羽 + 2 精炼合金 + 1 导能线圈 -> 风暴接力矛"
+    inputs:
+      feather:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_STORM_FEATHER
+        amount: 14
+      alloy:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_REFINED_ALLOY
+        amount: 2
+      coil:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_CONDUCTIVE_COIL
+        amount: 1
+    output:
+      type: SPEAR
+      id: KS_STORMRELAY_PIKE
+      amount: 1
+  stormwatch_bow:
+    display: "16 风暴羽 + 1 充能核心 + 1 导能线圈 -> 风望长弓"
+    inputs:
+      feather:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_STORM_FEATHER
+        amount: 16
+      core:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_CHARGED_CORE
+        amount: 1
+      coil:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_CONDUCTIVE_COIL
+        amount: 1
+    output:
+      type: BOW
+      id: KS_STORMWATCH_BOW
+      amount: 1
+  wayfinder_talisman:
+    display: "12 风暴羽 + 2 导能线圈 + 4 幻翼膜 -> 引路者护符"
+    inputs:
+      feather:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_STORM_FEATHER
+        amount: 12
+      coil:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_CONDUCTIVE_COIL
+        amount: 2
+      membrane:
+        kind: vanilla
+        material: PHANTOM_MEMBRANE
+        amount: 4
+    output:
+      type: TALISMAN
+      id: KS_WAYFINDER_TALISMAN
+      amount: 1
+  stormshelter_talisman:
+    display: "10 风暴羽 + 1 充能核心 + 8 铜锭 -> 风暴庇护符"
+    inputs:
+      feather:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_STORM_FEATHER
+        amount: 10
+      core:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_CHARGED_CORE
+        amount: 1
+      copper:
+        kind: vanilla
+        material: COPPER_INGOT
+        amount: 8
+    output:
+      type: TALISMAN
+      id: KS_STORMSHELTER_TALISMAN
+      amount: 1
+  crosswind_ring:
+    display: "8 风暴羽 + 1 精炼合金 + 8 铜锭 -> 侧风之戒"
+    inputs:
+      feather:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_STORM_FEATHER
+        amount: 8
+      alloy:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_REFINED_ALLOY
+        amount: 1
+      copper:
+        kind: vanilla
+        material: COPPER_INGOT
+        amount: 8
+    output:
+      type: RING
+      id: KS_RING_OF_CROSSWIND
+      amount: 1
+  static_echo_ring:
+    display: "10 风暴羽 + 1 充能核心 + 1 导能线圈 -> 静电回响之戒"
+    inputs:
+      feather:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_STORM_FEATHER
+        amount: 10
+      core:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_CHARGED_CORE
+        amount: 1
+      coil:
+        kind: mmoitem
+        type: MATERIAL
+        id: KS_CONDUCTIVE_COIL
+        amount: 1
+    output:
+      type: RING
+      id: KS_RING_OF_STATIC_ECHO
       amount: 1
 
 combat-proofs:

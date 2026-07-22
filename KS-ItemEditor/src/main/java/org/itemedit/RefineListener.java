@@ -33,12 +33,14 @@ public final class RefineListener implements Listener {
 
         if (holder instanceof RefineMenu menu) {
             event.setCancelled(true);
-            if (event.getRawSlot() < top.getSize()) menu.handle(event);
+            if (!(event.getWhoClicked() instanceof Player player) || !menu.isOwnedBy(player)) return;
+            if (event.getRawSlot() >= 0 && event.getRawSlot() < top.getSize()) menu.handle(event);
             return;
         }
         if (holder instanceof RefineLoreMenu loreMenu) {
             event.setCancelled(true);
-            if (event.getRawSlot() < top.getSize()) loreMenu.handle(event);
+            if (!(event.getWhoClicked() instanceof Player player) || !loreMenu.isOwnedBy(player)) return;
+            if (event.getRawSlot() >= 0 && event.getRawSlot() < top.getSize()) loreMenu.handle(event);
         }
     }
 
@@ -59,6 +61,9 @@ public final class RefineListener implements Listener {
 
         RefineSession session = plugin.refineSession(player);
         if (session == null || session.isHandled()) return;
+
+        if (holder instanceof RefineMenu menu && menu.session() != session) return;
+        if (holder instanceof RefineLoreMenu loreMenu && loreMenu.session() != session) return;
 
         if (holder instanceof RefineMenu) {
             // 聊天输入中 → 等待回调

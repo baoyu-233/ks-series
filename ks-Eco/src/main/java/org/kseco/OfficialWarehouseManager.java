@@ -3,6 +3,7 @@ package org.kseco;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
+import org.kseco.database.PortableSqlMutation;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -24,7 +25,15 @@ public final class OfficialWarehouseManager {
 
     private void createTable() {
         try (Connection conn = plugin.ksCore().dataStore().getConnection(); Statement st = conn.createStatement()) {
-            st.execute("CREATE TABLE IF NOT EXISTS ks_eco_official_warehouse (id TEXT PRIMARY KEY, item_data BLOB NOT NULL, item_material TEXT NOT NULL, quantity INTEGER NOT NULL, seller_uuid TEXT NOT NULL, seller_name TEXT NOT NULL, listing_id TEXT, paid_price REAL NOT NULL, source TEXT NOT NULL, stored_at INTEGER NOT NULL)");
+            st.execute("CREATE TABLE IF NOT EXISTS ks_eco_official_warehouse (id VARCHAR(64) PRIMARY KEY, item_data BLOB NOT NULL, item_material TEXT NOT NULL, quantity INTEGER NOT NULL, seller_uuid TEXT NOT NULL, seller_name TEXT NOT NULL, listing_id TEXT, paid_price REAL NOT NULL, source TEXT NOT NULL, stored_at INTEGER NOT NULL, disposition_state TEXT NOT NULL DEFAULT 'AVAILABLE', disposition_version INTEGER NOT NULL DEFAULT 0)");
+            try {
+                st.execute("ALTER TABLE ks_eco_official_warehouse ADD COLUMN disposition_state TEXT NOT NULL DEFAULT 'AVAILABLE'");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE ks_eco_official_warehouse ADD COLUMN disposition_version INTEGER NOT NULL DEFAULT 0");
+            } catch (SQLException ignored) {
+            }
         } catch (SQLException e) {
             plugin.getLogger().warning("Official warehouse initialization failed: " + e.getMessage());
         }
@@ -83,8 +92,8 @@ public final class OfficialWarehouseManager {
                 }
                 try (PreparedStatement store = conn.prepareStatement(
                         "INSERT INTO ks_eco_official_warehouse "
-                                + "(id,item_data,item_material,quantity,seller_uuid,seller_name,listing_id,paid_price,source,stored_at) "
-                                + "VALUES (?,?,?,?,?,?,?,?,?,?)")) {
+                                + "(id,item_data,item_material,quantity,seller_uuid,seller_name,listing_id,paid_price,source,stored_at,disposition_state) "
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING_SETTLEMENT')")) {
                     store.setString(1, warehouseId);
                     store.setBytes(2, listing.itemData());
                     store.setString(3, listing.itemMaterial());
@@ -122,7 +131,8 @@ public final class OfficialWarehouseManager {
             conn.setAutoCommit(false);
             try {
                 try (PreparedStatement delete = conn.prepareStatement(
-                        "DELETE FROM ks_eco_official_warehouse WHERE id=? AND listing_id=?")) {
+                        "DELETE FROM ks_eco_official_warehouse WHERE id=? AND listing_id=? "
+                                + "AND disposition_state='PENDING_SETTLEMENT'")) {
                     delete.setString(1, acquisition.warehouseId());
                     delete.setString(2, acquisition.listingId());
                     if (delete.executeUpdate() != 1) {
@@ -156,10 +166,37 @@ public final class OfficialWarehouseManager {
         }
     }
 
+    /** Opens a newly acquired row for liquidation only after the external CASH payout succeeded. Worker-only. */
+    public boolean markAcquisitionPaid(Acquisition acquisition) {
+        if (acquisition == null) return false;
+        try (Connection conn = plugin.ksCore().dataStore().getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "UPDATE ks_eco_official_warehouse "
+                             + "SET disposition_state='AVAILABLE',disposition_version=disposition_version+1 "
+                             + "WHERE id=? AND listing_id=? AND disposition_state='PENDING_SETTLEMENT'")) {
+            ps.setString(1, acquisition.warehouseId());
+            ps.setString(2, acquisition.listingId());
+            if (ps.executeUpdate() == 1) return true;
+            try (PreparedStatement existing = conn.prepareStatement(
+                    "SELECT disposition_state FROM ks_eco_official_warehouse WHERE id=? AND listing_id=?")) {
+                existing.setString(1, acquisition.warehouseId());
+                existing.setString(2, acquisition.listingId());
+                try (ResultSet rs = existing.executeQuery()) {
+                    return rs.next() && "AVAILABLE".equals(rs.getString(1));
+                }
+            }
+        } catch (SQLException exception) {
+            plugin.getLogger().severe("Official acquisition settlement finalization failed for "
+                    + acquisition.listingId() + ": " + exception.getMessage());
+            return false;
+        }
+    }
+
     public boolean delete(String id) {
         if (id == null || id.isBlank()) return false;
         try (Connection conn = plugin.ksCore().dataStore().getConnection();
-             PreparedStatement ps = conn.prepareStatement("DELETE FROM ks_eco_official_warehouse WHERE id=?")) {
+             PreparedStatement ps = conn.prepareStatement(
+                     "DELETE FROM ks_eco_official_warehouse WHERE id=? AND disposition_state='AVAILABLE'")) {
             ps.setString(1, id);
             return ps.executeUpdate() == 1;
         } catch (SQLException e) {
@@ -196,9 +233,6 @@ public final class OfficialWarehouseManager {
 
     /** Server-thread-only ItemStack materialization. */
     public WarehouseItem materialize(WarehouseSnapshot snapshot) {
-        if (!Bukkit.isPrimaryThread()) {
-            throw new IllegalStateException("Official warehouse ItemStacks must be decoded on the server thread");
-        }
         if (snapshot == null) return null;
         ItemStack item = null;
         try {
@@ -224,9 +258,11 @@ public final class OfficialWarehouseManager {
             conn.setAutoCommit(false);
             try {
                 WarehouseSnapshot snapshot;
+                long dispositionVersion;
                 try (PreparedStatement select = conn.prepareStatement(
                         "SELECT id,item_data,item_material,quantity,seller_uuid,seller_name,listing_id,paid_price,source,stored_at "
-                                + "FROM ks_eco_official_warehouse WHERE id=?")) {
+                                + ",disposition_version FROM ks_eco_official_warehouse "
+                                + "WHERE id=? AND disposition_state='AVAILABLE'")) {
                     select.setString(1, id);
                     try (ResultSet rs = select.executeQuery()) {
                         if (!rs.next()) {
@@ -234,11 +270,14 @@ public final class OfficialWarehouseManager {
                             return null;
                         }
                         snapshot = mapSnapshot(rs);
+                        dispositionVersion = rs.getLong("disposition_version");
                     }
                 }
                 try (PreparedStatement delete = conn.prepareStatement(
-                        "DELETE FROM ks_eco_official_warehouse WHERE id=?")) {
+                        "DELETE FROM ks_eco_official_warehouse WHERE id=? AND disposition_state='AVAILABLE' "
+                                + "AND disposition_version=?")) {
                     delete.setString(1, id);
+                    delete.setLong(2, dispositionVersion);
                     if (delete.executeUpdate() != 1) {
                         conn.rollback();
                         return null;
@@ -262,23 +301,26 @@ public final class OfficialWarehouseManager {
     /** Worker-only idempotent restoration for a claimed row that could not be delivered. */
     public boolean restore(WarehouseSnapshot snapshot) {
         if (snapshot == null) return false;
-        try (Connection conn = plugin.ksCore().dataStore().getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                     "INSERT OR IGNORE INTO ks_eco_official_warehouse "
-                             + "(id,item_data,item_material,quantity,seller_uuid,seller_name,listing_id,paid_price,source,stored_at) "
-                             + "VALUES (?,?,?,?,?,?,?,?,?,?)")) {
-            ps.setString(1, snapshot.id());
-            ps.setBytes(2, snapshot.itemData());
-            ps.setString(3, snapshot.itemMaterial());
-            ps.setInt(4, snapshot.quantity());
-            ps.setString(5, snapshot.sellerUuid());
-            ps.setString(6, snapshot.sellerName());
-            ps.setString(7, snapshot.listingId());
-            ps.setDouble(8, snapshot.paidPrice());
-            ps.setString(9, snapshot.source());
-            ps.setLong(10, snapshot.storedAt());
-            int changed = ps.executeUpdate();
-            return changed == 1 || exists(snapshot.id());
+        try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
+            if (conn == null) return false;
+            PortableSqlMutation.insertIfAbsent(conn,
+                    "SELECT 1 FROM ks_eco_official_warehouse WHERE id=?",
+                    exists -> exists.setString(1, snapshot.id()),
+                    "INSERT INTO ks_eco_official_warehouse "
+                            + "(id,item_data,item_material,quantity,seller_uuid,seller_name,listing_id,paid_price,source,stored_at) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?)", insert -> {
+                        insert.setString(1, snapshot.id());
+                        insert.setBytes(2, snapshot.itemData());
+                        insert.setString(3, snapshot.itemMaterial());
+                        insert.setInt(4, snapshot.quantity());
+                        insert.setString(5, snapshot.sellerUuid());
+                        insert.setString(6, snapshot.sellerName());
+                        insert.setString(7, snapshot.listingId());
+                        insert.setDouble(8, snapshot.paidPrice());
+                        insert.setString(9, snapshot.source());
+                        insert.setLong(10, snapshot.storedAt());
+                    });
+            return true;
         } catch (SQLException e) {
             plugin.getLogger().severe("Official warehouse restore failed for " + snapshot.id() + ": " + e.getMessage());
             return false;

@@ -8,6 +8,7 @@ import org.bukkit.Material;
 import org.bukkit.Sound;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
@@ -103,7 +104,7 @@ public final class LimitedSaleGui implements InventoryHolder {
         inventory.setItem(40, navButton(active ? Material.EMERALD : Material.BARRIER,
                 active ? "§a" + verb + " 1 " + unit : "§c无法" + verb,
                 active ? "§7左键" + verb + " 1 " + unit : "§7状态: " + plugin.limitedSaleManager().statusText(sale),
-                active ? "§7Shift+左键" + verb + " 10 " + unit : "§8请等待开售或联系管理员"));
+                active ? "§7Shift+左键 / 中键" + verb + " 10 " + unit : "§8请等待开售或联系管理员"));
         if (!sale.blindBoxSale() && sale.boxEnabled()) {
             int bought = viewerUuid != null ? plugin.limitedSaleManager().getPurchased(viewerUuid, sale.id()) : 0;
             boolean enoughStock = sale.unlimitedStock() || sale.remainingStock() >= LimitedSaleManager.BOX_UNITS;
@@ -134,7 +135,7 @@ public final class LimitedSaleGui implements InventoryHolder {
         appendSaleLines(lore, sale);
         lore.add(Component.empty());
         lore.add(Component.text(sale.blindBoxSale() ? "§a左键预览奖池/奖品" : "§a左键预览完整物品/NBT", NamedTextColor.GREEN));
-        lore.add(Component.text(sale.blindBoxSale() ? "§e右键抽 1 次，Shift+右键抽 10 次" : "§e右键购买 1 份，Shift+右键购买 10 份", NamedTextColor.YELLOW));
+        lore.add(Component.text(sale.blindBoxSale() ? "§e右键抽 1 次，中键抽 10 次" : "§e右键购买 1 份，中键购买 10 份", NamedTextColor.YELLOW));
         if (!sale.blindBoxSale() && sale.boxEnabled()) {
             lore.add(Component.text("§dShift+左键购买 1 整盒（27 份）", NamedTextColor.LIGHT_PURPLE));
         }
@@ -282,8 +283,10 @@ public final class LimitedSaleGui implements InventoryHolder {
                         LimitedSaleManager.SaleItem sale = gui.sales.get(index);
                         if (event.isShiftClick() && event.isLeftClick() && sale.boxEnabled()) {
                             gui.buyBox(player, sale.id());
+                        } else if (event.getClick() == ClickType.MIDDLE) {
+                            gui.buy(player, sale.id(), 10);
                         } else if (event.isRightClick()) {
-                            gui.buy(player, sale.id(), event.isShiftClick() ? 10 : 1);
+                            gui.buy(player, sale.id(), 1);
                         } else {
                             gui.selectedSaleId = sale.id();
                             gui.view = 1;
@@ -319,7 +322,8 @@ public final class LimitedSaleGui implements InventoryHolder {
 
             if (gui.view == 1) {
                 switch (slot) {
-                    case 40 -> gui.buy(player, gui.selectedSaleId, event.isShiftClick() ? 10 : 1);
+                    case 40 -> gui.buy(player, gui.selectedSaleId,
+                            (event.getClick() == ClickType.MIDDLE || event.isShiftClick()) ? 10 : 1);
                     case 41 -> gui.buyBox(player, gui.selectedSaleId);
                     case 45 -> {
                         if (gui.detailPage > 0) {

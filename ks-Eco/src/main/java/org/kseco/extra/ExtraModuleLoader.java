@@ -11,6 +11,7 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 import java.util.jar.JarFile;
 
 /**
@@ -79,6 +80,7 @@ public final class ExtraModuleLoader {
             return;
         }
 
+        URLClassLoader classLoader = null;
         try (JarFile jar = new JarFile(jarFile)) {
             // 读取模块描述符
             var entry = jar.getJarEntry("META-INF/ks-eco-extra.properties");
@@ -97,7 +99,7 @@ public final class ExtraModuleLoader {
 
             // 加载类
             URL url = jarFile.toURI().toURL();
-            URLClassLoader classLoader = new URLClassLoader(
+            classLoader = new URLClassLoader(
                     new URL[]{url},
                     plugin.getClass().getClassLoader()
             );
@@ -115,8 +117,14 @@ public final class ExtraModuleLoader {
             loadedModules.put(moduleId, new LoadedModule(moduleId, module, classLoader));
             plugin.getLogger().info("模块已加载: " + module.getName() + " (" + moduleId + ")");
 
-        } catch (Exception e) {
-            plugin.getLogger().warning("加载模块 " + moduleId + " 失败: " + e.getMessage());
+        } catch (Exception | LinkageError failure) {
+            if (classLoader != null) {
+                unregisterModuleListeners(classLoader);
+                try { classLoader.close(); } catch (Exception ignored) {}
+            }
+            plugin.getLogger().log(Level.WARNING,
+                    "加载模块 " + moduleId + " 失败，已隔离该模块且继续启动 ks-Eco: "
+                            + failure.getMessage(), failure);
         }
     }
 
@@ -129,8 +137,10 @@ public final class ExtraModuleLoader {
                 lm.module.onEnable();
                 enabledModuleIds.add(lm.id);
                 plugin.getLogger().info("模块已启用: " + lm.module.getName());
-            } catch (Exception e) {
-                plugin.getLogger().warning("启用模块 " + lm.id + " 失败: " + e.getMessage());
+            } catch (Exception | LinkageError failure) {
+                plugin.getLogger().log(Level.WARNING,
+                        "启用模块 " + lm.id + " 失败，已隔离该模块且继续启动 ks-Eco: "
+                                + failure.getMessage(), failure);
                 loadedModules.remove(lm.id, lm);
                 unregisterModuleListeners(lm.classLoader);
                 try { lm.classLoader.close(); } catch (Exception ignored) {}
@@ -148,8 +158,9 @@ public final class ExtraModuleLoader {
                 lm.module.onDisable();
                 unregisterModuleListeners(lm.classLoader);
                 lm.classLoader.close();
-            } catch (Exception e) {
-                plugin.getLogger().warning("停用模块 " + lm.id + " 异常: " + e.getMessage());
+            } catch (Exception | LinkageError failure) {
+                plugin.getLogger().log(Level.WARNING,
+                        "停用模块 " + lm.id + " 异常: " + failure.getMessage(), failure);
             }
         }
         loadedModules.clear();
@@ -158,8 +169,8 @@ public final class ExtraModuleLoader {
 
     /** Reload only ks-Eco Extra modules. Must be called from the server thread. */
     public void reloadModules() {
-        if (!Bukkit.isPrimaryThread()) {
-            throw new IllegalStateException("Extra modules must be reloaded on the server thread");
+        if (!plugin.scheduler().isGlobalThread()) {
+            throw new IllegalStateException("Extra modules must be reloaded on the global tick thread");
         }
         disableAll();
         loadModules();
@@ -190,6 +201,18 @@ public final class ExtraModuleLoader {
      */
     public Set<String> getLoadedModuleIds() {
         return Set.copyOf(enabledModuleIds);
+    }
+
+    public void dispatchCrossServerInvalidation(String namespace, String key) {
+        for (LoadedModule loaded : List.copyOf(loadedModules.values())) {
+            if (!enabledModuleIds.contains(loaded.id)) continue;
+            try {
+                loaded.module.onCrossServerInvalidation(namespace, key);
+            } catch (RuntimeException failure) {
+                plugin.getLogger().warning("Extra 模块 " + loaded.id
+                        + " 处理跨服失效失败: " + failure.getMessage());
+            }
+        }
     }
 
     /**

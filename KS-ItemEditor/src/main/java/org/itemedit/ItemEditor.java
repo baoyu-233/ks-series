@@ -246,6 +246,9 @@ public final class ItemEditor extends JavaPlugin {
         if (ws == null) return null;
         String host = ws.getPublicAddress();
         if (host == null || host.equals("0.0.0.0") || host.isEmpty()) host = "127.0.0.1";
-        return "http://" + host + ":" + ws.getPort() + "/";
+        boolean admin = isAdmin && player.hasPermission("itemedit.admin");
+        WebSessionManager.Session session = WebSessionManager.create(
+                player.getUniqueId(), player.getName(), admin);
+        return "http://" + host + ":" + ws.getPort() + "/?token=" + session.token;
     }
 }

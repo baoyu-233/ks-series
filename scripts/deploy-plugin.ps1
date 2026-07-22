@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory = $true)] [string] $Artifact,
     [Parameter(Mandatory = $true)] [string] $DeployJar,
     [Parameter(Mandatory = $true)] [string] $PluginId,
+    [string[]] $MavenProfiles = @(),
     [switch] $SkipTests
 )
 
@@ -43,7 +44,12 @@ if (-not (Test-Path -LiteralPath $deployParent -PathType Container)) {
     throw "Deployment directory does not exist: $deployParent"
 }
 
-$mavenArgs = @('clean', 'package')
+$mavenArgs = @()
+foreach ($profile in $MavenProfiles) {
+    if ($profile -notmatch '^[A-Za-z0-9_.-]+$') { throw "Invalid Maven profile: $profile" }
+    $mavenArgs += "-P$profile"
+}
+$mavenArgs += @('clean', 'package')
 if ($SkipTests) { $mavenArgs += '-DskipTests' }
 Push-Location $modulePath
 try {

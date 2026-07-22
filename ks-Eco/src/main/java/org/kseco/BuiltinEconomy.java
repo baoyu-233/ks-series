@@ -4,6 +4,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.kseco.database.BusinessSchemaDialect;
+import org.kseco.database.DatabaseDialect;
 
 import java.lang.reflect.*;
 import java.sql.*;
@@ -12,7 +14,7 @@ import java.util.*;
 /**
  * 内置 Vault 经济提供者（动态代理，零编译依赖）。
  * 当服务器没有安装其他经济插件（EssentialsX/CMI 等）时，
- * ks-Eco 自动注册自己为 Vault 经济提供者，使用 SQLite 存储余额。
+ * ks-Eco 自动注册自己为 Vault 经济提供者，使用 ks-core JDBC 存储余额。
  */
 public final class BuiltinEconomy {
     private static final double MAX_TRANSACTION_AMOUNT = 1_000_000_000_000d;
@@ -20,6 +22,8 @@ public final class BuiltinEconomy {
     private final JavaPlugin plugin;
     private Object economyProxy;
     private boolean registered;
+
+    record BalanceMutationResult(double balance, boolean success, String error) { }
 
     public BuiltinEconomy(JavaPlugin plugin) {
         this.plugin = plugin;
@@ -55,12 +59,24 @@ public final class BuiltinEconomy {
                     rawClass, this.economyProxy, plugin, ServicePriority.Normal);
 
             this.registered = true;
-            plugin.getLogger().info("内置经济系统已注册到 Vault（SQLite 存储）");
+            plugin.getLogger().info("内置经济系统已注册到 Vault（JDBC 存储）");
             return true;
         } catch (Exception e) {
             plugin.getLogger().warning("内置经济系统注册失败: " + e.getMessage());
             return false;
         }
+    }
+
+    /** Enables the JDBC wallet without requiring Vault (Folia ks-only nodes). */
+    public boolean setupDirect() {
+        if (!plugin.getClass().getName().equals("org.kseco.KsEco")
+                || !(plugin instanceof KsEco eco) || !eco.foliaRuntime()) {
+            return false;
+        }
+        if (!ensureTable()) return false;
+        this.registered = true;
+        plugin.getLogger().info("Folia JDBC 内置经济已启用（无需 Vault）");
+        return true;
     }
 
     public boolean isRegistered() { return registered; }
@@ -77,83 +93,22 @@ public final class BuiltinEconomy {
     public boolean depositInTransaction(Connection conn, UUID uuid, String name, double amount) throws SQLException {
         if (!registered || conn == null || uuid == null || !validAmount(amount, true)) return false;
         if (amount == 0.0d) return true;
-        try (var ps = conn.prepareStatement(
-                "INSERT INTO ks_builtin_economy (uuid, balance, name, updated_at) VALUES (?,?,?,strftime('%s','now')) " +
-                        "ON CONFLICT(uuid) DO UPDATE SET balance=balance+excluded.balance, " +
-                        "name=CASE WHEN excluded.name<>'' THEN excluded.name ELSE ks_builtin_economy.name END, " +
-                        "updated_at=strftime('%s','now')")) {
-            ps.setString(1, uuid.toString());
-            ps.setDouble(2, amount);
-            ps.setString(3, name != null ? name : "");
-            return ps.executeUpdate() == 1;
-        }
+        return addBalance(conn, uuid, name, amount, currentEpochSecond()) == 1;
     }
 
-    // ---- 公共兜底 API（盲盒等无 Vault 时直接走 SQLite） ----
+    // ---- 公共兜底 API（盲盒等无 Vault 时直接走内置 JDBC 余额） ----
 
     /** 直接扣减内置表余额（不依赖 Vault）。余额不足返回 false。 */
     public boolean withdraw(UUID uuid, String name, double amount) {
-        if (!validAmount(amount, true)) return false;
+        if (uuid == null || !validAmount(amount, true)) return false;
         if (amount == 0.0d) return true;
-        var corePlugin = (org.kscore.KsCore) Bukkit.getPluginManager().getPlugin("ks-core");
-        if (corePlugin == null) return false;
-        try (var conn = corePlugin.dataStore().getConnection()) {
-            if (conn == null) return false;
-            conn.setAutoCommit(false);
-            try (var ps = conn.prepareStatement("SELECT balance FROM ks_builtin_economy WHERE uuid=?")) {
-                ps.setString(1, uuid.toString());
-                try (var rs = ps.executeQuery()) {
-                    if (!rs.next()) {
-                        try (var ins = conn.prepareStatement(
-                                "INSERT INTO ks_builtin_economy (uuid, balance, name) VALUES (?, 0, ?)")) {
-                            ins.setString(1, uuid.toString());
-                            ins.setString(2, name != null ? name : "");
-                            ins.executeUpdate();
-                        }
-                    }
-                }
-            }
-            double cur = 0;
-            try (var ps = conn.prepareStatement("SELECT balance FROM ks_builtin_economy WHERE uuid=?")) {
-                ps.setString(1, uuid.toString());
-                try (var rs = ps.executeQuery()) {
-                    if (rs.next()) cur = rs.getDouble(1);
-                }
-            }
-            if (cur < amount) { conn.rollback(); return false; }
-            try (var ps = conn.prepareStatement(
-                    "UPDATE ks_builtin_economy SET balance=balance-?, name=?, updated_at=strftime('%s','now') WHERE uuid=?")) {
-                ps.setDouble(1, amount);
-                ps.setString(2, name != null ? name : "");
-                ps.setString(3, uuid.toString());
-                ps.executeUpdate();
-            }
-            conn.commit();
-            return true;
-        } catch (SQLException e) {
-            plugin.getLogger().warning("BuiltinEconomy.withdraw 失败: " + e.getMessage());
-            return false;
-        }
+        return mutateBalance(uuid, name, amount, true).success();
     }
 
     /** 直接增加内置表余额 */
-    public void deposit(UUID uuid, String name, double amount) {
-        if (!validAmount(amount, false)) return;
-        var corePlugin = (org.kscore.KsCore) Bukkit.getPluginManager().getPlugin("ks-core");
-        if (corePlugin == null) return;
-        try (var conn = corePlugin.dataStore().getConnection()) {
-            if (conn == null) return;
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_builtin_economy (uuid, balance, name, updated_at) VALUES (?,?,?,strftime('%s','now')) " +
-                    "ON CONFLICT(uuid) DO UPDATE SET balance=balance+excluded.balance, name=excluded.name, updated_at=strftime('%s','now')")) {
-                ps.setString(1, uuid.toString());
-                ps.setDouble(2, amount);
-                ps.setString(3, name != null ? name : "");
-                ps.executeUpdate();
-            }
-        } catch (SQLException e) {
-            plugin.getLogger().warning("BuiltinEconomy.deposit 失败: " + e.getMessage());
-        }
+    public boolean deposit(UUID uuid, String name, double amount) {
+        if (uuid == null || !validAmount(amount, false)) return false;
+        return mutateBalance(uuid, name, amount, false).success();
     }
 
     /** 查询内置表余额 */
@@ -164,6 +119,152 @@ public final class BuiltinEconomy {
         return Double.isFinite(amount)
                 && (allowZero ? amount >= 0.0d : amount > 0.0d)
                 && amount <= MAX_TRANSACTION_AMOUNT;
+    }
+
+    static BalanceMutationResult balanceMutationResult(double current, double next, boolean persisted) {
+        return new BalanceMutationResult(persisted ? next : current, persisted,
+                persisted ? null : "Balance persistence failed");
+    }
+
+    static void ensureTable(Connection connection, DatabaseDialect dialect) throws SQLException {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(dialect, "dialect");
+        String sql = "CREATE TABLE IF NOT EXISTS ks_builtin_economy ("
+                + "uuid " + BusinessSchemaDialect.varchar(36) + " PRIMARY KEY, "
+                + "balance " + BusinessSchemaDialect.floatingPointType(dialect) + " NOT NULL DEFAULT 0, "
+                + "name " + BusinessSchemaDialect.varchar(64) + " NOT NULL DEFAULT '', "
+                + "updated_at BIGINT NOT NULL DEFAULT 0)";
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate(sql);
+        }
+    }
+
+    static BalanceMutationResult depositBalance(Connection connection, UUID uuid, String name,
+                                                  double amount, long updatedAt) throws SQLException {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(uuid, "uuid");
+        if (!validAmount(amount, true)) {
+            return new BalanceMutationResult(readBalance(connection, uuid), false, "Invalid amount");
+        }
+        if (amount != 0.0d && addBalance(connection, uuid, name, amount, updatedAt) != 1) {
+            return new BalanceMutationResult(readBalance(connection, uuid), false, "Balance persistence failed");
+        }
+        return new BalanceMutationResult(readBalance(connection, uuid), true, null);
+    }
+
+    static BalanceMutationResult withdrawBalance(Connection connection, UUID uuid, String name,
+                                                   double amount, long updatedAt) throws SQLException {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(uuid, "uuid");
+        if (!validAmount(amount, true)) {
+            return new BalanceMutationResult(readBalance(connection, uuid), false, "Invalid amount");
+        }
+        if (amount == 0.0d) {
+            return new BalanceMutationResult(readBalance(connection, uuid), true, null);
+        }
+        int updated;
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE ks_builtin_economy SET balance=balance-?, "
+                        + "name=CASE WHEN ?<>'' THEN ? ELSE name END, updated_at=? "
+                        + "WHERE uuid=? AND balance>=?")) {
+            String normalizedName = normalizedName(name);
+            statement.setDouble(1, amount);
+            statement.setString(2, normalizedName);
+            statement.setString(3, normalizedName);
+            statement.setLong(4, updatedAt);
+            statement.setString(5, uuid.toString());
+            statement.setDouble(6, amount);
+            updated = statement.executeUpdate();
+        }
+        double balance = readBalance(connection, uuid);
+        return updated == 1
+                ? new BalanceMutationResult(balance, true, null)
+                : new BalanceMutationResult(balance, false, "余额不足");
+    }
+
+    static boolean ensureAccount(Connection connection, UUID uuid, String name, long updatedAt) throws SQLException {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(uuid, "uuid");
+        return addBalance(connection, uuid, name, 0.0d, updatedAt) == 1;
+    }
+
+    static double readBalance(Connection connection, UUID uuid) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT balance FROM ks_builtin_economy WHERE uuid=?")) {
+            statement.setString(1, uuid.toString());
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() ? rows.getDouble(1) : 0.0d;
+            }
+        }
+    }
+
+    private static int addBalance(Connection connection, UUID uuid, String name,
+                                  double amount, long updatedAt) throws SQLException {
+        String normalizedName = normalizedName(name);
+        int updated = updateBalance(connection, uuid, normalizedName, amount, updatedAt);
+        if (updated == 1 || accountExists(connection, uuid)) return 1;
+
+        Savepoint savepoint = connection.getAutoCommit() ? null : connection.setSavepoint();
+        try (PreparedStatement statement = connection.prepareStatement(
+                "INSERT INTO ks_builtin_economy (uuid, balance, name, updated_at) VALUES (?,?,?,?)")) {
+            statement.setString(1, uuid.toString());
+            statement.setDouble(2, amount);
+            statement.setString(3, normalizedName);
+            statement.setLong(4, updatedAt);
+            return statement.executeUpdate();
+        } catch (SQLException failure) {
+            if (!isConstraintViolation(failure)) throw failure;
+            if (savepoint != null) connection.rollback(savepoint);
+            updated = updateBalance(connection, uuid, normalizedName, amount, updatedAt);
+            if (updated == 1 || accountExists(connection, uuid)) return 1;
+            throw failure;
+        } finally {
+            if (savepoint != null) {
+                try {
+                    connection.releaseSavepoint(savepoint);
+                } catch (SQLException ignored) {
+                    // Some drivers release a savepoint automatically after rollback.
+                }
+            }
+        }
+    }
+
+    private static int updateBalance(Connection connection, UUID uuid, String name,
+                                     double amount, long updatedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE ks_builtin_economy SET balance=balance+?, "
+                        + "name=CASE WHEN ?<>'' THEN ? ELSE name END, updated_at=? WHERE uuid=?")) {
+            statement.setDouble(1, amount);
+            statement.setString(2, name);
+            statement.setString(3, name);
+            statement.setLong(4, updatedAt);
+            statement.setString(5, uuid.toString());
+            return statement.executeUpdate();
+        }
+    }
+
+    private static boolean accountExists(Connection connection, UUID uuid) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT 1 FROM ks_builtin_economy WHERE uuid=?")) {
+            statement.setString(1, uuid.toString());
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next();
+            }
+        }
+    }
+
+    private static boolean isConstraintViolation(SQLException failure) {
+        if (failure instanceof SQLIntegrityConstraintViolationException) return true;
+        String state = failure.getSQLState();
+        return state != null && state.startsWith("23");
+    }
+
+    private static String normalizedName(String name) {
+        return name == null ? "" : name;
+    }
+
+    private static long currentEpochSecond() {
+        return System.currentTimeMillis() / 1000L;
     }
 
 
@@ -178,25 +279,22 @@ public final class BuiltinEconomy {
 
     // ---- 数据库 ----
 
-    private void ensureTable() {
+    private boolean ensureTable() {
         try {
             // 通过 ks-core DataStore 获取连接
             var corePlugin = (org.kscore.KsCore) Bukkit.getPluginManager().getPlugin("ks-core");
             if (corePlugin != null) {
                 try (var conn = corePlugin.dataStore().getConnection()) {
                     if (conn != null) {
-                        conn.createStatement().executeUpdate(
-                            "CREATE TABLE IF NOT EXISTS ks_builtin_economy (" +
-                            "uuid TEXT PRIMARY KEY, " +
-                            "balance REAL DEFAULT 0, " +
-                            "name TEXT DEFAULT '', " +
-                            "updated_at INTEGER DEFAULT (strftime('%s','now')))");
+                        ensureTable(conn, BusinessSchemaDialect.detect(conn));
+                        return true;
                     }
                 }
             }
         } catch (Exception e) {
             plugin.getLogger().warning("内置经济表创建失败: " + e.getMessage());
         }
+        return false;
     }
 
     private double getBalanceInternal(UUID uuid) {
@@ -219,25 +317,47 @@ public final class BuiltinEconomy {
         return 0.0;
     }
 
-    private boolean setBalance(UUID uuid, String name, double balance) {
-        try {
-            var corePlugin = (org.kscore.KsCore) Bukkit.getPluginManager().getPlugin("ks-core");
-            if (corePlugin != null) {
-                try (var conn = corePlugin.dataStore().getConnection()) {
-                    if (conn != null) {
-                        try (var ps = conn.prepareStatement(
-                                "INSERT OR REPLACE INTO ks_builtin_economy (uuid, balance, name) VALUES (?, ?, ?)")) {
-                            ps.setString(1, uuid.toString());
-                            ps.setDouble(2, balance);
-                            ps.setString(3, name != null ? name : "");
-                            ps.executeUpdate();
-                        }
-                        return true;
-                    }
+    private boolean ensureAccount(UUID uuid, String name) {
+        if (uuid == null) return false;
+        var corePlugin = (org.kscore.KsCore) Bukkit.getPluginManager().getPlugin("ks-core");
+        if (corePlugin == null) return false;
+        try (var conn = corePlugin.dataStore().getConnection()) {
+            if (conn == null) return false;
+            return ensureAccount(conn, uuid, name, currentEpochSecond());
+        } catch (SQLException e) {
+            plugin.getLogger().warning("BuiltinEconomy.ensureAccount 失败: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private BalanceMutationResult mutateBalance(UUID uuid, String name, double amount, boolean withdrawal) {
+        var corePlugin = (org.kscore.KsCore) Bukkit.getPluginManager().getPlugin("ks-core");
+        if (corePlugin == null) {
+            return new BalanceMutationResult(0.0d, false, "ks-core unavailable");
+        }
+        try (var conn = corePlugin.dataStore().getConnection()) {
+            if (conn == null) return new BalanceMutationResult(0.0d, false, "Database unavailable");
+            conn.setAutoCommit(false);
+            try {
+                BalanceMutationResult result = withdrawal
+                        ? withdrawBalance(conn, uuid, name, amount, currentEpochSecond())
+                        : depositBalance(conn, uuid, name, amount, currentEpochSecond());
+                if (result.success()) conn.commit();
+                else conn.rollback();
+                return result;
+            } catch (SQLException | RuntimeException failure) {
+                try {
+                    conn.rollback();
+                } catch (SQLException rollbackFailure) {
+                    failure.addSuppressed(rollbackFailure);
                 }
+                throw failure;
             }
-        } catch (Exception ignored) {}
-        return false;
+        } catch (SQLException | RuntimeException e) {
+            plugin.getLogger().warning("BuiltinEconomy." + (withdrawal ? "withdraw" : "deposit")
+                    + " 失败: " + e.getMessage());
+            return new BalanceMutationResult(0.0d, false, "Balance persistence failed");
+        }
     }
 
     // ---- 动态代理处理器 ----
@@ -266,8 +386,7 @@ public final class BuiltinEconomy {
                     case "hasAccount" -> true; // 自动创建
                     case "createPlayerAccount" -> {
                         OfflinePlayer p = (OfflinePlayer) args[0];
-                        setBalance(p.getUniqueId(), p.getName() != null ? p.getName() : "?", 0);
-                        yield true;
+                        yield ensureAccount(p.getUniqueId(), p.getName() != null ? p.getName() : "?");
                     }
                     case "getBalance" -> getBalance(((OfflinePlayer) args[0]).getUniqueId());
 
@@ -280,20 +399,23 @@ public final class BuiltinEconomy {
                     case "withdrawPlayer" -> {
                         OfflinePlayer p = (OfflinePlayer) args[0];
                         double amount = (double) args[1];
-                        double current = getBalance(p.getUniqueId());
                         if (!validAmount(amount, true)) yield createResponse(amount, getBalance(p.getUniqueId()), false, "Invalid amount");
-                        if (current < amount) yield createResponse(amount, 0, false, "余额不足");
-                        setBalance(p.getUniqueId(), p.getName(), current - amount);
-                        yield createResponse(amount, current - amount, true, null);
+                        BalanceMutationResult result = mutateBalance(p.getUniqueId(), p.getName(), amount, true);
+                        if (result.success() && plugin instanceof KsEco eco) {
+                            eco.publishCrossServerInvalidation("balance", p.getUniqueId().toString());
+                        }
+                        yield createResponse(amount, result.balance(), result.success(), result.error());
                     }
 
                     case "depositPlayer" -> {
                         OfflinePlayer p = (OfflinePlayer) args[0];
                         double amount = (double) args[1];
-                        double current = getBalance(p.getUniqueId());
                         if (!validAmount(amount, true)) yield createResponse(amount, getBalance(p.getUniqueId()), false, "Invalid amount");
-                        setBalance(p.getUniqueId(), p.getName(), current + amount);
-                        yield createResponse(amount, current + amount, true, null);
+                        BalanceMutationResult result = mutateBalance(p.getUniqueId(), p.getName(), amount, false);
+                        if (result.success() && plugin instanceof KsEco eco) {
+                            eco.publishCrossServerInvalidation("balance", p.getUniqueId().toString());
+                        }
+                        yield createResponse(amount, result.balance(), result.success(), result.error());
                     }
 
                     // ---- 银行（不支持） ----

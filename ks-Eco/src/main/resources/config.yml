@@ -5,6 +5,37 @@
 # ============================================================
 
 # ------------------------------------------------------------------
+# database — ks-Eco shared-database identity
+# The JDBC type/host/credentials are owned by ks-core. Every Paper server
+# connected to the same database must use a unique, stable server-id.
+# Changing server-id requires a full restart; runtime reload does not replace it.
+# ------------------------------------------------------------------
+database:
+  server-id: main
+  heartbeat-interval-seconds: 30
+  server-stale-after-seconds: 120
+
+# ------------------------------------------------------------------
+# cross-server - shared database runtime
+# Requires every server to use the same MySQL/MariaDB/PostgreSQL database and a
+# unique database.server-id. SQLite/local fallback is rejected when enabled.
+# These runtime options are restart-only; /kseco-admin reload does not replace
+# a live transport identity or polling lifecycle.
+# Mutations remain database-authoritative; price/enterprise/ranking caches are
+# invalidated through the shared event log, and stochastic price refresh is
+# protected by a database lease plus monotonically increasing fencing token.
+# ------------------------------------------------------------------
+cross-server:
+  enabled: false
+  # 使用外部 Vault 经济插件时，只有确认该插件各节点共用同一权威余额库后才可开启。
+  external-economy-shared: false
+  consumer-id: ks-eco-runtime-v1
+  poll-batch-size: 128
+  max-payload-bytes: 65536
+  event-retention-days: 7
+  price-refresh-lease-seconds: 180
+
+# ------------------------------------------------------------------
 # market — 市场系统配置
 # ------------------------------------------------------------------
 market:
@@ -141,8 +172,6 @@ market-protection:
     HOPPER_MINECART: 105.0
     BOAT: 3.0
     OAK_SIGN: 3.0
-    WHITE_DYE: 3.0
-    BLACK_DYE: 4.0
     GLASS_BOTTLE: 1.0
     EXPERIENCE_BOTTLE: 25.0
     POTION: 20.0

@@ -16,6 +16,7 @@ import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
@@ -23,6 +24,7 @@ import org.bukkit.event.entity.EntityShootBowEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -63,10 +65,7 @@ public class ItemSteal extends JavaPlugin implements Listener {
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        suffixes = getConfig().getStringList("suffixes");
-        if (suffixes.isEmpty()) {
-            suffixes = new ArrayList<>(Arrays.asList("_SWORD", "_AXE", "SHIELD", "TRIDENT"));
-        }
+        reloadSuffixes();
         bowKey = new NamespacedKey(this, "steal_bow");
         arrowKey = new NamespacedKey(this, "steal_arrow");
         storeFile = new File(getDataFolder(), "store.yml");
@@ -90,6 +89,20 @@ public class ItemSteal extends JavaPlugin implements Listener {
         return false;
     }
 
+    private void reloadSuffixes() {
+        List<String> configured = getConfig().getStringList("suffixes");
+        List<String> sanitized = configured.stream()
+                .filter(java.util.Objects::nonNull)
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .map(value -> value.toUpperCase(Locale.ROOT))
+                .distinct()
+                .toList();
+        suffixes = sanitized.isEmpty()
+                ? new ArrayList<>(Arrays.asList("_SWORD", "_AXE", "SHIELD", "TRIDENT"))
+                : new ArrayList<>(sanitized);
+    }
+
     // ============ 夺取(无损) ============
     private int doSteal(UUID thiefId, Player victim) {
         PlayerInventory inv = victim.getInventory();
@@ -99,7 +112,7 @@ public class ItemSteal extends JavaPlugin implements Listener {
         ItemStack[] storage = inv.getStorageContents(); // 36 格主背包+快捷栏
         for (int i = 0; i < storage.length; i++) {
             if (matches(storage[i])) {
-                bag.add(new Stolen(victim.getUniqueId(), storage[i]));
+                bag.add(new Stolen(victim.getUniqueId(), storage[i].clone()));
                 storage[i] = null;
                 count++;
             }
@@ -108,7 +121,7 @@ public class ItemSteal extends JavaPlugin implements Listener {
 
         ItemStack off = inv.getItemInOffHand(); // 副手(盾通常在这)
         if (matches(off)) {
-            bag.add(new Stolen(victim.getUniqueId(), off));
+            bag.add(new Stolen(victim.getUniqueId(), off.clone()));
             inv.setItemInOffHand(null);
             count++;
         }
@@ -157,7 +170,7 @@ public class ItemSteal extends JavaPlugin implements Listener {
     // ============ 事件 ============
 
     // 一次性"窃魂之弓":射出后给弹射物打标记,并让弓自毁
-    @EventHandler(ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onShoot(EntityShootBowEvent e) {
         ItemStack bow = e.getBow();
         if (bow == null) return;
@@ -167,20 +180,39 @@ public class ItemSteal extends JavaPlugin implements Listener {
         e.getProjectile().getPersistentDataContainer().set(arrowKey, PersistentDataType.BYTE, (byte) 1);
 
         if (e.getEntity() instanceof Player p) {
-            getServer().getScheduler().runTask(this, () -> {
-                ItemStack hand = p.getInventory().getItemInMainHand();
-                ItemMeta hm = hand.getItemMeta();
-                if (hm != null && hm.getPersistentDataContainer().has(bowKey, PersistentDataType.BYTE)) {
-                    p.getInventory().setItemInMainHand(null);
-                    p.sendMessage("§7窃魂之弓已碎裂。");
-                }
-            });
+            consumeStealBow(p, e.getHand());
+            p.sendMessage("§7窃魂之弓已碎裂。");
         }
     }
 
+    private void consumeStealBow(Player player, EquipmentSlot hand) {
+        PlayerInventory inventory = player.getInventory();
+        ItemStack current = hand == EquipmentSlot.OFF_HAND
+                ? inventory.getItemInOffHand()
+                : inventory.getItemInMainHand();
+        ItemMeta meta = current.getItemMeta();
+        if (meta == null || !meta.getPersistentDataContainer().has(bowKey, PersistentDataType.BYTE)) return;
+
+        ItemStack replacement = null;
+        if (current.getAmount() > 1) {
+            replacement = current.clone();
+            replacement.setAmount(current.getAmount() - 1);
+        }
+        if (hand == EquipmentSlot.OFF_HAND) inventory.setItemInOffHand(replacement);
+        else inventory.setItemInMainHand(replacement);
+    }
+
     // 被标记的弹射物命中玩家 -> 夺取
-    @EventHandler(ignoreCancelled = true)
-    public void onHit(EntityDamageByEntityEvent e) {
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onHitPrepare(EntityDamageByEntityEvent e) {
+        if (!(e.getDamager() instanceof Projectile proj)) return;
+        if (!proj.getPersistentDataContainer().has(arrowKey, PersistentDataType.BYTE)) return;
+        if (!(e.getEntity() instanceof Player)) return;
+        e.setDamage(0);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onHitCommit(EntityDamageByEntityEvent e) {
         if (!(e.getDamager() instanceof Projectile proj)) return;
         if (!proj.getPersistentDataContainer().has(arrowKey, PersistentDataType.BYTE)) return;
         if (!(e.getEntity() instanceof Player victim)) return;
@@ -190,7 +222,6 @@ public class ItemSteal extends JavaPlugin implements Listener {
 
         int n = doSteal(thiefEnt.getUniqueId(), victim);
         proj.remove();
-        e.setDamage(0); // 纯夺取,不造成伤害;想保留伤害把这行删掉
 
         if (src instanceof Player tp) {
             tp.sendMessage("§a你夺走了 " + victim.getName() + " 的 " + n + " 件兵刃!被对方击杀即归还。");
@@ -217,7 +248,7 @@ public class ItemSteal extends JavaPlugin implements Listener {
         }
         switch (args[0].toLowerCase(Locale.ROOT)) {
             case "steal": {
-                if (sender instanceof Player && !sender.hasPermission("itemsteal.admin")) {
+                if (!sender.hasPermission("itemsteal.admin")) {
                     sender.sendMessage("No permission");
                     return true;
                 }
@@ -250,7 +281,7 @@ public class ItemSteal extends JavaPlugin implements Listener {
             case "reload": {
                 if (!sender.hasPermission("itemsteal.admin")) { sender.sendMessage("无权限"); return true; }
                 reloadConfig();
-                suffixes = getConfig().getStringList("suffixes");
+                reloadSuffixes();
                 sender.sendMessage("§a已重载,后缀: " + suffixes);
                 return true;
             }

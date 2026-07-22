@@ -16,10 +16,13 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.jetbrains.annotations.NotNull;
 import org.kseco.KsEco;
+import org.kseco.ProjectBiddingDeadlineStore;
+import org.kseco.database.PortableSqlMutation;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -419,7 +422,7 @@ public final class BiddingGui implements InventoryHolder {
         } catch (Exception e) { return false; }
     }
 
-    /** 工程评标：走 BiddingManager.awardProject 的规范路径（自动评分+信誉加成+预付款+防重复评标）。 */
+    /** Legacy in-game award bridge. The Extra now fails closed until escrow settlement is exposed as a service. */
     private void doAwardProjectAuto(Player player, String projectId, String publisherUuid) {
         boolean allowed = player.hasPermission("kseco.admin")
                 || player.getUniqueId().toString().equals(publisherUuid)
@@ -431,7 +434,7 @@ public final class BiddingGui implements InventoryHolder {
             player.sendMessage("§a已按综合评分自动评标并发放预付款。");
             player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.5f, 2.0f);
         } else {
-            player.sendMessage("§c评标失败：无待评投标、项目已评标，或企业模块未加载。");
+            player.sendMessage("§c游戏内旧评标入口已安全停用，请使用 Web 管理端的托管评标流程。");
         }
     }
 
@@ -449,14 +452,17 @@ public final class BiddingGui implements InventoryHolder {
             boolean personalWalletPaid = false;
             boolean databaseCommitted = false;
             try (Statement st = conn.createStatement()) {
-                String pid = procurementId.replace("'", "''");
+                String pid = procurementId;
                 String entId; double budget; int quantity; String status;
-                try (ResultSet rs = st.executeQuery("SELECT * FROM ks_ent_procurements WHERE id='" + pid + "'")) {
-                    if (!rs.next()) { player.sendMessage("§c采购不存在。"); conn.rollback(); return; }
-                    entId = rs.getString("enterprise_id");
-                    budget = rs.getDouble("budget");
-                    quantity = rs.getInt("quantity");
-                    status = rs.getString("status");
+                try (PreparedStatement query = conn.prepareStatement("SELECT * FROM ks_ent_procurements WHERE id=?")) {
+                    query.setString(1, pid);
+                    try (ResultSet rs = query.executeQuery()) {
+                        if (!rs.next()) { player.sendMessage("§c采购不存在。"); conn.rollback(); return; }
+                        entId = rs.getString("enterprise_id");
+                        budget = rs.getDouble("budget");
+                        quantity = rs.getInt("quantity");
+                        status = rs.getString("status");
+                    }
                 }
                 if (!"OPEN".equals(status)) { player.sendMessage("§c该采购已被处理。"); conn.rollback(); return; }
                 if (!player.hasPermission("kseco.admin")
@@ -464,16 +470,19 @@ public final class BiddingGui implements InventoryHolder {
                         org.kseco.EnterprisePermissionService.MANAGE_BIDDING)) {
                     player.sendMessage("§c你没有该企业的评标权限。"); conn.rollback(); return;
                 }
-                String bid = bidId.replace("'", "''");
+                String bid = bidId;
                 String supplierEntId, supplierUuid, supplierType; double unitPrice;
-                try (Statement st2 = conn.createStatement();
-                     ResultSet rs = st2.executeQuery("SELECT * FROM ks_ent_procurement_bids WHERE id='" + bid
-                             + "' AND procurement_id='" + pid + "' AND status='PENDING'")) {
-                    if (!rs.next()) { player.sendMessage("§c投标不存在或已处理。"); conn.rollback(); return; }
-                    unitPrice = rs.getDouble("unit_price");
-                    supplierEntId = rs.getString("enterprise_id");
-                    supplierUuid = rs.getString("bidder_uuid");
-                    supplierType = rs.getString("bidder_type");
+                try (PreparedStatement query = conn.prepareStatement(
+                        "SELECT * FROM ks_ent_procurement_bids WHERE id=? AND procurement_id=? AND status='PENDING'")) {
+                    query.setString(1, bid);
+                    query.setString(2, pid);
+                    try (ResultSet rs = query.executeQuery()) {
+                        if (!rs.next()) { player.sendMessage("§c投标不存在或已处理。"); conn.rollback(); return; }
+                        unitPrice = rs.getDouble("unit_price");
+                        supplierEntId = rs.getString("enterprise_id");
+                        supplierUuid = rs.getString("bidder_uuid");
+                        supplierType = rs.getString("bidder_type");
+                    }
                 }
                 double totalPrice = unitPrice * quantity;
                 if (quantity <= 0 || !Double.isFinite(totalPrice) || totalPrice <= 0 || totalPrice > 1_000_000_000_000_000d) {
@@ -484,44 +493,62 @@ public final class BiddingGui implements InventoryHolder {
                             + " > " + plugin.vaultHook().format(budget) + "）。"); conn.rollback(); return;
                 }
                 long now = System.currentTimeMillis() / 1000;
-                String eid = entId.replace("'", "''");
+                String eid = entId;
                 double corpBal = 0;
-                try (Statement st3 = conn.createStatement();
-                     ResultSet rs = st3.executeQuery("SELECT balance FROM ks_ent_corporate_accounts WHERE enterprise_id='" + eid + "'")) {
-                    if (rs.next()) corpBal = rs.getDouble("balance");
+                String buyerBankId = null;
+                try (PreparedStatement query = conn.prepareStatement(
+                        "SELECT balance,bank_id FROM ks_ent_corporate_accounts WHERE enterprise_id=?")) {
+                    query.setString(1, eid);
+                    try (ResultSet rs = query.executeQuery()) {
+                        if (rs.next()) {
+                            corpBal = rs.getDouble("balance");
+                            buyerBankId = rs.getString("bank_id");
+                        }
+                    }
                 }
                 if (corpBal < totalPrice) {
                     player.sendMessage("§c企业公户余额不足（余额 " + plugin.vaultHook().format(corpBal) + "）。");
                     conn.rollback(); return;
                 }
-                String buyerBankId = null;
-                try (Statement st4 = conn.createStatement();
-                     ResultSet rs = st4.executeQuery("SELECT bank_id FROM ks_ent_corporate_accounts WHERE enterprise_id='" + eid + "'")) {
-                    if (rs.next()) buyerBankId = rs.getString("bank_id");
-                }
                 if (buyerBankId == null) { player.sendMessage("§c付款企业未开立公户。"); conn.rollback(); return; }
-                st.executeUpdate("UPDATE ks_ent_corporate_accounts SET balance = balance - " + totalPrice
-                        + ", updated_at = " + now + " WHERE enterprise_id='" + eid + "'");
-                st.executeUpdate("UPDATE ks_ent_enterprises SET current_assets = current_assets - " + totalPrice
-                        + " WHERE id='" + eid + "'");
-                st.executeUpdate("UPDATE ks_bank_banks SET total_assets = total_assets - " + totalPrice
-                        + " WHERE id='" + buyerBankId.replace("'", "''") + "'");
+                if (executeUpdate(conn, "UPDATE ks_ent_corporate_accounts SET balance=balance-?,updated_at=? "
+                        + "WHERE enterprise_id=? AND balance>=?", totalPrice, now, eid, totalPrice) != 1) {
+                    player.sendMessage("§c企业公户余额已发生变化。"); conn.rollback(); return;
+                }
+                requireOne(executeUpdate(conn,
+                        "UPDATE ks_ent_enterprises SET current_assets=current_assets-? WHERE id=?", totalPrice, eid),
+                        "付款企业不存在");
+                requireOne(executeUpdate(conn,
+                        "UPDATE ks_bank_banks SET total_assets=total_assets-? WHERE id=?", totalPrice, buyerBankId),
+                        "付款银行不存在");
                 if ("ENTERPRISE".equals(supplierType) && supplierEntId != null && !supplierEntId.isEmpty()) {
-                    String sid = supplierEntId.replace("'", "''");
-                    st.executeUpdate("INSERT OR IGNORE INTO ks_ent_corporate_accounts (enterprise_id, bank_id, balance, updated_at) VALUES ('"
-                            + sid + "', 'CORP-BANK', 0, " + now + ")");
-                    st.executeUpdate("UPDATE ks_ent_corporate_accounts SET balance = balance + " + totalPrice
-                            + ", updated_at = " + now + " WHERE enterprise_id='" + sid + "'");
+                    String sid = supplierEntId;
+                    PortableSqlMutation.insertIfAbsent(conn,
+                            "SELECT 1 FROM ks_ent_corporate_accounts WHERE enterprise_id=?",
+                            exists -> exists.setString(1, sid),
+                            "INSERT INTO ks_ent_corporate_accounts "
+                                    + "(enterprise_id,bank_id,balance,updated_at) VALUES (?,'CORP-BANK',0,?)", insert -> {
+                                insert.setString(1, sid);
+                                insert.setLong(2, now);
+                            });
+                    requireOne(executeUpdate(conn,
+                            "UPDATE ks_ent_corporate_accounts SET balance=balance+?,updated_at=? WHERE enterprise_id=?",
+                            totalPrice, now, sid), "供应企业公户不存在");
                     String supplierBankId = null;
-                    try (Statement st5 = conn.createStatement();
-                         ResultSet rs = st5.executeQuery("SELECT bank_id FROM ks_ent_corporate_accounts WHERE enterprise_id='" + sid + "'")) {
-                        if (rs.next()) supplierBankId = rs.getString("bank_id");
+                    try (PreparedStatement query = conn.prepareStatement(
+                            "SELECT bank_id FROM ks_ent_corporate_accounts WHERE enterprise_id=?")) {
+                        query.setString(1, sid);
+                        try (ResultSet rs = query.executeQuery()) {
+                            if (rs.next()) supplierBankId = rs.getString("bank_id");
+                        }
                     }
                     if (supplierBankId == null) { player.sendMessage("§c供应企业未开立公户。"); conn.rollback(); return; }
-                    st.executeUpdate("UPDATE ks_ent_enterprises SET current_assets = current_assets + " + totalPrice
-                            + " WHERE id='" + sid + "'");
-                    st.executeUpdate("UPDATE ks_bank_banks SET total_assets = total_assets + " + totalPrice
-                            + " WHERE id='" + supplierBankId.replace("'", "''") + "'");
+                    requireOne(executeUpdate(conn,
+                            "UPDATE ks_ent_enterprises SET current_assets=current_assets+? WHERE id=?", totalPrice, sid),
+                            "供应企业不存在");
+                    requireOne(executeUpdate(conn,
+                            "UPDATE ks_bank_banks SET total_assets=total_assets+? WHERE id=?", totalPrice, supplierBankId),
+                            "供应企业开户行不存在");
                 } else if (supplierUuid != null && !supplierUuid.isEmpty()) {
                     try {
                         personalSupplier = Bukkit.getOfflinePlayer(UUID.fromString(supplierUuid));
@@ -536,11 +563,13 @@ public final class BiddingGui implements InventoryHolder {
                 } else {
                     player.sendMessage("§c投标缺少有效的供应方账户。"); conn.rollback(); return;
                 }
-                st.executeUpdate("UPDATE ks_ent_procurement_bids SET status='AWARDED' WHERE id='" + bid + "'");
-                st.executeUpdate("UPDATE ks_ent_procurement_bids SET status='REJECTED' WHERE procurement_id='" + pid
-                        + "' AND status='PENDING' AND id<>'" + bid + "'");
-                if (st.executeUpdate("UPDATE ks_ent_procurements SET status='AWARDED' WHERE id='" + pid
-                        + "' AND status='OPEN'") != 1) {
+                requireOne(executeUpdate(conn,
+                        "UPDATE ks_ent_procurement_bids SET status='AWARDED' WHERE id=? AND status='PENDING'", bid),
+                        "中标记录已被处理");
+                executeUpdate(conn, "UPDATE ks_ent_procurement_bids SET status='REJECTED' "
+                        + "WHERE procurement_id=? AND status='PENDING' AND id<>?", pid, bid);
+                if (executeUpdate(conn,
+                        "UPDATE ks_ent_procurements SET status='AWARDED' WHERE id=? AND status='OPEN'", pid) != 1) {
                     player.sendMessage("§c该采购已被并发定标。"); conn.rollback(); return;
                 }
                 // 外部 Vault 无法加入 SQLite 事务，只能在所有 SQL 校验完成后入账；若提交失败，catch 中补偿扣回。
@@ -571,6 +600,19 @@ public final class BiddingGui implements InventoryHolder {
         } catch (Exception e) {
             player.sendMessage("§c定标失败: " + e.getMessage());
         }
+    }
+
+    private static int executeUpdate(Connection connection, String sql, Object... parameters) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            for (int index = 0; index < parameters.length; index++) {
+                statement.setObject(index + 1, parameters[index]);
+            }
+            return statement.executeUpdate();
+        }
+    }
+
+    private static void requireOne(int affected, String message) throws SQLException {
+        if (affected != 1) throw new SQLException(message);
     }
 
     private ItemStack emptyHint() {
@@ -790,7 +832,7 @@ public final class BiddingGui implements InventoryHolder {
         }
 
         private void reopenAfterCancel(UUID playerId) {
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 Player player = Bukkit.getPlayer(playerId);
                 if (player == null) return;
                 player.sendMessage("§c已取消。");
@@ -800,7 +842,7 @@ public final class BiddingGui implements InventoryHolder {
 
         /** 发布采购聊天向导：企业ID → 标题 → 数量 → 预算，镜像 web handleProcurementPublish 的校验与授权。 */
         private void handlePublishProcChat(UUID playerId, PendingPublishProc pending, String msg) {
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 Player player = Bukkit.getPlayer(playerId);
                 if (player == null) return;
                 switch (pending.step) {
@@ -885,7 +927,7 @@ public final class BiddingGui implements InventoryHolder {
         }
 
         private void handleBidChat(UUID playerId, PendingBid pending, String msg) {
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 Player player = Bukkit.getPlayer(playerId);
                 if (player == null) return;
                 try (var conn = plugin.ksCore().dataStore().getConnection()) {
@@ -905,21 +947,19 @@ public final class BiddingGui implements InventoryHolder {
                                 check.setString(1, pending.projectId);
                                 try (ResultSet rs = check.executeQuery()) {
                                     String status = rs.next() ? rs.getString("status") : null;
-                                    if (!("OPEN".equals(status) || "PENDING_DEPOSIT".equals(status))
-                                            || rs.getLong("deadline") <= now) {
+                                    if (!"OPEN".equals(status)
+                                            || !ProjectBiddingDeadlineStore.acceptsBid(
+                                            rs.getLong("deadline"), now)) {
                                         player.sendMessage("§c该项目已截止或不再接受投标。");
                                         return;
                                     }
                                 }
                             }
-                            try (PreparedStatement ps = conn.prepareStatement(
-                                    "INSERT INTO ks_ent_bids (id, project_id, bidder_uuid, bidder_type, bid_amount, submitted_at) VALUES (?,?,?,'PLAYER',?,?)")) {
-                                ps.setString(1, bidId);
-                                ps.setString(2, pending.projectId);
-                                ps.setString(3, player.getUniqueId().toString());
-                                ps.setDouble(4, amount);
-                                ps.setLong(5, now);
-                                ps.executeUpdate();
+                            if (ProjectBiddingDeadlineStore.insertBidIfOpen(conn, bidId,
+                                    pending.projectId, "", player.getUniqueId().toString(),
+                                    "PLAYER", amount, false, "", now) != 1) {
+                                player.sendMessage("§c项目状态或截止时间已变更，投标未写入。");
+                                return;
                             }
                             player.sendMessage("§a投标成功！金额: " + plugin.vaultHook().format(amount));
                             player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.5f, 1.5f);
@@ -975,7 +1015,7 @@ public final class BiddingGui implements InventoryHolder {
         }
 
         private void handlePublishChat(UUID playerId, PendingPublish pending, String msg) {
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 Player player = Bukkit.getPlayer(playerId);
                 if (player == null) return;
                 switch (pending.step) {

@@ -45,6 +45,7 @@ public final class TaxExtra implements KsEcoExtraModule {
 
     @Override
     public void onDisable() {
+        if (taxRateManager != null) taxRateManager.shutdown();
         eco.getLogger().info("[税法系统] 模块已停用。");
     }
 

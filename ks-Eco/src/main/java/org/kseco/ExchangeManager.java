@@ -1,5 +1,8 @@
 package org.kseco;
 
+import org.kseco.database.PortableSqlMutation;
+import org.kseco.database.EconomicFeatureSchema;
+
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import org.bukkit.Material;
@@ -17,6 +20,7 @@ public final class ExchangeManager {
 
     private final KsEco plugin;
     private static final Gson gson = new Gson();
+    private static final int MAX_RULE_ITEM_QUANTITY = 2304;
 
     public ExchangeManager(KsEco plugin) {
         this.plugin = plugin;
@@ -29,39 +33,9 @@ public final class ExchangeManager {
     private void createTable() {
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
-            try (Statement stmt = conn.createStatement()) {
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_eco_exchange_rules (
-                        id TEXT PRIMARY KEY,
-                        input_material TEXT NOT NULL,
-                        input_quantity INTEGER NOT NULL DEFAULT 1,
-                        input_item_data BLOB,
-                        output_material TEXT NOT NULL,
-                        output_quantity INTEGER NOT NULL DEFAULT 1,
-                        output_item_data BLOB,
-                        created_by TEXT,
-                        created_at INTEGER NOT NULL,
-                        enabled INTEGER DEFAULT 1
-                    )
-                """);
-            }
+            EconomicFeatureSchema.initializeExchange(conn);
         } catch (SQLException e) {
             plugin.getLogger().warning("创建兑换规则表失败: " + e.getMessage());
-        }
-        // 加新列（兼容旧表）
-        alterColumn("name", "TEXT");
-        alterColumn("inputs_json", "TEXT");
-        alterColumn("outputs_json", "TEXT");
-    }
-
-    private void alterColumn(String col, String type) {
-        try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
-            if (conn == null) return;
-            try (Statement stmt = conn.createStatement()) {
-                stmt.execute("ALTER TABLE ks_eco_exchange_rules ADD COLUMN " + col + " " + type);
-            }
-        } catch (SQLException ignored) {
-            // 列已存在
         }
     }
 
@@ -144,38 +118,53 @@ public final class ExchangeManager {
             RuleItem firstIn = inputs.isEmpty() ? null : inputs.get(0);
             RuleItem firstOut = outputs.isEmpty() ? null : outputs.get(0);
 
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "INSERT INTO ks_eco_exchange_rules (id, name, inputs_json, outputs_json, " +
-                    "input_material, input_quantity, input_item_data, " +
-                    "output_material, output_quantity, output_item_data, " +
-                    "created_by, created_at, enabled) " +
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1) " +
-                    "ON CONFLICT(id) DO UPDATE SET " +
-                    "name=excluded.name, inputs_json=excluded.inputs_json, outputs_json=excluded.outputs_json, " +
-                    "input_material=excluded.input_material, input_quantity=excluded.input_quantity, " +
-                    "input_item_data=excluded.input_item_data, " +
-                    "output_material=excluded.output_material, output_quantity=excluded.output_quantity, " +
-                    "output_item_data=excluded.output_item_data, created_by=excluded.created_by")) {
-                ps.setString(1, ruleId);
-                ps.setString(2, (name != null && !name.isEmpty()) ? name : null);
-                ps.setString(3, inputsJson);
-                ps.setString(4, outputsJson);
-                // 旧列兼容
-                ps.setString(5, firstIn != null ? firstIn.material() : "AIR");
-                ps.setInt(6, firstIn != null ? firstIn.quantity() : 0);
-                ps.setBytes(7, firstIn != null ? firstIn.itemData() : null);
-                ps.setString(8, firstOut != null ? firstOut.material() : "AIR");
-                ps.setInt(9, firstOut != null ? firstOut.quantity() : 0);
-                ps.setBytes(10, firstOut != null ? firstOut.itemData() : null);
-                ps.setString(11, createdBy);
-                ps.setLong(12, now);
-                ps.executeUpdate();
-            }
+            String normalizedName = (name != null && !name.isEmpty()) ? name : null;
+            PortableSqlMutation.upsert(conn,
+                    "UPDATE ks_eco_exchange_rules SET name=?,inputs_json=?,outputs_json=?,input_material=?,"
+                            + "input_quantity=?,input_item_data=?,output_material=?,output_quantity=?,"
+                            + "output_item_data=?,created_by=? WHERE id=?",
+                    ps -> bindRuleUpdate(ps, ruleId, normalizedName, inputsJson, outputsJson,
+                            firstIn, firstOut, createdBy),
+                    "INSERT INTO ks_eco_exchange_rules (id,name,inputs_json,outputs_json,input_material,"
+                            + "input_quantity,input_item_data,output_material,output_quantity,output_item_data,"
+                            + "created_by,created_at,enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)",
+                    ps -> bindRuleInsert(ps, ruleId, normalizedName, inputsJson, outputsJson,
+                            firstIn, firstOut, createdBy, now));
             return new ExchangeRule(ruleId, name, inputs, outputs, createdBy, now, true);
         } catch (SQLException e) {
             plugin.getLogger().warning("保存兑换规则失败: " + e.getMessage());
             return null;
         }
+    }
+
+    private static void bindRuleUpdate(PreparedStatement ps, String ruleId, String name, String inputsJson,
+                                       String outputsJson, RuleItem firstIn, RuleItem firstOut, String createdBy)
+            throws SQLException {
+        bindRuleValues(ps, 1, name, inputsJson, outputsJson, firstIn, firstOut, createdBy);
+        ps.setString(11, ruleId);
+    }
+
+    private static void bindRuleInsert(PreparedStatement ps, String ruleId, String name, String inputsJson,
+                                       String outputsJson, RuleItem firstIn, RuleItem firstOut, String createdBy,
+                                       long now) throws SQLException {
+        ps.setString(1, ruleId);
+        bindRuleValues(ps, 2, name, inputsJson, outputsJson, firstIn, firstOut, createdBy);
+        ps.setLong(12, now);
+    }
+
+    private static void bindRuleValues(PreparedStatement ps, int offset, String name, String inputsJson,
+                                       String outputsJson, RuleItem firstIn, RuleItem firstOut, String createdBy)
+            throws SQLException {
+        ps.setString(offset, name);
+        ps.setString(offset + 1, inputsJson);
+        ps.setString(offset + 2, outputsJson);
+        ps.setString(offset + 3, firstIn != null ? firstIn.material() : "AIR");
+        ps.setInt(offset + 4, firstIn != null ? firstIn.quantity() : 0);
+        ps.setBytes(offset + 5, firstIn != null ? firstIn.itemData() : null);
+        ps.setString(offset + 6, firstOut != null ? firstOut.material() : "AIR");
+        ps.setInt(offset + 7, firstOut != null ? firstOut.quantity() : 0);
+        ps.setBytes(offset + 8, firstOut != null ? firstOut.itemData() : null);
+        ps.setString(offset + 9, createdBy);
     }
 
     /** 删除兑换规则 */
@@ -217,7 +206,14 @@ public final class ExchangeManager {
                     "SELECT * FROM ks_eco_exchange_rules WHERE id=?")) {
                 ps.setString(1, id);
                 ResultSet rs = ps.executeQuery();
-                if (rs.next()) return mapRule(rs);
+                if (rs.next()) {
+                    try {
+                        return mapRule(rs);
+                    } catch (RuntimeException exception) {
+                        plugin.getLogger().warning("Rejected invalid exchange rule " + id + ": "
+                                + exception.getMessage());
+                    }
+                }
             }
         } catch (SQLException e) {
             plugin.getLogger().warning("查询兑换规则失败: " + e.getMessage());
@@ -237,7 +233,13 @@ public final class ExchangeManager {
             sql += " ORDER BY created_at DESC";
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
-                while (rs.next()) result.add(mapRule(rs));
+                while (rs.next()) {
+                    try {
+                        result.add(mapRule(rs));
+                    } catch (RuntimeException exception) {
+                        plugin.getLogger().warning("Skipped invalid exchange rule: " + exception.getMessage());
+                    }
+                }
             }
         } catch (SQLException e) {
             plugin.getLogger().warning("查询兑换规则失败: " + e.getMessage());
@@ -307,6 +309,9 @@ public final class ExchangeManager {
         for (Map<String, Object> map : list) {
             String mat = (String) map.get("m");
             double q = map.get("q") instanceof Number n ? n.doubleValue() : 1;
+            if (!Double.isFinite(q) || q != Math.rint(q)) {
+                throw new IllegalArgumentException("Exchange item quantity must be a finite integer");
+            }
             int qty = (int) q;
             String dB64 = (String) map.get("d");
             byte[] data = (dB64 != null && !dB64.isEmpty())
@@ -360,6 +365,13 @@ public final class ExchangeManager {
         if (rule.inputs.isEmpty()) return "规则配置错误：无输入物品";
         if (rule.outputs.isEmpty()) return "规则配置错误：无输出物品";
 
+        try {
+            for (RuleItem input : rule.inputs) totalQuantity(input.quantity(), times);
+            for (RuleItem output : rule.outputs) totalQuantity(output.quantity(), times);
+        } catch (IllegalArgumentException exception) {
+            return "兑换数量过大";
+        }
+
         org.bukkit.entity.Player player = plugin.getServer().getPlayer(playerUuid);
         if (player == null) return "玩家不在线";
 
@@ -367,7 +379,7 @@ public final class ExchangeManager {
         for (RuleItem input : rule.inputs) {
             Material mat = Material.getMaterial(input.material());
             if (mat == null) return "输入物品类型无效: " + input.material();
-            int needed = input.quantity() * times;
+            int needed = totalQuantity(input.quantity(), times);
             int found = countItems(player, input);
             if (found < needed) {
                 String display = input.toItemStack().hasItemMeta()
@@ -381,7 +393,7 @@ public final class ExchangeManager {
 
         // 2. 扣除所有 input 物品（按 times 倍）
         for (RuleItem input : rule.inputs) {
-            int remaining = input.quantity() * times;
+            int remaining = totalQuantity(input.quantity(), times);
             Material mat = Material.getMaterial(input.material());
             for (ItemStack invItem : player.getInventory().getStorageContents()) {
                 if (invItem == null || invItem.getType() != mat) continue;
@@ -399,7 +411,7 @@ public final class ExchangeManager {
         // 3. 给予所有 output 物品（按 times 倍，超出单堆叠上限由 addItem 自动拆分到多个槽位）
         for (RuleItem output : rule.outputs) {
             ItemStack item = output.toItemStack();
-            item.setAmount(output.quantity() * times);
+            item.setAmount(totalQuantity(output.quantity(), times));
             var leftover = player.getInventory().addItem(item);
             if (!leftover.isEmpty()) {
                 for (ItemStack is : leftover.values()) {
@@ -432,7 +444,36 @@ public final class ExchangeManager {
     // ---- 数据类 ----
 
     /** 单个物品定义（input 或 output 的一项） */
+    static int totalQuantity(int perExchange, int times) {
+        if (perExchange <= 0 || perExchange > MAX_RULE_ITEM_QUANTITY || times <= 0) {
+            throw new IllegalArgumentException("Invalid exchange quantity");
+        }
+        try {
+            return Math.multiplyExact(perExchange, times);
+        } catch (ArithmeticException exception) {
+            throw new IllegalArgumentException("Exchange quantity overflow", exception);
+        }
+    }
+
     public record RuleItem(String material, int quantity, byte[] itemData) {
+        public RuleItem {
+            Objects.requireNonNull(material, "material");
+            material = material.trim().toUpperCase(Locale.ROOT);
+            if (material.isEmpty() || Material.getMaterial(material) == null) {
+                throw new IllegalArgumentException("Invalid exchange material: " + material);
+            }
+            if (quantity <= 0 || quantity > MAX_RULE_ITEM_QUANTITY) {
+                throw new IllegalArgumentException("Exchange item quantity must be between 1 and "
+                        + MAX_RULE_ITEM_QUANTITY);
+            }
+            itemData = itemData == null ? null : itemData.clone();
+        }
+
+        @Override
+        public byte[] itemData() {
+            return itemData == null ? null : itemData.clone();
+        }
+
         public ItemStack toItemStack() {
             if (itemData != null && itemData.length > 0)
                 return ItemStack.deserializeBytes(itemData);

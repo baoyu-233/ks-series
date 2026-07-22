@@ -3,13 +3,18 @@ package org.kseco.extra.realestatedungeon;
 import com.google.gson.Gson;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
+import org.bukkit.Bukkit;
 import org.kscore.KsAuthManager;
 import org.kscore.KsPluginBridge;
 import org.kseco.KsEco;
+import org.kseries.instanceworld.api.InstanceWorldApi;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 副本系统 Web API 处理器。
@@ -40,18 +45,18 @@ public final class DungeonWebHandler implements HttpHandler {
     private final KsEco eco;
     private final DungeonConfigManager configManager;
     private final DungeonInstanceManager instanceManager;
-    private final DungeonGridAllocator gridAllocator;
+    private final InstanceWorldApi instanceWorld;
     private final DungeonDeathHandler deathHandler;
     private final Gson gson = new Gson();
 
     public DungeonWebHandler(KsEco eco, DungeonConfigManager configManager,
-                              DungeonInstanceManager instanceManager,
-                              DungeonGridAllocator gridAllocator,
-                              DungeonDeathHandler deathHandler) {
+                             DungeonInstanceManager instanceManager,
+                             InstanceWorldApi instanceWorld,
+                             DungeonDeathHandler deathHandler) {
         this.eco = eco;
         this.configManager = configManager;
         this.instanceManager = instanceManager;
-        this.gridAllocator = gridAllocator;
+        this.instanceWorld = instanceWorld;
         this.deathHandler = deathHandler;
     }
 
@@ -206,7 +211,14 @@ public final class DungeonWebHandler implements HttpHandler {
             sendJson(ex, 400, "{\"error\":\"" + denyMsg + "\"}");
             return;
         }
-        String instanceId = instanceManager.createInstance(templateId, s.playerUuid, s.playerName);
+        CompletableFuture<String> creation = callOnServerThread(() ->
+                instanceManager.createInstanceAsync(templateId, s.playerUuid, s.playerName));
+        String instanceId;
+        try {
+            instanceId = creation.get(30, TimeUnit.SECONDS);
+        } catch (Exception failure) {
+            throw new IOException("等待副本购票结算失败", failure);
+        }
         if (instanceId == null) {
             sendJson(ex, 400, "{\"error\":\"购票失败（余额不足/模板不存在/网格已满）\"}");
             return;
@@ -232,7 +244,7 @@ public final class DungeonWebHandler implements HttpHandler {
             sendJson(ex, 400, "{\"error\":\"Session 缺少 playerUuid\"}");
             return;
         }
-        boolean ok = instanceManager.leaveInstance(instanceId, s.playerUuid);
+        boolean ok = callOnServerThread(() -> instanceManager.leaveInstance(instanceId, s.playerUuid));
         if (!ok) {
             sendJson(ex, 400, "{\"error\":\"不在该副本中或已离开\"}");
             return;
@@ -241,7 +253,7 @@ public final class DungeonWebHandler implements HttpHandler {
     }
 
     private void handleForceEnd(HttpExchange ex, String instanceId) throws IOException {
-        boolean ok = instanceManager.forceEnd(instanceId);
+        boolean ok = callOnServerThread(() -> instanceManager.forceEnd(instanceId));
         if (!ok) {
             sendJson(ex, 400, "{\"error\":\"实例不存在或已结束\"}");
             return;
@@ -263,11 +275,26 @@ public final class DungeonWebHandler implements HttpHandler {
             sendJson(ex, 400, "{\"error\":\"Session 缺少 playerUuid\"}");
             return;
         }
-        double result = deathHandler.revive(instanceId, s.playerUuid);
+        CompletableFuture<Double> revival = callOnServerThread(() ->
+                deathHandler.reviveAsync(instanceId, s.playerUuid));
+        double result;
+        try {
+            result = revival.get(30, TimeUnit.SECONDS);
+        } catch (Exception failure) {
+            throw new IOException("等待付费复活结算失败；请求可安全重试", failure);
+        }
         if (result < 0) {
-            String msg = result == -1 ? "达到复活上限" :
-                         result == -2 ? "Vault 不可用" :
-                         result == -3 ? "余额不足" : "扣款失败";
+            String msg = switch ((int) result) {
+                case (int) DungeonDeathHandler.ERR_LIMIT -> "达到复活上限";
+                case (int) DungeonDeathHandler.ERR_VAULT -> "Vault 不可用";
+                case (int) DungeonDeathHandler.ERR_BALANCE -> "余额不足";
+                case (int) DungeonDeathHandler.ERR_WITHDRAW -> "扣款失败";
+                case (int) DungeonDeathHandler.ERR_INSTANCE -> "副本不存在、已结束或不属于你";
+                case (int) DungeonDeathHandler.ERR_NOT_DEAD -> "当前状态不可复活";
+                case (int) DungeonDeathHandler.ERR_PERSIST -> "复活记录失败，已尝试退款";
+                case (int) DungeonDeathHandler.ERR_OFFLINE -> "玩家必须在线才能实际回场";
+                default -> "复活失败";
+            };
             sendJson(ex, 400, "{\"error\":\"" + msg + "\"}");
             return;
         }
@@ -313,9 +340,21 @@ public final class DungeonWebHandler implements HttpHandler {
     }
 
     private void handleGridsList(HttpExchange ex) throws IOException {
-        sendJson(ex, 200, "{\"grids\":" + gson.toJson(gridAllocator.listAll()) +
-                ",\"freeCount\":" + gridAllocator.getFreeCount() +
-                ",\"maxGrids\":" + configManager.snapshot().maxGrids + "}");
+        List<Map<String, Object>> grids = new ArrayList<>();
+        instanceWorld.grids().forEach(grid -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", grid.gridId());
+            row.put("world", grid.worldName());
+            row.put("gridX", grid.centerX());
+            row.put("gridZ", grid.centerZ());
+            row.put("status", grid.status());
+            row.put("occupiedSince", grid.occupiedSince());
+            row.put("lastUsedAt", grid.lastUsedAt());
+            grids.add(row);
+        });
+        sendJson(ex, 200, "{\"grids\":" + gson.toJson(grids) +
+                ",\"freeCount\":" + instanceWorld.freeGridCount() +
+                ",\"maxGrids\":" + instanceWorld.maxGridCount(configManager.snapshot().gridWorldName) + "}");
     }
 
     // ================================================================
@@ -335,6 +374,29 @@ public final class DungeonWebHandler implements HttpHandler {
         }
         eco.bridge().touchToken(token);
         return s;
+    }
+
+    private <T> T callOnServerThread(Callable<T> action) throws IOException {
+        if (Bukkit.isPrimaryThread()) {
+            try {
+                return action.call();
+            } catch (Exception failure) {
+                throw new IOException("副本操作失败", failure);
+            }
+        }
+        CompletableFuture<T> result = new CompletableFuture<>();
+        Bukkit.getScheduler().runTask(eco, () -> {
+            try {
+                result.complete(action.call());
+            } catch (Throwable failure) {
+                result.completeExceptionally(failure);
+            }
+        });
+        try {
+            return result.get(30, TimeUnit.SECONDS);
+        } catch (Exception failure) {
+            throw new IOException("等待服务器线程处理副本操作失败", failure);
+        }
     }
 
     private KsAuthManager.Session requireAdmin(HttpExchange ex) throws IOException {

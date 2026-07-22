@@ -27,6 +27,11 @@ public final class EnterpriseLevelManager {
         refreshLevels();
     }
 
+    /** Reloads the shared level cache without blocking Paper's server thread. */
+    public void refreshLevelsAsync() {
+        plugin.asyncWorkPool().executeDatabase(this::refreshLevels);
+    }
+
     private void reloadConfig() {
         maxLevel = Math.max(1, plugin.getConfig().getInt("enterprise-levels.max-level", 10));
         TreeMap<Integer, Double> configured = new TreeMap<>();
@@ -65,7 +70,7 @@ public final class EnterpriseLevelManager {
         try (var conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
             try (var statement = conn.createStatement()) {
-                statement.executeUpdate("CREATE TABLE IF NOT EXISTS ks_ent_enterprises (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'PRIVATE', owner_uuids TEXT NOT NULL, registered_capital REAL NOT NULL, current_assets REAL DEFAULT 0.0, employee_count INTEGER DEFAULT 0, region TEXT, status TEXT DEFAULT 'ACTIVE', created_at INTEGER NOT NULL)");
+                statement.executeUpdate("CREATE TABLE IF NOT EXISTS ks_ent_enterprises (id VARCHAR(64) PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'PRIVATE', owner_uuids TEXT NOT NULL, registered_capital REAL NOT NULL, current_assets REAL DEFAULT 0.0, employee_count INTEGER DEFAULT 0, region TEXT, status TEXT DEFAULT 'ACTIVE', created_at INTEGER NOT NULL)");
             }
             try (var statement = conn.createStatement()) {
                 statement.executeUpdate("ALTER TABLE ks_ent_enterprises ADD COLUMN level INTEGER NOT NULL DEFAULT 1");
@@ -117,6 +122,7 @@ public final class EnterpriseLevelManager {
             } catch (SQLException auditFailure) {
                 plugin.getLogger().warning("Enterprise level changed but audit write failed: " + auditFailure.getMessage());
             }
+            plugin.publishCrossServerInvalidation("enterprise-level", enterpriseId);
             return true;
         } catch (SQLException e) {
             plugin.getLogger().log(Level.WARNING, "Failed to set enterprise level: " + enterpriseId, e);

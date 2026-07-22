@@ -1,10 +1,11 @@
 package org.kseco.extra.enterprise;
 
 import org.kseco.KsEco;
+import org.kseco.ProjectBiddingDeadlineStore;
 
 import java.sql.*;
 import java.util.*;
-import org.kseco.extra.enterprise.EnterpriseManager.Enterprise;
+import java.util.function.Consumer;
 
 /**
  * 招投标管理器。
@@ -20,10 +21,17 @@ public final class BiddingManager {
 
     private final KsEco eco;
     private final EnterpriseManager enterpriseManager;
+    private final Consumer<String> warningSink;
 
     public BiddingManager(KsEco eco, EnterpriseManager enterpriseManager) {
+        this(eco, enterpriseManager,
+                message -> eco.getLogger().warning("[招投标] " + message));
+    }
+
+    BiddingManager(KsEco eco, EnterpriseManager enterpriseManager, Consumer<String> warningSink) {
         this.eco = eco;
         this.enterpriseManager = enterpriseManager;
+        this.warningSink = warningSink;
     }
 
     public void init() {}
@@ -79,29 +87,20 @@ public final class BiddingManager {
 
         // 获取项目预算
         Project project = getProject(projectId);
-        if (project == null || !"OPEN".equals(project.status())) return null;
+        long now = System.currentTimeMillis() / 1000;
+        if (project == null || !"OPEN".equals(project.status())
+                || !ProjectBiddingDeadlineStore.acceptsBid(project.deadline(), now)) return null;
 
         if (ent.registeredCapital() < project.budget() * 0.75) {
             return null; // 资质不足
         }
 
         String id = UUID.randomUUID().toString().substring(0, 8);
-        long now = System.currentTimeMillis() / 1000;
-
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return null;
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "INSERT INTO ks_ent_bids (id, project_id, enterprise_id, bid_amount, " +
-                    "is_consortium, consortium_members, submitted_at) VALUES (?,?,?,?,?,?,?)")) {
-                ps.setString(1, id);
-                ps.setString(2, projectId);
-                ps.setString(3, enterpriseId);
-                ps.setDouble(4, bidAmount);
-                ps.setInt(5, isConsortium ? 1 : 0);
-                ps.setString(6, String.join(",", consortiumMembers != null ? consortiumMembers : List.of()));
-                ps.setLong(7, now);
-                ps.executeUpdate();
-            }
+            if (ProjectBiddingDeadlineStore.insertBidIfOpen(conn, id, projectId,
+                    enterpriseId, null, "ENTERPRISE", bidAmount, isConsortium,
+                    String.join(",", consortiumMembers != null ? consortiumMembers : List.of()), now) != 1) return null;
             return new Bid(id, projectId, enterpriseId, bidAmount, isConsortium, "PENDING", now);
         } catch (SQLException e) {
             eco.getLogger().warning("[招投标] 投标失败: " + e.getMessage());
@@ -110,105 +109,15 @@ public final class BiddingManager {
     }
 
     /**
-     * 评标/中标：基础规则仍是价低者中标，但拥有工业地块的企业享受"招投标信誉加成"——
-     * 报价按 (1 - industry_bidding_reputation_bonus_pct) 打折后参与排名（只影响排名，不影响实际中标价/预付款）。
-     * 招投标本身是纯数据库/GUI 操作，没有物理坐标，因此这里是地块福利系统里唯一的"纯所有权判定"场景。
+     * Legacy compatibility entry. Project awards require funded escrow, conditional settlement,
+     * and recovery state owned by the current Web award workflow. This old method cannot prove
+     * those invariants, so it must never mutate bid/project rows or pay owners through Vault.
      */
     public Bid awardProject(String projectId) {
-        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return null;
-
-            // 取出全部待评标投标，逐条计入工业地块信誉加成后按 effectiveAmount 最低者中标
-            List<Bid> pending = new ArrayList<>();
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT * FROM ks_ent_bids WHERE project_id=? AND status='PENDING'")) {
-                ps.setString(1, projectId);
-                ResultSet rs = ps.executeQuery();
-                while (rs.next()) {
-                    pending.add(new Bid(
-                            rs.getString("id"), rs.getString("project_id"),
-                            rs.getString("enterprise_id"), rs.getDouble("bid_amount"),
-                            rs.getInt("is_consortium") == 1, "PENDING",
-                            rs.getLong("submitted_at")));
-                }
-            }
-            if (pending.isEmpty()) return null;
-
-            double reputationBonusPct = industryReputationBonusPct();
-            Bid bestBid = null;
-            double bestEffectiveAmount = Double.MAX_VALUE;
-            for (Bid b : pending) {
-                double effectiveAmount = b.bidAmount();
-                if (reputationBonusPct > 0 && enterpriseOwnsIndustrialPlot(b.enterpriseId())) {
-                    effectiveAmount *= (1 - reputationBonusPct);
-                }
-                if (effectiveAmount < bestEffectiveAmount) {
-                    bestEffectiveAmount = effectiveAmount;
-                    bestBid = b;
-                }
-            }
-            if (bestBid == null) return null;
-
-            // 先条件更新项目状态（仅 OPEN 可评标）：不加这个检查的话，已评标项目可以
-            // 反复调用本方法，每次给剩余 PENDING 投标发一份预付款。
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "UPDATE ks_ent_projects SET status='AWARDED' WHERE id=? AND status='OPEN'")) {
-                ps.setString(1, projectId);
-                if (ps.executeUpdate() == 0) return null; // 已评标/已关闭
-            }
-            // 更新投标状态
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "UPDATE ks_ent_bids SET status='AWARDED' WHERE id=?")) {
-                ps.setString(1, bestBid.id());
-                ps.executeUpdate();
-            }
-
-            // 发放预付款给中标企业
-            Project project = getProject(projectId);
-            if (project != null) {
-                double prepayment = project.budget() * project.prepaymentRatio();
-                Enterprise ent = enterpriseManager.getEnterprise(bestBid.enterpriseId());
-                if (ent != null) {
-                    for (UUID owner : ent.ownerUuids()) {
-                        var player = org.bukkit.Bukkit.getOfflinePlayer(owner);
-                        eco.vaultHook().deposit(player, prepayment / ent.ownerUuids().size());
-                    }
-                }
-            }
-
-            return bestBid;
-        } catch (SQLException e) {
-            eco.getLogger().warning("[招投标] 评标失败: " + e.getMessage());
-            return null;
-        }
-    }
-
-    /** 招投标信誉加成比例（industry_bidding_reputation_bonus_pct，地块福利系统管理员可调，缺省 5%）。 */
-    private double industryReputationBonusPct() {
-        Object pct = callLandPerk("getPerkValue", new Class<?>[]{String.class, double.class},
-                "industry_bidding_reputation_bonus_pct", 0.05);
-        return pct instanceof Number n ? n.doubleValue() : 0.05;
-    }
-
-    private boolean enterpriseOwnsIndustrialPlot(String enterpriseId) {
-        Object owns = callLandPerk("enterpriseOwnsZoneType", new Class<?>[]{String.class, String.class},
-                enterpriseId, "INDUSTRIAL");
-        return Boolean.TRUE.equals(owns);
-    }
-
-    /** 反射调用 ks-eco-realestate 的 LandPerkManager（ks-Eco-enterprise 对该模块没有编译期依赖）。 */
-    private Object callLandPerk(String method, Class<?>[] argTypes, Object... args) {
-        if (eco.extraModuleLoader() == null) return null;
-        Object module = eco.extraModuleLoader().getModule("ks-eco-realestate");
-        if (module == null) return null;
-        try {
-            Object manager = module.getClass().getMethod("landPerkManager").invoke(module);
-            if (manager == null) return null;
-            return manager.getClass().getMethod(method, argTypes).invoke(manager, args);
-        } catch (Exception e) {
-            eco.getLogger().warning("[招投标] 反射调用地块福利模块失败(" + method + "): " + e.getMessage());
-            return null;
-        }
+        warningSink.accept("已拒绝旧评标入口"
+                + (projectId == null || projectId.isBlank() ? "" : "，项目=" + projectId)
+                + "；该入口没有托管与可恢复结算，必须改走现有 Web 托管评标流程。");
+        return null;
     }
 
     private Project getProject(String id) {

@@ -8,6 +8,7 @@ import org.bukkit.Sound;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
@@ -121,13 +122,16 @@ public final class BlindBoxAdminGui implements InventoryHolder {
         build();
         player.openInventory(inventory);
         plugin.blindBoxManager().loadPoolsAsync(rows -> {
-            if (generation != loadGeneration || !isStillOpen(player)) return;
-            pools.clear();
-            pools.addAll(rows);
-            loading = false;
-            if (afterLoad != null) afterLoad.run();
-            else rebuildAndOpen(player);
-        }, error -> finishLoadError(player, generation, error));
+            plugin.scheduler().runEntity(player, () -> {
+                if (generation != loadGeneration || !isStillOpen(player)) return;
+                pools.clear();
+                pools.addAll(rows);
+                loading = false;
+                if (afterLoad != null) afterLoad.run();
+                else rebuildAndOpen(player);
+            }, () -> { });
+        }, error -> plugin.scheduler().runEntity(player,
+                () -> finishLoadError(player, generation, error), () -> { }));
     }
 
     private void refreshLoots(Player player) {
@@ -141,12 +145,15 @@ public final class BlindBoxAdminGui implements InventoryHolder {
             return;
         }
         plugin.blindBoxManager().loadLootViewsAsync(selectedPoolId, true, rows -> {
-            if (generation != loadGeneration || !isStillOpen(player)) return;
-            loots.clear();
-            loots.addAll(rows);
-            loading = false;
-            rebuildAndOpen(player);
-        }, error -> finishLoadError(player, generation, error));
+            plugin.scheduler().runEntity(player, () -> {
+                if (generation != loadGeneration || !isStillOpen(player)) return;
+                loots.clear();
+                loots.addAll(rows);
+                loading = false;
+                rebuildAndOpen(player);
+            }, () -> { });
+        }, error -> plugin.scheduler().runEntity(player,
+                () -> finishLoadError(player, generation, error), () -> { }));
     }
 
     private void finishLoadError(Player player, long generation, String error) {
@@ -516,7 +523,7 @@ public final class BlindBoxAdminGui implements InventoryHolder {
         lore.add(Component.empty());
         lore.add(Component.text("§a§l左键 §7查看/管理战利品", NamedTextColor.YELLOW));
         lore.add(Component.text("§e§l右键 §7" + (enabled ? "停用" : "启用") + "此池", NamedTextColor.YELLOW));
-        lore.add(Component.text("§c§lShift+右键 §7删除此池（包含所有战利品）", NamedTextColor.RED));
+        lore.add(Component.text("§c§l中键 §7删除此池（包含所有战利品）", NamedTextColor.RED));
         meta.lore(lore);
         stack.setItemMeta(meta);
         return stack;
@@ -879,7 +886,7 @@ public final class BlindBoxAdminGui implements InventoryHolder {
                         String poolId = String.valueOf(pool.get("id"));
                         boolean enabled = pool.get("enabled") instanceof Boolean b ? b
                                 : pool.get("enabled") instanceof Number n && n.intValue() != 0;
-                        if (event.isShiftClick() && event.isRightClick()) {
+                        if (event.getClick() == ClickType.MIDDLE) {
                             gui.deletePool(poolId, player);
                         } else if (event.isRightClick()) {
                             gui.togglePool(poolId, !enabled, player);
@@ -1165,13 +1172,13 @@ public final class BlindBoxAdminGui implements InventoryHolder {
                 // view=4：替换现有战利品的物品
                 gui.pendingEditItem = dropped.clone();
                 gui.pendingEditItem.setAmount(1);
-                Bukkit.getScheduler().runTask(plugin, () -> gui.rebuildAndOpen(player));
+                plugin.scheduler().runEntity(player, () -> gui.rebuildAndOpen(player), () -> { });
                 player.sendMessage("§a已捕获替换物品: §f" + dropped.getType().name());
             } else {
                 // view=2：添加新战利品
                 gui.pendingItem = dropped.clone();
                 gui.pendingItem.setAmount(1);
-                Bukkit.getScheduler().runTask(plugin, () -> gui.rebuildAndOpen(player));
+                plugin.scheduler().runEntity(player, () -> gui.rebuildAndOpen(player), () -> { });
                 player.sendMessage("§a已捕获物品: §f" + dropped.getType().name());
             }
         }
@@ -1205,7 +1212,7 @@ public final class BlindBoxAdminGui implements InventoryHolder {
 
             event.setCancelled(true);
             String msg = event.getMessage().trim();
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 Player player = Bukkit.getPlayer(playerId);
                 if (player == null) {
                     pendingPoolNameEdit.remove(playerId);

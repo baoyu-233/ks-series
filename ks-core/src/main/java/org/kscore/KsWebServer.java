@@ -2,9 +2,11 @@ package org.kscore;
 
 import com.sun.net.httpserver.HttpServer;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.kscore.scheduler.KsScheduler;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.logging.Level;
@@ -66,9 +68,8 @@ public final class KsWebServer {
         running = true;
 
         // 定时清理过期会话（每 5 分钟）
-        BukkitScheduler.scheduleAsyncRepeating(plugin, () -> {
-            authManager.cleanup();
-        }, 5 * 60 * 20L, 5 * 60 * 20L);
+        KsScheduler.runAsyncAtFixedRate(plugin, authManager::cleanup,
+                Duration.ofMinutes(5), Duration.ofMinutes(5));
 
         plugin.getLogger().info("Web 网关已启动 — 绑定: " +
                 (config.getBindAddress().isEmpty() ? "0.0.0.0" : config.getBindAddress()) +
@@ -87,6 +88,7 @@ public final class KsWebServer {
             plugin.getLogger().info("Web 网关已停止。");
         }
         shutdownExecutor();
+        KsScheduler.cancelAsyncTasks(plugin);
     }
 
     private void shutdownExecutor() {
@@ -98,15 +100,5 @@ public final class KsWebServer {
 
     public boolean isRunning() {
         return running && server != null;
-    }
-
-    /**
-     * 内部调度器助手 — 封装 Bukkit.getScheduler() 调用。
-     */
-    private static class BukkitScheduler {
-        static void scheduleAsyncRepeating(JavaPlugin plugin, Runnable task, long delay, long period) {
-            plugin.getServer().getScheduler().runTaskTimerAsynchronously(
-                    plugin, task, delay, period);
-        }
     }
 }

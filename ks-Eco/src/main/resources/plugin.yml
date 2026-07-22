@@ -2,10 +2,12 @@ name: ks-Eco
 version: 1.2.0
 main: org.kseco.KsEco
 api-version: '1.21'
+folia-supported: ${folia.supported}
 description: ks-Series 经济核心 — 市场系统、官方收购/出售、玩家交易、潜影盒深度解析、动态定价
 authors: [you]
 depend: [ks-core]
 softdepend: [Vault, FastAsyncWorldEdit, WorldEdit, MythicMobs, ks-InstanceWorld]
+loadbefore: [MMOItems, MMOCore]
 
 commands:
   kseco:

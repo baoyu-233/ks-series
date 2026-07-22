@@ -8,6 +8,7 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.kseries.rpg.api.RpgProgressionApi;
+import org.kseries.rpg.api.RpgSeasonStatusApi;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +39,7 @@ final class RpgCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(ChatColor.GREEN + "ks-RPG 配方与战斗内容已热重载。");
             return true;
         }
+        if (isSeason(args[0])) return handleSeason(sender, args);
         if (isProof(args[0])) return handleProof(sender, args);
         if (isGate(args[0])) return handleGate(sender, args);
         if (!isExchange(args[0])) return false;
@@ -77,6 +79,48 @@ final class RpgCommand implements CommandExecutor, TabCompleter {
             case OUTPUT_INVALID -> sender.sendMessage(ChatColor.RED + "此配方的产物数量配置无效。");
         }
         return true;
+    }
+
+    private boolean handleSeason(CommandSender sender, String[] args) {
+        if (args.length > 1 && !isStatus(args[1])) {
+            sender.sendMessage(ChatColor.RED + "用法：/ksrpg 赛季 状态");
+            return true;
+        }
+        for (String line : seasonStatusLines(plugin.seasonStatus(), sender.hasPermission("ksrpg.admin"))) {
+            sender.sendMessage(line);
+        }
+        return true;
+    }
+
+    static List<String> seasonStatusLines(RpgSeasonStatusApi.RuntimeStatus status, boolean admin) {
+        List<String> lines = new ArrayList<>();
+        lines.add(ChatColor.AQUA + "[ks-RPG] 赛季状态");
+        switch (status.state()) {
+            case DISABLED -> lines.add(ChatColor.YELLOW
+                    + "赛季系统未启用（season.enabled=false）。");
+            case STARTING -> {
+                lines.add(ChatColor.YELLOW + "赛季存储正在初始化。");
+                lines.add(ChatColor.GRAY + "当前未启动任何赛季事件，也不会改动玩家数据。");
+            }
+            case READY -> {
+                lines.add(ChatColor.GREEN + "赛季基础存储已就绪。");
+                lines.add(ChatColor.GRAY + "当前未创建赛季、未启动事件，也不会自动改动玩家数据。");
+            }
+            case FAILED -> lines.add(ChatColor.RED + "赛季存储初始化失败，服务保持禁用。");
+            case STOPPED -> lines.add(ChatColor.GRAY + "赛季运行时已停止。");
+        }
+        if (admin) {
+            lines.add(ChatColor.DARK_GRAY + "configured=" + status.configuredEnabled()
+                    + " service=" + status.serviceEnabled()
+                    + " state=" + status.state());
+            if (!status.storagePath().isBlank()) {
+                lines.add(ChatColor.DARK_GRAY + "storage=" + status.storagePath());
+            }
+            if (!status.detail().isBlank() && status.state() == RpgSeasonStatusApi.RuntimeState.FAILED) {
+                lines.add(ChatColor.RED + status.detail());
+            }
+        }
+        return List.copyOf(lines);
     }
 
     private boolean handleProof(CommandSender sender, String[] args) {
@@ -195,7 +239,10 @@ final class RpgCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) return prefix(args[0], List.of("catalog", "exchange", "reload", "proof", "gate",
-                "目录", "兑换", "重载", "凭证", "门槛"));
+                "season", "目录", "兑换", "重载", "凭证", "门槛", "赛季"));
+        if (args.length == 2 && isSeason(args[0])) {
+            return prefix(args[1], List.of("status", "状态"));
+        }
         if (args.length == 2 && isExchange(args[0])) {
             return prefix(args[1], plugin.catalog().exchanges().stream().map(Catalog.Exchange::id).toList());
         }
@@ -244,6 +291,14 @@ final class RpgCommand implements CommandExecutor, TabCompleter {
 
     private boolean isGate(String value) {
         return value.equalsIgnoreCase("gate") || value.equals("门槛");
+    }
+
+    private boolean isSeason(String value) {
+        return value.equalsIgnoreCase("season") || value.equals("赛季");
+    }
+
+    private boolean isStatus(String value) {
+        return value.equalsIgnoreCase("status") || value.equals("状态");
     }
 
     private boolean isList(String value) {

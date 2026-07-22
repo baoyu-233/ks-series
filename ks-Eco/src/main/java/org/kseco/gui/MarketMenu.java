@@ -61,9 +61,9 @@ public final class MarketMenu implements InventoryHolder {
         // 先打开占位 loading 界面，不阻塞主线程
         this.inventory = buildLoadingInventory();
         player.openInventory(inventory);
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+        plugin.scheduler().runAsync(() -> {
             List<Listing> loaded = loadListings(viewerUuid, requestedMyOnly, requestedPropertyOnly);
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runEntity(player, () -> {
                 if (player.isOnline() && generation == loadGeneration
                         && player.getOpenInventory().getTopInventory().getHolder() == this) {
                     currentListings = loaded;
@@ -73,7 +73,7 @@ public final class MarketMenu implements InventoryHolder {
                     build();
                     player.openInventory(inventory);
                 }
-            });
+            }, () -> { });
         });
     }
 
@@ -118,8 +118,11 @@ public final class MarketMenu implements InventoryHolder {
         }
 
         // Navigation row
-        if (page > 0)
+        if (page > 0) {
             inventory.setItem(45, navButton(Material.ARROW, "§a◀ 上一页"));
+        } else {
+            inventory.setItem(45, navButton(Material.OAK_DOOR, "§c✕ 返回主菜单", "§7回到经济面板"));
+        }
         if (!showPropertyOnly) {
             inventory.setItem(46, navButton(Material.BOOK, "§b玩家求购", "§7创建普通物品或精确 NBT 求购单", "§7手持匹配物品即可出售"));
         }
@@ -267,6 +270,9 @@ public final class MarketMenu implements InventoryHolder {
                     if (menu.page > 0) {
                         menu.page--;
                         menu.rebuildAndOpen(player);
+                    } else {
+                        player.closeInventory();
+                        new EcoGuiMainMenu(plugin).open(player);
                     }
                 }
                 case 46 -> {

@@ -1,0 +1,56 @@
+schema: 1
+nodes:
+  proxy:
+    runtime: BungeeCord
+    purpose: 跨服入口、服务器切换、旧版 IP 转发
+    public_port: 25577
+  paper-rpg:
+    runtime: Paper 1.21.11
+    purpose: RPG、Boss、副本、剧情与依赖生态
+    backend_port: 25571
+    ks_plugins:
+      - ks-core
+      - ks-InstanceWorld
+      - ks-Eco
+      - ks-RPG
+      - ks-RPG-Gui
+      - ks-BossCombat
+      - ks-Cinematic
+    external_plugin_groups:
+      - rpg-runtime
+  leaves-survival:
+    runtime: Leaves 1.21.11
+    purpose: 主端；复用 test_1_21，保留现有全部插件、玩家数据与世界
+    backend_port: 25565
+    source_instance: test_1_21
+    ks_plugins: existing-all
+  folia-lab:
+    runtime: Folia 1.21.11
+    purpose: 已迁移模块的并行区域调度兼容验证
+    backend_port: 25573
+    ks_plugins:
+      - ks-core
+      - ks-Eco
+    restrictions:
+      - ks-Eco 仅启用 Folia 核心制品，所有 Extra 默认禁用
+      - 未通过实体/区域线程审计的插件禁止安装
+      - RPG 第三方依赖不得以 Paper 可加载推定为 Folia 兼容
+
+external_plugin_groups:
+  rpg-runtime:
+    source: test_1_21/plugins
+    files:
+      - FastAsyncWorldEdit-Paper-2.15.3-SNAPSHOT-1344.jar
+      - ItemsAdder_4.0.16.jar
+      - MMOInventory-2.0 28.jar
+      - MMOItems-6.10.1-20260216.173633-48(1).jar
+      - MythicCrucible-5.12.0.jar
+      - MythicLib-dist-1.7.1-20260217.194250-84(1).jar
+      - MythicMobs.jar
+      - ModelEngine-R4.0.9.jar
+      - PlaceholderAPI-2.12.2.jar
+      - LuckPerms-Bukkit-5.5.53.jar
+      - ProtocolLib.jar
+      - VaultUnlocked-2.20.1.jar
+      - '[M]MMOCore-1.13.1-51.jar'
+      - packetevents-spigot-2.12.2.jar

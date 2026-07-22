@@ -1,0 +1,43 @@
+ashen_frontier_cinderback_whelp:
+  scoreboard-tag: KS_Cinderback_Whelp
+  drops:
+    - type: MATERIAL
+      id: KS_FIELD_SCRAP
+      chance: 1.0
+      minimum: 2
+      maximum: 4
+    - type: MATERIAL
+      id: KS_CINDER_SCALE
+      chance: 0.75
+      minimum: 2
+      maximum: 4
+    - type: MATERIAL
+      id: KS_FORGE_HEART
+      chance: 0.12
+      amount: 1
+    - type: MISCELLANEOUS
+      id: KS_ASHEN_ARMAMENT_CACHE
+      chance: 0.02
+      amount: 1
+
+stormcliff_thunderbird:
+  scoreboard-tag: KS_Stormwatch_Thunderbird
+  drops:
+    - type: MATERIAL
+      id: KS_FIELD_SCRAP
+      chance: 1.0
+      minimum: 2
+      maximum: 4
+    - type: MATERIAL
+      id: KS_STORM_FEATHER
+      chance: 0.75
+      minimum: 2
+      maximum: 4
+    - type: MATERIAL
+      id: KS_CHARGED_CORE
+      chance: 0.12
+      amount: 1
+    - type: MISCELLANEOUS
+      id: KS_STORM_ARMAMENT_CACHE
+      chance: 0.02
+      amount: 1

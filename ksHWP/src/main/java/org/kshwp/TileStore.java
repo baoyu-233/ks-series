@@ -34,7 +34,11 @@ public final class TileStore {
 
     /** 获取 tile 文件路径。 */
     private Path tilePath(String world, int zoom, int cx, int cz) {
-        return baseDir.resolve(world).resolve(String.valueOf(zoom))
+        Path worldDir = resolveWorldDir(world);
+        if (worldDir == null) {
+            throw new IllegalArgumentException("invalid world name: " + world);
+        }
+        return worldDir.resolve(String.valueOf(zoom))
                 .resolve(String.valueOf(cx)).resolve(cz + ".png");
     }
 
@@ -69,19 +73,27 @@ public final class TileStore {
 
     /** 删除指定世界所有 tile（管理员全量重载）。 */
     public void deleteWorld(String world) {
-        Path worldDir = baseDir.resolve(world);
-        if (Files.exists(worldDir)) {
-            try (var stream = Files.walk(worldDir)) {
-                stream.sorted(Comparator.reverseOrder())
-                        .forEach(p -> { try { Files.deleteIfExists(p); } catch (IOException ignored) {} });
-            } catch (IOException ignored) {}
-        }
+        Path worldDir = resolveWorldDir(world);
+        if (worldDir == null || !Files.exists(worldDir)) return;
+        try (var stream = Files.walk(worldDir)) {
+            stream.sorted(Comparator.reverseOrder())
+                    .forEach(p -> { try { Files.deleteIfExists(p); } catch (IOException ignored) {} });
+        } catch (IOException ignored) {}
+    }
+
+    private Path resolveWorldDir(String world) {
+        if (world == null || world.isBlank()) return null;
+        if (world.contains("..") || world.indexOf('/') >= 0 || world.indexOf('\\') >= 0) return null;
+        Path base = baseDir.toAbsolutePath().normalize();
+        Path worldDir = base.resolve(world).normalize();
+        if (!worldDir.startsWith(base)) return null;
+        return worldDir;
     }
 
     /** 检查某个区域是否有任何 tile 缓存（用于判断是否被探索过）。 */
     public boolean hasAnyTile(String world) {
-        Path worldDir = baseDir.resolve(world);
-        if (!Files.exists(worldDir)) return false;
+        Path worldDir = resolveWorldDir(world);
+        if (worldDir == null || !Files.exists(worldDir)) return false;
         try (var stream = Files.walk(worldDir)) {
             return stream.anyMatch(p -> p.toString().endsWith(".png"));
         } catch (IOException e) {

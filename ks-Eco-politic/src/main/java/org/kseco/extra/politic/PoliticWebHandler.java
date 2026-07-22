@@ -10,6 +10,7 @@ import org.kseco.KsEco;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.function.Supplier;
 
 /**
  * 政治系统 Web API 处理器。
@@ -549,17 +550,15 @@ public final class PoliticWebHandler implements HttpHandler {
 
         // 计票结果是否触发自动流转
         VoteManager.Tally tally = result.tally();
+        ProposalManager.TransitionResult advance = null;
         if (tally.quorumMet()) {
-            proposalManager.autoAdvanceAfterVote(id, tally);
+            advance = proposalManager.autoAdvanceAfterVote(id, tally);
             p = proposalManager.getProposal(id); // refresh
         }
 
-        Map<String, Object> resp = new LinkedHashMap<>();
-        resp.put("success", true);
-        resp.put("voteId", result.voteId());
-        resp.put("tally", tally.toMap());
-        resp.put("newStatus", p != null ? p.status : stage);
-        sendJson(exchange, 200, gson.toJson(resp));
+        WebActionResult response = voteResponse(
+                result.voteId(), tally, p != null ? p.status : stage, advance);
+        sendJson(exchange, response.statusCode(), gson.toJson(response.body()));
     }
 
     private void handleTribuneReview(HttpExchange exchange) throws IOException {
@@ -580,20 +579,45 @@ public final class PoliticWebHandler implements HttpHandler {
         String newState = "APPROVE".equalsIgnoreCase(action) ? "APPROVED" : "VETOED";
 
         // 先投出保民官的票
-        voteManager.castVote(id, s.playerUuid, s.playerName, "TRIBUNE",
+        var voteResult = voteManager.castVote(id, s.playerUuid, s.playerName, "TRIBUNE",
             "APPROVED".equals(newState) ? "YES" : "NO", "TRIBUNE_REVIEW");
+        if (!voteResult.success()) {
+            sendJson(exchange, 400, gson.toJson(Map.of(
+                    "success", false, "newStatus", "TRIBUNE_REVIEW", "error", voteResult.error())));
+            return;
+        }
 
         var result = proposalManager.transitionProposal(id, newState, s.playerUuid, s.playerName);
-        if (result.success() && "APPROVED".equals(newState)) {
-            // 自动颁布
-            proposalManager.transitionProposal(id, "ENACTED", s.playerUuid, "SYSTEM");
-        }
+        result = continueApprovedEnactment(newState, result,
+                () -> proposalManager.transitionProposal(id, "ENACTED", s.playerUuid, "SYSTEM"));
 
         ProposalManager.Proposal p = proposalManager.getProposal(id);
         sendJson(exchange, result.success() ? 200 : 400,
             gson.toJson(Map.of("success", result.success(), "newStatus", p != null ? p.status : "",
                 "error", result.error() != null ? result.error() : "")));
     }
+
+    static WebActionResult voteResponse(String voteId, VoteManager.Tally tally,
+                                        String currentStatus,
+                                        ProposalManager.TransitionResult advance) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        boolean success = advance == null || advance.success();
+        body.put("success", success);
+        body.put("voteId", voteId);
+        body.put("tally", tally.toMap());
+        body.put("newStatus", currentStatus);
+        if (!success) body.put("error", advance.error());
+        return new WebActionResult(success ? 200 : 409, body);
+    }
+
+    static ProposalManager.TransitionResult continueApprovedEnactment(
+            String newState, ProposalManager.TransitionResult transition,
+            Supplier<ProposalManager.TransitionResult> enactment) {
+        if (!transition.success() || !"APPROVED".equals(newState)) return transition;
+        return enactment.get();
+    }
+
+    record WebActionResult(int statusCode, Map<String, Object> body) {}
 
     private void handleOverride(HttpExchange exchange) throws IOException {
         // POST /api/proposal/{id}/override
@@ -621,15 +645,24 @@ public final class PoliticWebHandler implements HttpHandler {
         var result = proposalManager.transitionProposal(id, "SENATE_OVERRIDE", s.playerUuid, s.playerName);
         // 自动为发起人投 YES
         if (result.success()) {
-            voteManager.castVote(id, s.playerUuid, s.playerName,
+            var automaticVote = voteManager.castVote(id, s.playerUuid, s.playerName,
                 politicManager.getPlayerOffice(s.playerUuid), "YES", "SENATE_OVERRIDE");
+            if (!automaticVote.success()) {
+                p = proposalManager.getProposal(id);
+                sendJson(exchange, 409, gson.toJson(Map.of(
+                        "success", false,
+                        "newStatus", p != null ? p.status : "SENATE_OVERRIDE",
+                        "eligibleVoters", voteManager.getEligibleVoterCount(id, "SENATE_OVERRIDE"),
+                        "message", "覆议已启动，但发起人自动投票失败: " + automaticVote.error())));
+                return;
+            }
         }
 
         p = proposalManager.getProposal(id);
         sendJson(exchange, result.success() ? 200 : 400,
             gson.toJson(Map.of("success", result.success(),
                 "newStatus", p != null ? p.status : "",
-                "eligibleVoters", voteManager.getEligibleVoterCount("SENATE_OVERRIDE"),
+                "eligibleVoters", voteManager.getEligibleVoterCount(id, "SENATE_OVERRIDE"),
                 "message", result.success() ? "覆议已启动，需要全体元老一致同意" : result.error())));
     }
 

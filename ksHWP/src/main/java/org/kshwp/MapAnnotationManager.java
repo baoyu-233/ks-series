@@ -22,11 +22,11 @@ public final class MapAnnotationManager {
             try (Statement stmt = conn.createStatement()) {
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS kshwp_annotations (
-                        id TEXT PRIMARY KEY,
-                        player_uuid TEXT NOT NULL,
+                        id VARCHAR(64) PRIMARY KEY,
+                        player_uuid VARCHAR(36) NOT NULL,
                         player_name TEXT NOT NULL,
-                        world TEXT NOT NULL,
-                        type TEXT NOT NULL DEFAULT 'note',
+                        world VARCHAR(128) NOT NULL,
+                        type VARCHAR(32) NOT NULL DEFAULT 'note',
                         x INTEGER NOT NULL,
                         y INTEGER NOT NULL,
                         z INTEGER NOT NULL,
@@ -47,12 +47,32 @@ public final class MapAnnotationManager {
                 try { stmt.execute("ALTER TABLE kshwp_annotations ADD COLUMN color TEXT DEFAULT '#ffcc00'"); } catch (SQLException ignored) {}
                 try { stmt.execute("ALTER TABLE kshwp_annotations ADD COLUMN is_public INTEGER DEFAULT 0"); } catch (SQLException ignored) {}
 
-                stmt.execute("CREATE INDEX IF NOT EXISTS idx_kshwp_anno_player ON kshwp_annotations(player_uuid)");
-                stmt.execute("CREATE INDEX IF NOT EXISTS idx_kshwp_anno_world ON kshwp_annotations(world)");
-                stmt.execute("CREATE INDEX IF NOT EXISTS idx_kshwp_anno_type ON kshwp_annotations(type)");
+                createIndexIfMissing(conn, "idx_kshwp_anno_player", "player_uuid");
+                createIndexIfMissing(conn, "idx_kshwp_anno_world", "world");
+                createIndexIfMissing(conn, "idx_kshwp_anno_type", "type");
             }
         } catch (SQLException e) {
             plugin.getLogger().warning("创建备注表失败: " + e.getMessage());
+        }
+    }
+
+    private static void createIndexIfMissing(Connection conn, String indexName, String column) throws SQLException {
+        try (ResultSet indexes = conn.getMetaData().getIndexInfo(conn.getCatalog(), conn.getSchema(),
+                "kshwp_annotations", false, false)) {
+            while (indexes.next()) {
+                if (indexName.equalsIgnoreCase(indexes.getString("INDEX_NAME"))) return;
+            }
+        }
+        try (Statement statement = conn.createStatement()) {
+            statement.execute("CREATE INDEX " + indexName + " ON kshwp_annotations(" + column + ")");
+        } catch (SQLException failure) {
+            try (ResultSet indexes = conn.getMetaData().getIndexInfo(conn.getCatalog(), conn.getSchema(),
+                    "kshwp_annotations", false, false)) {
+                while (indexes.next()) {
+                    if (indexName.equalsIgnoreCase(indexes.getString("INDEX_NAME"))) return;
+                }
+            }
+            throw failure;
         }
     }
 
@@ -163,9 +183,16 @@ public final class MapAnnotationManager {
 
     /**
      * 搜索备注（按文本、类型、世界筛选）。
+     * 非管理员只能看到公开备注或自己的备注。
      */
     public List<Map<String, Object>> search(String query, String world, String type, UUID playerUuid) {
+        return search(query, world, type, playerUuid, false);
+    }
+
+    public List<Map<String, Object>> search(String query, String world, String type,
+                                           UUID playerUuid, boolean admin) {
         List<Map<String, Object>> result = new ArrayList<>();
+        if (playerUuid == null && !admin) return result;
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return result;
             StringBuilder sql = new StringBuilder("SELECT * FROM kshwp_annotations WHERE 1=1");
@@ -182,6 +209,10 @@ public final class MapAnnotationManager {
             if (type != null && !type.isEmpty()) {
                 sql.append(" AND type=?");
                 params.add(type);
+            }
+            if (!admin) {
+                sql.append(" AND (is_public=1 OR player_uuid=?)");
+                params.add(playerUuid.toString());
             }
             sql.append(" ORDER BY created_at DESC LIMIT 200");
             try (PreparedStatement ps = conn.prepareStatement(sql.toString())) {

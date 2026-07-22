@@ -1,5 +1,7 @@
 package org.kseco;
 
+import org.kseco.database.PortableSqlMutation;
+
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -24,11 +26,12 @@ public final class EnterprisePermissionService {
     public static final String DECLARE_DIVIDEND = "DECLARE_DIVIDEND";
     public static final String VIEW_FINANCE = "VIEW_FINANCE";
     public static final String MANAGE_FUNDS = "MANAGE_FUNDS";
+    public static final String MANAGE_PROPERTY = "MANAGE_PROPERTY";
     public static final String BLINDBOX_DRAW = "BLINDBOX_DRAW";
 
     private static final Set<String> PERMISSIONS = Set.of(
             MANAGE_MEMBERS, MANAGE_PERMISSIONS, MANAGE_BIDDING, DECLARE_DIVIDEND,
-            VIEW_FINANCE, MANAGE_FUNDS, BLINDBOX_DRAW);
+            VIEW_FINANCE, MANAGE_FUNDS, MANAGE_PROPERTY, BLINDBOX_DRAW);
     private static final List<String> EDITABLE_ROLES = List.of(ROLE_CEO, ROLE_MANAGER, ROLE_EMPLOYEE);
 
     public void ensureTemplates(Connection conn, String enterpriseId) throws SQLException {
@@ -41,20 +44,24 @@ public final class EnterprisePermissionService {
         }
         Map<String, Set<String>> defaults = new LinkedHashMap<>();
         defaults.put(ROLE_CEO, Set.of(MANAGE_MEMBERS, MANAGE_PERMISSIONS, MANAGE_BIDDING,
-                DECLARE_DIVIDEND, VIEW_FINANCE, MANAGE_FUNDS, BLINDBOX_DRAW));
+                DECLARE_DIVIDEND, VIEW_FINANCE, MANAGE_FUNDS, MANAGE_PROPERTY, BLINDBOX_DRAW));
         defaults.put(ROLE_MANAGER, Set.of(MANAGE_MEMBERS, MANAGE_BIDDING, VIEW_FINANCE, BLINDBOX_DRAW));
         defaults.put(ROLE_EMPLOYEE, Set.of());
-        try (PreparedStatement insert = conn.prepareStatement(
-                "INSERT OR IGNORE INTO ks_ent_role_permissions (enterprise_id,role,permission) VALUES (?,?,?)")) {
-            for (Map.Entry<String, Set<String>> entry : defaults.entrySet()) {
-                for (String permission : entry.getValue()) {
-                    insert.setString(1, enterpriseId);
-                    insert.setString(2, entry.getKey());
-                    insert.setString(3, permission);
-                    insert.addBatch();
-                }
+        for (Map.Entry<String, Set<String>> entry : defaults.entrySet()) {
+            for (String permission : entry.getValue()) {
+                PortableSqlMutation.insertIfAbsent(conn,
+                        "SELECT 1 FROM ks_ent_role_permissions "
+                                + "WHERE enterprise_id=? AND role=? AND permission=?", exists -> {
+                            exists.setString(1, enterpriseId);
+                            exists.setString(2, entry.getKey());
+                            exists.setString(3, permission);
+                        }, "INSERT INTO ks_ent_role_permissions (enterprise_id,role,permission) VALUES (?,?,?)",
+                        insert -> {
+                            insert.setString(1, enterpriseId);
+                            insert.setString(2, entry.getKey());
+                            insert.setString(3, permission);
+                        });
             }
-            insert.executeBatch();
         }
     }
 

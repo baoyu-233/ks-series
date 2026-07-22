@@ -4,6 +4,8 @@ import org.kseco.KsEco;
 
 import java.sql.*;
 import java.util.*;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * 税收征收管理器。
@@ -21,6 +23,7 @@ public final class TaxManager {
     // 税收统计
     private double totalCollected = 0.0;
     private final Map<String, Double> taxesByCategory = new LinkedHashMap<>();
+    private final Object statsLock = new Object();
 
     public TaxManager(KsEco eco, TaxRateManager taxRateManager) {
         this.eco = eco;
@@ -28,30 +31,18 @@ public final class TaxManager {
     }
 
     public void init() {
-        createTable();
+        try {
+            eco.asyncWorkPool().executeDatabase(this::createTable);
+        } catch (RejectedExecutionException exception) {
+            eco.getLogger().warning("[Tax] Database queue rejected table initialization");
+        }
     }
 
     private void createTable() {
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
-            try (Statement stmt = conn.createStatement()) {
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_tax_records (
-                        id TEXT PRIMARY KEY,
-                        payer_uuid TEXT NOT NULL,
-                        payer_name TEXT,
-                        category TEXT NOT NULL,
-                        base_amount REAL NOT NULL,
-                        tax_rate REAL NOT NULL,
-                        tax_amount REAL NOT NULL,
-                        description TEXT,
-                        collected_at INTEGER NOT NULL
-                    )
-                """);
-                stmt.execute("CREATE INDEX IF NOT EXISTS idx_tax_payer ON ks_tax_records(payer_uuid)");
-                stmt.execute("CREATE INDEX IF NOT EXISTS idx_tax_category ON ks_tax_records(category)");
-            }
-        } catch (SQLException e) {
+            TaxJdbcSupport.ensureTables(conn);
+        } catch (SQLException | RuntimeException e) {
             eco.getLogger().warning("[税法] 创建表失败: " + e.getMessage());
         }
     }
@@ -61,10 +52,11 @@ public final class TaxManager {
      * 优先从 TaxRateManager（动态税率），回退到全局税率。
      */
     private double getEffectiveRate(String category) {
+        double fallback = TaxValuePolicy.normalizeRate(eco.ecoConfig().getTaxRate(), 0.02d);
         if (taxRateManager != null) {
-            return taxRateManager.getRate(category);
+            return TaxValuePolicy.normalizeRate(taxRateManager.getRate(category), fallback);
         }
-        return eco.ecoConfig().getTaxRate();
+        return fallback;
     }
 
     /**
@@ -77,50 +69,153 @@ public final class TaxManager {
      * @return 实际征收的税额
      */
     public double collect(UUID payerUuid, String payerName, String category, double baseAmount, String description) {
+        if (!org.bukkit.Bukkit.isPrimaryThread()) {
+            throw new IllegalStateException("Tax collection must run on the server thread");
+        }
+        if (payerUuid == null || category == null || category.isBlank()
+                || !TaxValuePolicy.isValidPositiveAmount(baseAmount)) {
+            eco.getLogger().warning("[Tax] Rejected invalid collection request");
+            return 0.0d;
+        }
+
+        String normalizedCategory = category.trim().toUpperCase(Locale.ROOT);
         double rate = getEffectiveRate(category);
-        double tax = Math.max(baseAmount * rate, eco.ecoConfig().getMinTax());
+        double tax = TaxValuePolicy.calculateTax(
+                baseAmount, rate, eco.ecoConfig().getMinTax());
+        if (tax <= 0.0d) return 0.0d;
 
         // 从玩家扣税
         var player = org.bukkit.Bukkit.getOfflinePlayer(payerUuid);
         if (!eco.vaultHook().has(player, tax)) {
             // 税额不足 → 记录欠税（信用记录影响）
             eco.getLogger().warning("[税法] 玩家 " + payerName + " 税额不足: " + tax + " (" + category + ")");
-            tax = eco.vaultHook().getBalance(player); // 有多少扣多少
+            double balance = eco.vaultHook().getBalance(player);
+            tax = TaxValuePolicy.isValidPositiveAmount(balance)
+                    ? Math.min(tax, balance)
+                    : 0.0d;
         }
 
-        if (tax > 0) {
-            eco.vaultHook().withdraw(player, tax);
+        if (tax <= 0.0d || !eco.vaultHook().withdraw(player, tax)) {
+            eco.getLogger().warning("[Tax] Vault withdrawal failed for " + payerUuid
+                    + " amount=" + tax + " category=" + normalizedCategory);
+            return 0.0d;
         }
 
-        // 记录
-        String id = UUID.randomUUID().toString().substring(0, 8);
-        long now = System.currentTimeMillis() / 1000;
-        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn != null) {
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT INTO ks_tax_records (id, payer_uuid, payer_name, category, " +
-                        "base_amount, tax_rate, tax_amount, description, collected_at) " +
-                        "VALUES (?,?,?,?,?,?,?,?,?)")) {
-                    ps.setString(1, id);
-                    ps.setString(2, payerUuid.toString());
-                    ps.setString(3, payerName);
-                    ps.setString(4, category);
-                    ps.setDouble(5, baseAmount);
-                    ps.setDouble(6, rate);
-                    ps.setDouble(7, tax);
-                    ps.setString(8, description);
-                    ps.setLong(9, now);
-                    ps.executeUpdate();
-                }
+        TaxRecord record = new TaxRecord(
+                Long.toString(ThreadLocalRandom.current().nextLong(1L, Long.MAX_VALUE)),
+                payerUuid,
+                payerName == null ? "" : payerName,
+                normalizedCategory,
+                baseAmount,
+                rate,
+                tax,
+                description == null ? "" : description,
+                System.currentTimeMillis() / 1000L);
+        adjustStats(normalizedCategory, tax);
+        if (!queueTaxRecord(record)) {
+            if (eco.vaultHook().deposit(player, tax)) {
+                adjustStats(normalizedCategory, -tax);
+                return 0.0d;
             }
-        } catch (SQLException e) {
-            eco.getLogger().warning("[税法] 记录失败: " + e.getMessage());
+            eco.getLogger().severe("[Tax] Audit queue rejected and refund failed for "
+                    + payerUuid + " amount=" + tax);
         }
-
-        totalCollected += tax;
-        taxesByCategory.merge(category, tax, Double::sum);
 
         return tax;
+    }
+
+    private boolean queueTaxRecord(TaxRecord record) {
+        try {
+            eco.asyncWorkPool().executeDatabase(() -> {
+                try {
+                    if (insertTaxRecord(record)) return;
+                } catch (RuntimeException exception) {
+                    eco.getLogger().warning("[Tax] Unexpected tax audit failure " + record.id()
+                            + ": " + exception.getMessage());
+                }
+                try {
+                    org.bukkit.Bukkit.getScheduler().runTask(eco, () -> refundFailedAudit(record));
+                } catch (RuntimeException exception) {
+                    eco.getLogger().severe("[Tax] Failed to schedule refund for unaudited tax "
+                            + record.id() + ": " + exception.getMessage());
+                }
+            });
+            return true;
+        } catch (RejectedExecutionException exception) {
+            eco.getLogger().warning("[Tax] Database queue rejected tax audit " + record.id());
+            return false;
+        }
+    }
+
+    private boolean insertTaxRecord(TaxRecord record) {
+        Exception failure = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+                if (conn == null) {
+                    failure = new IllegalStateException("tax database connection unavailable");
+                    continue;
+                }
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "INSERT INTO ks_tax_records (id, payer_uuid, payer_name, category, "
+                                + "base_amount, tax_rate, tax_amount, description, collected_at) "
+                                + "VALUES (?,?,?,?,?,?,?,?,?)")) {
+                    ps.setString(1, record.id());
+                    ps.setString(2, record.payerUuid().toString());
+                    ps.setString(3, record.payerName());
+                    ps.setString(4, record.category());
+                    ps.setDouble(5, record.baseAmount());
+                    ps.setDouble(6, record.rate());
+                    ps.setDouble(7, record.tax());
+                    ps.setString(8, record.description());
+                    ps.setLong(9, record.collectedAt());
+                    ps.executeUpdate();
+                    return true;
+                }
+            } catch (SQLException | RuntimeException exception) {
+                failure = exception;
+                if (taxRecordExists(record.id())) return true;
+            }
+        }
+        eco.getLogger().warning("[Tax] Failed to persist tax audit " + record.id()
+                + (failure == null ? "" : ": " + failure.getMessage()));
+        return false;
+    }
+
+    private boolean taxRecordExists(String id) {
+        try (Connection conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return false;
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT 1 FROM ks_tax_records WHERE id=?")) {
+                ps.setString(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next();
+                }
+            }
+        } catch (SQLException | RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private void refundFailedAudit(TaxRecord record) {
+        var player = org.bukkit.Bukkit.getOfflinePlayer(record.payerUuid());
+        if (eco.vaultHook().deposit(player, record.tax())) {
+            adjustStats(record.category(), -record.tax());
+            eco.getLogger().warning("[Tax] Refunded unaudited tax " + record.id()
+                    + " amount=" + record.tax());
+        } else {
+            eco.getLogger().severe("[Tax] Audit failed and refund failed for " + record.id()
+                    + " payer=" + record.payerUuid() + " amount=" + record.tax());
+        }
+    }
+
+    private void adjustStats(String category, double amount) {
+        synchronized (statsLock) {
+            totalCollected = Math.max(0.0d, totalCollected + amount);
+            taxesByCategory.merge(category, amount, Double::sum);
+            if (taxesByCategory.getOrDefault(category, 0.0d) <= 0.0d) {
+                taxesByCategory.remove(category);
+            }
+        }
     }
 
     /**
@@ -131,6 +226,12 @@ public final class TaxManager {
      * - 大型企业（注册资本 > 500,000）：12%
      */
     public double collectEnterpriseTax(String enterpriseId, double income, String description) {
+        if (enterpriseId == null || enterpriseId.isBlank()
+                || enterpriseId.length() > TaxJdbcSupport.ID_MAX_LENGTH
+                || !TaxValuePolicy.isValidPositiveAmount(income)) {
+            eco.getLogger().warning("[Tax] Rejected invalid enterprise tax request");
+            return 0.0d;
+        }
         // 获取企业信息
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return 0;
@@ -147,23 +248,26 @@ public final class TaxManager {
             }
 
             // 阶梯税率 — 优先从 TaxRateManager 获取，回退到默认值
-            double rate;
             String category;
             if (registeredCapital < 100000) {
-                rate = taxRateManager != null ? taxRateManager.getRate("ENTERPRISE_SMALL") : 0.05;
                 category = "ENTERPRISE_SMALL";
             } else if (registeredCapital < 500000) {
-                rate = taxRateManager != null ? taxRateManager.getRate("ENTERPRISE_MEDIUM") : 0.08;
                 category = "ENTERPRISE_MEDIUM";
             } else {
-                rate = taxRateManager != null ? taxRateManager.getRate("ENTERPRISE_LARGE") : 0.12;
                 category = "ENTERPRISE_LARGE";
             }
 
-            double tax = income * rate;
-            UUID ownerUuid = UUID.fromString(ownerUuids.split(",")[0]);
+            String ownerUuidText = ownerUuids == null ? "" : ownerUuids.split(",", 2)[0].trim();
+            if (ownerUuidText.isEmpty()) return 0.0d;
+            UUID ownerUuid;
+            try {
+                ownerUuid = UUID.fromString(ownerUuidText);
+            } catch (IllegalArgumentException exception) {
+                eco.getLogger().warning("[Tax] Enterprise has an invalid owner UUID: " + enterpriseId);
+                return 0.0d;
+            }
             return collect(ownerUuid, "企业", category, income, description);
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
             eco.getLogger().warning("[税法] 企业税失败: " + e.getMessage());
             return 0;
         }
@@ -173,8 +277,15 @@ public final class TaxManager {
      * 获取税收统计。
      */
     public TaxStats getStats() {
-        return new TaxStats(totalCollected, new LinkedHashMap<>(taxesByCategory));
+        synchronized (statsLock) {
+            return new TaxStats(totalCollected,
+                    Collections.unmodifiableMap(new LinkedHashMap<>(taxesByCategory)));
+        }
     }
 
     public record TaxStats(double totalCollected, Map<String, Double> byCategory) {}
+
+    private record TaxRecord(String id, UUID payerUuid, String payerName, String category,
+                             double baseAmount, double rate, double tax, String description,
+                             long collectedAt) {}
 }

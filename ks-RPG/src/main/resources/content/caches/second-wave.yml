@@ -1,0 +1,44 @@
+ashen_armament_cache:
+  item:
+    type: MISCELLANEOUS
+    id: KS_ASHEN_ARMAMENT_CACHE
+  rewards:
+    - type: HAMMER
+      id: KS_FORGEBREAKER_MAUL
+      weight: 28
+    - type: SWORD
+      id: KS_CINDERWARD_BLADE
+      weight: 24
+    - type: TALISMAN
+      id: KS_FORGEWARD_TALISMAN
+      weight: 18
+    - type: RING
+      id: KS_RING_OF_COALHEART
+      weight: 15
+    - type: RING
+      id: KS_RING_OF_TEMPER
+      weight: 15
+
+storm_armament_cache:
+  item:
+    type: MISCELLANEOUS
+    id: KS_STORM_ARMAMENT_CACHE
+  rewards:
+    - type: SPEAR
+      id: KS_STORMRELAY_PIKE
+      weight: 26
+    - type: BOW
+      id: KS_STORMWATCH_BOW
+      weight: 22
+    - type: TALISMAN
+      id: KS_WAYFINDER_TALISMAN
+      weight: 16
+    - type: TALISMAN
+      id: KS_STORMSHELTER_TALISMAN
+      weight: 12
+    - type: RING
+      id: KS_RING_OF_CROSSWIND
+      weight: 12
+    - type: RING
+      id: KS_RING_OF_STATIC_ECHO
+      weight: 12

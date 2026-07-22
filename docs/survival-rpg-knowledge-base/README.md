@@ -12,6 +12,7 @@ adds RPG depth. It is the source of truth for direction, system boundaries, and 
 - `first-wave-loadouts.md`: first-dungeon prelude equipment, modular build rules, and instance loadout-lock contract.
 - `field-elite-and-stat-proposal.md`: proposed Frostwaste Whelp field elite, initial weapon-drop models, and first-pass equipment stat targets.
 - `roadmap.md`: staged implementation order and exit criteria.
+- `future-development.md`: long-term survival-to-RPG direction, specialisation boundaries, and release gates.
 - `decision-log.md`: accepted product decisions and open questions.
 
 Specialized records remain in their own folders. In particular,

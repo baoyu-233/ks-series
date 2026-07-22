@@ -8,9 +8,27 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.jetbrains.annotations.NotNull;
 import org.kscore.KsCore;
 import org.kscore.KsPluginBridge;
+import org.kseco.crossserver.CrossServerRuntimeGate;
+import org.kseco.crossserver.cache.CacheInvalidationWireAdapter;
+import org.kseco.crossserver.cache.CrossServerCacheInvalidationCoordinator;
+import org.kseco.crossserver.runtime.CrossServerRuntime;
+import org.kseco.crossserver.JdbcCrossServerRepository;
+import org.kseco.crossserver.lock.ConnectionFactoryLeaseSqlExecutor;
+import org.kseco.crossserver.lock.FencedExecutionResult;
+import org.kseco.crossserver.lock.JdbcDistributedLeaseLock;
+import org.kseco.crossserver.lock.LeaseAcquireResult;
+import org.kseco.crossserver.sql.SqlDialect;
+import org.kseco.crossserver.transport.DatabasePollingTransport;
+import org.kseco.crossserver.transport.JdbcDatabaseTransportStore;
+import org.kseco.crossserver.transport.PollBackoffPolicy;
+import org.kseco.database.CentralBankBootstrap;
+import org.kseco.database.CoreBusinessSchema;
+import org.kseco.database.EcoDatabase;
+import org.kseco.demand.JdbcDemandCampaignStore;
 import org.kseco.extra.ExtraModuleLoader;
 import org.kseco.extra.BankAccessProvider;
 import org.kseco.extra.EnterpriseAccessProvider;
+import org.kseco.extra.EnterpriseFundSettlementProvider;
 import org.kseco.gui.BankGui;
 import org.kseco.gui.BiddingGui;
 import org.kseco.gui.BlindBoxGui;
@@ -35,8 +53,14 @@ import org.kseco.gui.TaxGui;
 import org.kseco.gui.DeliveryMenu;
 import org.kseco.gui.TransferGui;
 import org.kseco.gui.GuiSafetyListener;
+import org.kseco.scheduler.EcoScheduler;
 
+import java.sql.SQLException;
+import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 
 /**
  * ks-Eco 经济核心主插件。
@@ -45,8 +69,13 @@ import java.util.UUID;
  */
 public final class KsEco extends JavaPlugin {
 
+    private static final boolean CROSS_SERVER_MUTATION_WIRING_COMPLETE = true;
+
     private KsCore ksCore;
     private KsPluginBridge bridge;
+    private EcoDatabase ecoDatabase;
+    private JdbcDemandCampaignStore demandCampaignStore;
+    private volatile boolean demandCampaignsEnabled;
     private EcoConfig ecoConfig;
     private FeatureGateManager featureGate;
     private VaultHook vaultHook;
@@ -59,6 +88,7 @@ public final class KsEco extends JavaPlugin {
     private PurchaseOrderManager purchaseOrderManager;
     private OfficialBuyManager officialBuyManager;
     private OfficialWarehouseManager officialWarehouseManager;
+    private OfficialWarehouseLiquidationManager officialWarehouseLiquidationManager;
     private OfficialMarketSweepManager officialMarketSweepManager;
     private TradeManager tradeManager;
     private TransportManager transportManager;
@@ -74,12 +104,23 @@ public final class KsEco extends JavaPlugin {
     private ExtraModuleLoader extraModuleLoader;
     private volatile BankAccessProvider bankAccessProvider;
     private volatile EnterpriseAccessProvider enterpriseAccessProvider;
+    private volatile EnterpriseFundSettlementProvider enterpriseFundSettlementProvider;
     private EcoWebHandler webHandler;
     private BuiltinEconomy builtinEconomy;
     private BanManager banManager;
-    private org.bukkit.scheduler.BukkitTask priceRefreshTask;
-    private org.bukkit.scheduler.BukkitTask pendingCreationExpiryTask;
-    private org.bukkit.scheduler.BukkitTask officialSweepTask;
+    private EcoScheduler scheduler;
+    private EcoScheduler.TaskHandle priceRefreshTask;
+    private EcoScheduler.TaskHandle pendingCreationExpiryTask;
+    private EcoScheduler.TaskHandle officialSweepTask;
+    private EcoScheduler.TaskHandle databaseHeartbeatTask;
+    private EcoScheduler.TaskHandle crossServerCleanupTask;
+    private EcoScheduler.TaskHandle moneySupplySnapshotTask;
+    private EcoScheduler.TaskHandle volatilityReportTask;
+    private CrossServerRuntime crossServerRuntime;
+    private JdbcDistributedLeaseLock crossServerLeaseLock;
+    private final Object priceRefreshMonitor = new Object();
+    private volatile boolean shuttingDown;
+    private int activePriceRefreshes;
 
     // GUI 监听器引用（用于注册/注销）
     private MarketMenu.Listener marketListener;
@@ -111,6 +152,7 @@ public final class KsEco extends JavaPlugin {
 
     @Override
     public void onEnable() {
+        this.scheduler = new EcoScheduler(this);
         saveDefaultConfig();
 
         // 检查 ks-core 依赖
@@ -128,6 +170,43 @@ public final class KsEco extends JavaPlugin {
         this.ecoConfig = new EcoConfig(this);
         this.featureGate = new FeatureGateManager(this);
 
+        long heartbeatSeconds = Math.max(5L, Math.min(300L,
+                getConfig().getLong("database.heartbeat-interval-seconds", 30L)));
+        long staleSeconds = Math.max(heartbeatSeconds * 2L, Math.min(86_400L,
+                getConfig().getLong("database.server-stale-after-seconds", 120L)));
+        try {
+            this.ecoDatabase = new EcoDatabase(
+                    getLogger(), () -> ksCore.dataStore().getConnection(),
+                    getConfig().getString("database.server-id", "main"),
+                    Duration.ofSeconds(heartbeatSeconds), Duration.ofSeconds(staleSeconds));
+        } catch (IllegalArgumentException exception) {
+            getLogger().severe("ks-Eco 数据库身份配置无效: " + exception.getMessage());
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
+        if (!ecoDatabase.initialize()) {
+            getLogger().severe("ks-Eco 数据库边界初始化失败，插件将停用以避免跨服重复结算。");
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
+        CrossServerRuntimeGate.Decision crossServerDecision = CrossServerRuntimeGate.evaluate(
+                getConfig().getBoolean("cross-server.enabled", false),
+                ecoDatabase.dialect(),
+                CROSS_SERVER_MUTATION_WIRING_COMPLETE);
+        if (!crossServerDecision.pluginStartupAllowed()) {
+            getLogger().severe("Unsafe cross-server configuration rejected: " + crossServerDecision.message());
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
+        // Business managers, Web recovery and extras assume these shared tables exist.
+        // A partial schema is unsafe: fail startup before scheduling work or registering routes.
+        if (!runMigrations()) {
+            getLogger().severe("ks-Eco 业务数据库迁移失败，插件将停用以避免部分初始化和不完整结算。");
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
+        initializeDemandCampaignStore();
+
         // 对接 Vault
         this.vaultHook = new VaultHook(this);
 
@@ -141,6 +220,7 @@ public final class KsEco extends JavaPlugin {
         this.marketManager = new MarketManager(this);
         this.officialBuyManager = new OfficialBuyManager(this, priceEngine);
         this.officialWarehouseManager = new OfficialWarehouseManager(this);
+        this.officialWarehouseLiquidationManager = new OfficialWarehouseLiquidationManager(this);
         this.officialMarketSweepManager = new OfficialMarketSweepManager(this);
         this.tradeManager = new TradeManager(this);
         this.asyncWorkPool = new AsyncWorkPool(6, getLogger());
@@ -156,6 +236,7 @@ public final class KsEco extends JavaPlugin {
         this.majorOrderManager = new MajorOrderManager(this);
         this.majorOrderManager.init();
         this.banManager = new BanManager(this);
+        startDatabaseHeartbeatTask();
 
         // 注册命令
         registerCommands();
@@ -182,20 +263,31 @@ public final class KsEco extends JavaPlugin {
 
         // 加载 extra 子模块
         this.extraModuleLoader = new ExtraModuleLoader(this);
-        extraModuleLoader.loadModules();
+        if (isFoliaRuntime()) {
+            getLogger().warning("Folia 模式下已默认禁用尚未完成区域线程适配的 ks-Eco Extra 模块。");
+        } else {
+            extraModuleLoader.loadModules();
+        }
 
         // 内置经济系统（Vault 无外部经济插件时自动接管）
         this.builtinEconomy = new BuiltinEconomy(this);
         if (!vaultHook.isAvailable()) {
-            builtinEconomy.setup();
+            if (isFoliaRuntime()) builtinEconomy.setupDirect();
+            else builtinEconomy.setup();
             vaultHook.refresh(); // 重新检测（内置经济已注册到 Vault）
         }
 
         // 自动创建中央银行（全局唯一）
         autoCreateCentralBank();
 
-        // 运行数据库迁移（新表）
-        runMigrations();
+        if (crossServerDecision.runtimeEnabled() && !startCrossServerRuntime()) {
+            getLogger().severe("跨服运行时启动失败，插件将停用以避免节点状态分裂。");
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
+
+        // Vault providers and business tables are ready at this point.
+        webHandler.startProjectSettlementRecovery();
 
         getLogger().info("ks-Eco 已启用。Vault: " +
                 (vaultHook.isAvailable() ? "已对接" : (builtinEconomy.isRegistered() ? "内置经济" : "未找到")));
@@ -204,6 +296,21 @@ public final class KsEco extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        shuttingDown = true;
+        if (priceRefreshTask != null) {
+            priceRefreshTask.cancel();
+            priceRefreshTask = null;
+        }
+        awaitPriceRefreshStop();
+        if (crossServerRuntime != null) {
+            try {
+                crossServerRuntime.stop().toCompletableFuture().get(5, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (Exception failure) {
+                getLogger().warning("停止跨服运行时超时或失败: " + failure.getMessage());
+            }
+            crossServerRuntime = null;
+            crossServerLeaseLock = null;
+        }
         // 卸载 extra 模块
         if (extraModuleLoader != null) {
             extraModuleLoader.disableAll();
@@ -214,11 +321,27 @@ public final class KsEco extends JavaPlugin {
         if (officialSweepTask != null) {
             officialSweepTask.cancel();
         }
+        if (databaseHeartbeatTask != null) {
+            databaseHeartbeatTask.cancel();
+        }
+        if (crossServerCleanupTask != null) {
+            crossServerCleanupTask.cancel();
+        }
+        if (moneySupplySnapshotTask != null) moneySupplySnapshotTask.cancel();
+        if (volatilityReportTask != null) volatilityReportTask.cancel();
         if (storageManager != null) {
             storageManager.flushPending();
         }
         if (asyncWorkPool != null) {
             asyncWorkPool.shutdown();
+        }
+        demandCampaignsEnabled = false;
+        if (demandCampaignStore != null) {
+            demandCampaignStore.close();
+        }
+        demandCampaignStore = null;
+        if (ecoDatabase != null) {
+            ecoDatabase.close();
         }
 
         // 取消注册内置经济
@@ -234,6 +357,221 @@ public final class KsEco extends JavaPlugin {
         getLogger().info("ks-Eco 已停用。");
     }
 
+    private void initializeDemandCampaignStore() {
+        JdbcDemandCampaignStore candidate = new JdbcDemandCampaignStore(ecoDatabase::openConnection);
+        try {
+            candidate.initializeSchema();
+            demandCampaignStore = candidate;
+            demandCampaignsEnabled = getConfig().getBoolean("demand.enabled", false);
+        } catch (SQLException exception) {
+            demandCampaignStore = null;
+            demandCampaignsEnabled = false;
+            getLogger().warning("Demand campaign foundation is unavailable and remains disabled: "
+                    + exception.getMessage());
+        }
+    }
+
+    private boolean startCrossServerRuntime() {
+        java.util.concurrent.ScheduledExecutorService scheduler = null;
+        try {
+            boolean builtinWallet = builtinEconomy != null && builtinEconomy.isRegistered()
+                    && "ks-Eco内置经济".equals(vaultHook.getName());
+            if (!builtinWallet && !getConfig().getBoolean("cross-server.external-economy-shared", false)) {
+                throw new IllegalStateException("外部 Vault 经济未声明为共享数据库模式；"
+                        + "确认其跨服一致性后设置 cross-server.external-economy-shared=true");
+            }
+            SqlDialect dialect = switch (ecoDatabase.dialect()) {
+                case MYSQL, MARIADB -> SqlDialect.MYSQL;
+                case POSTGRESQL -> SqlDialect.POSTGRESQL;
+                default -> throw new IllegalStateException("unsupported shared database: " + ecoDatabase.dialect());
+            };
+            JdbcDatabaseTransportStore store = new JdbcDatabaseTransportStore(ecoDatabase::openConnection, dialect);
+            store.initialize();
+            ThreadFactory threads = runnable -> {
+                Thread thread = new Thread(runnable, "ks-eco-cross-server-poll");
+                thread.setDaemon(true);
+                return thread;
+            };
+            scheduler = Executors.newSingleThreadScheduledExecutor(threads);
+            int batchSize = Math.max(1, Math.min(1000,
+                    getConfig().getInt("cross-server.poll-batch-size", 128)));
+            int maxPayloadBytes = Math.max(1024, Math.min(1_048_576,
+                    getConfig().getInt("cross-server.max-payload-bytes", 65_536)));
+            var transport = new DatabasePollingTransport(
+                    ecoDatabase.serverId(),
+                    getConfig().getString("cross-server.consumer-id", "ks-eco-runtime-v1"),
+                    store,
+                    asyncWorkPool::executeDatabase,
+                    scheduler,
+                    task -> this.scheduler.runGlobal(task),
+                    batchSize,
+                    maxPayloadBytes,
+                    PollBackoffPolicy.defaults());
+            var coordinator = new CrossServerCacheInvalidationCoordinator(ecoDatabase.serverId());
+            var leaseLock = new JdbcDistributedLeaseLock(
+                    new ConnectionFactoryLeaseSqlExecutor(ecoDatabase::openConnection),
+                    new JdbcCrossServerRepository(dialect));
+            leaseLock.initializeSchema();
+            CrossServerRuntime runtime = new CrossServerRuntime(
+                    transport,
+                    coordinator,
+                    new CacheInvalidationWireAdapter(),
+                    scheduler,
+                    Duration.ofDays(Math.max(1L, Math.min(30L,
+                            getConfig().getLong("cross-server.event-retention-days", 7L)))),
+                    failure -> getLogger().warning("跨服事件处理失败，将自动重试: " + failure.getMessage()));
+            runtime.subscribeNamespace("enterprise-level", ignored -> enterpriseLevelManager.refreshLevelsAsync());
+            runtime.subscribeNamespace("price", ignored -> asyncWorkPool.executeDatabase(() -> {
+                int previousInterval = priceEngine.getPriceRefreshMinutes();
+                priceEngine.reloadSharedState();
+                if (previousInterval != priceEngine.getPriceRefreshMinutes()) {
+                    this.scheduler.runGlobal(this::restartPriceRefreshTask);
+                }
+            }));
+            runtime.subscribeNamespace("balance", ignored -> webHandler.invalidatePlayerRankingSnapshot());
+            runtime.subscribeNamespace("real-estate", message ->
+                    extraModuleLoader.dispatchCrossServerInvalidation(
+                            message.namespace(), message.target().key()));
+            runtime.subscribeNamespace("politic", message ->
+                    extraModuleLoader.dispatchCrossServerInvalidation(
+                            message.namespace(), message.target().key()));
+            runtime.start();
+            crossServerRuntime = runtime;
+            crossServerLeaseLock = leaseLock;
+            startCrossServerCleanupTask();
+            getLogger().info("跨服运行时已启动: server-id=" + ecoDatabase.serverId()
+                    + ", consumer=" + getConfig().getString("cross-server.consumer-id", "ks-eco-runtime-v1"));
+            return true;
+        } catch (Exception failure) {
+            if (scheduler != null) scheduler.shutdownNow();
+            getLogger().log(java.util.logging.Level.SEVERE, "初始化跨服运行时失败", failure);
+            return false;
+        }
+    }
+
+    public void publishCrossServerInvalidation(String namespace, String key) {
+        CrossServerRuntime runtime = crossServerRuntime;
+        if (runtime == null || !runtime.isRunning()) return;
+        runtime.invalidate(namespace, key).whenComplete((ignored, failure) -> {
+            if (failure != null) getLogger().warning("发布跨服缓存失效失败: " + failure.getMessage());
+        });
+    }
+
+    /** Runs the stochastic price refresh once across the whole database cluster. */
+    public void refreshPricesCoordinated() {
+        if (scheduler.isGlobalThread()) {
+            if (!shuttingDown) asyncWorkPool.executeDatabase(this::refreshPricesCoordinated);
+            return;
+        }
+        synchronized (priceRefreshMonitor) {
+            if (shuttingDown) return;
+            activePriceRefreshes++;
+        }
+        try {
+            refreshPricesCoordinatedNow();
+        } finally {
+            synchronized (priceRefreshMonitor) {
+                activePriceRefreshes--;
+                priceRefreshMonitor.notifyAll();
+            }
+        }
+    }
+
+    private void refreshPricesCoordinatedNow() {
+        JdbcDistributedLeaseLock leaseLock = crossServerLeaseLock;
+        if (leaseLock == null) {
+            priceEngine.refreshAllPrices();
+            return;
+        }
+        String owner = ecoDatabase.serverId() + ":" + ecoDatabase.instanceId();
+        Duration duration = Duration.ofSeconds(Math.max(30L, Math.min(900L,
+                getConfig().getLong("cross-server.price-refresh-lease-seconds", 180L))));
+        try {
+            var acquisition = leaseLock.tryAcquire("ks-eco:price-refresh", owner, duration);
+            if (!(acquisition instanceof LeaseAcquireResult.Acquired acquired)) return;
+            try {
+                var execution = leaseLock.executeFenced(acquired.token(),
+                        (connection, ignoredToken) -> priceEngine.stageRefresh(connection));
+                if (execution instanceof FencedExecutionResult.Executed<PriceEngine.RefreshResult> executed) {
+                    priceEngine.applyRefresh(executed.value());
+                    publishCrossServerInvalidation("price", "all");
+                }
+            } finally {
+                leaseLock.release(acquired.token());
+            }
+        } catch (SQLException failure) {
+            getLogger().warning("跨服价格刷新失败: " + failure.getMessage());
+        }
+    }
+
+    /**
+     * Runs an idempotent maintenance workflow under one cluster-wide lease.
+     * The caller must already be off the Paper server thread.
+     */
+    public boolean runClusterExclusiveTask(String resourceKey, Duration duration, Runnable task) {
+        java.util.Objects.requireNonNull(task, "task");
+        if (scheduler.isGlobalThread()) {
+            throw new IllegalStateException("cluster maintenance must not run on the server thread");
+        }
+        JdbcDistributedLeaseLock leaseLock = crossServerLeaseLock;
+        if (leaseLock == null) {
+            task.run();
+            return true;
+        }
+        String owner = ecoDatabase.serverId() + ":" + ecoDatabase.instanceId();
+        try {
+            var acquisition = leaseLock.tryAcquire(resourceKey, owner, duration);
+            if (!(acquisition instanceof LeaseAcquireResult.Acquired acquired)) return false;
+            try {
+                task.run();
+                return true;
+            } finally {
+                leaseLock.release(acquired.token());
+            }
+        } catch (SQLException failure) {
+            getLogger().warning("跨服维护租约失败(" + resourceKey + "): " + failure.getMessage());
+            return false;
+        }
+    }
+
+    private void awaitPriceRefreshStop() {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5L);
+        synchronized (priceRefreshMonitor) {
+            while (activePriceRefreshes > 0) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0L) {
+                    getLogger().warning("等待价格刷新事务结束超时；将继续执行安全停机。");
+                    return;
+                }
+                try {
+                    java.util.concurrent.TimeUnit.NANOSECONDS.timedWait(priceRefreshMonitor, remaining);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    private void startCrossServerCleanupTask() {
+        if (crossServerCleanupTask != null) crossServerCleanupTask.cancel();
+        long intervalTicks = 20L * 60L * 60L;
+        crossServerCleanupTask = scheduler.runAsyncTimer(() -> {
+            if (asyncWorkPool == null) return;
+            asyncWorkPool.executeDatabase(() -> {
+                try (var connection = ecoDatabase.openConnection();
+                     var statement = connection.prepareStatement(
+                             "DELETE FROM ks_crossserver_transport_events "
+                                     + "WHERE expires_at_ms>0 AND expires_at_ms<=?")) {
+                    statement.setLong(1, ecoDatabase.currentDatabaseTime(connection));
+                    statement.executeUpdate();
+                } catch (SQLException failure) {
+                    getLogger().warning("清理过期跨服事件失败: " + failure.getMessage());
+                }
+            });
+        }, Duration.ofMillis(intervalTicks * 50L), Duration.ofMillis(intervalTicks * 50L));
+    }
+
     /** 自动创建全局唯一中央银行 */
     private void autoCreateCentralBank() {
         try (var conn = ksCore.dataStore().getConnection()) {
@@ -241,140 +579,66 @@ public final class KsEco extends JavaPlugin {
                 getLogger().warning("数据库连接未就绪，跳过中央银行自动创建。");
                 return;
             }
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_eco_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)");
-            conn.createStatement().executeUpdate(
-                "INSERT OR IGNORE INTO ks_eco_settings (key, value, updated_at) VALUES ('enterprise_min_capital', '50000', strftime('%s','now'))");
-            conn.createStatement().executeUpdate(
-                "INSERT OR IGNORE INTO ks_eco_settings (key, value, updated_at) VALUES ('enterprise_max_owners', '4', strftime('%s','now'))");
-            conn.createStatement().executeUpdate(
-                "INSERT OR IGNORE INTO ks_eco_settings (key, value, updated_at) VALUES ('enterprise_max_members', '50', strftime('%s','now'))");
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_eco_transport_log (id INTEGER PRIMARY KEY AUTOINCREMENT, sender_uuid TEXT NOT NULL, target_uuid TEXT NOT NULL, item_material TEXT NOT NULL, quantity INTEGER NOT NULL, source_world TEXT NOT NULL, target_world TEXT NOT NULL, distance REAL NOT NULL, cross_world INTEGER NOT NULL, fee REAL NOT NULL, created_at INTEGER NOT NULL)");
-            // 先创建表（如果不存在）— 与 BankManager 表结构一致
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_bank_banks (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'COMMERCIAL', owner_uuids TEXT NOT NULL, total_assets REAL DEFAULT 0.0, reserve_ratio REAL DEFAULT 0.1, interest_rate REAL DEFAULT 0.03, loan_rate REAL DEFAULT 0.08, status TEXT DEFAULT 'ACTIVE', created_at INTEGER NOT NULL)");
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_bank_cb_rates (base_rate REAL DEFAULT 0.035, reserve_requirement REAL DEFAULT 0.10, set_at INTEGER DEFAULT (strftime('%s','now')))");
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_bank_cb_config (key TEXT PRIMARY KEY, value REAL DEFAULT 0)");
-            // 检查是否已存在央行
-            var rs = conn.createStatement().executeQuery(
-                "SELECT COUNT(*) FROM ks_bank_banks WHERE type='CENTRAL'");
-            if (rs.next() && rs.getInt(1) > 0) {
-                getLogger().info("中央银行已存在，跳过自动创建。");
-                return;
-            }
-            // 插入央行
-            String cbId = "CB-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
-            conn.createStatement().executeUpdate(
-                "INSERT INTO ks_bank_banks (id, name, type, owner_uuids, total_assets, created_at) VALUES ('" + cbId + "', '中央银行', 'CENTRAL', 'SYSTEM', 100000000, " + (System.currentTimeMillis()/1000) + ")");
-            // 插入默认利率
-            conn.createStatement().executeUpdate(
-                "INSERT INTO ks_bank_cb_rates (base_rate, reserve_requirement) VALUES (0.035, 0.10)");
-            // 插入浮动限制
-            conn.createStatement().executeUpdate(
-                "INSERT OR REPLACE INTO ks_bank_cb_config (key, value) VALUES ('rate_adjust_limit', 0.02)");
-            getLogger().info("中央银行已自动创建（ID: " + cbId + "）");
+            long now = System.currentTimeMillis() / 1000;
+            insertSettingIfAbsent(conn, "enterprise_min_capital", "50000", now);
+            insertSettingIfAbsent(conn, "enterprise_max_owners", "4", now);
+            insertSettingIfAbsent(conn, "enterprise_max_members", "50", now);
+            CentralBankBootstrap.Result result = CentralBankBootstrap.ensure(conn,
+                    () -> "CB-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), now);
+            getLogger().info(result.created()
+                    ? "中央银行已自动创建（ID: " + result.bankId() + "）"
+                    : "中央银行已存在（ID: " + result.bankId() + "），跳过创建。");
         } catch (java.sql.SQLException e) {
             getLogger().warning("中央银行自动创建失败: " + e.getMessage());
         }
     }
 
+    private static void insertSettingIfAbsent(java.sql.Connection connection, String key, String value, long now)
+            throws java.sql.SQLException {
+        try (var check = connection.prepareStatement("SELECT 1 FROM ks_eco_settings WHERE config_key=?")) {
+            check.setString(1, key);
+            try (var rows = check.executeQuery()) {
+                if (rows.next()) return;
+            }
+        }
+        try (var insert = connection.prepareStatement(
+                "INSERT INTO ks_eco_settings (config_key, config_value, updated_at) VALUES (?,?,?)")) {
+            insert.setString(1, key);
+            insert.setString(2, value);
+            insert.setLong(3, now);
+            insert.executeUpdate();
+        } catch (java.sql.SQLException failure) {
+            if (!isUniqueConstraintViolation(failure)) throw failure;
+        }
+    }
+
+    private static boolean isUniqueConstraintViolation(java.sql.SQLException failure) {
+        String sqlState = failure.getSQLState();
+        return (sqlState != null && sqlState.startsWith("23"))
+                || failure.getErrorCode() == 19
+                || failure.getErrorCode() == 1062;
+    }
+
     /** 运行数据库迁移 - 创建所有必需的表 */
-    private void runMigrations() {
+    private boolean runMigrations() {
         try (var conn = ksCore.dataStore().getConnection()) {
             if (conn == null) {
-                getLogger().warning("数据库连接未就绪，跳过迁移。");
-                return;
+                getLogger().severe("数据库连接未就绪，无法执行业务迁移。");
+                return false;
             }
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_eco_transport_log (id INTEGER PRIMARY KEY AUTOINCREMENT, sender_uuid TEXT NOT NULL, target_uuid TEXT NOT NULL, item_material TEXT NOT NULL, quantity INTEGER NOT NULL, source_world TEXT NOT NULL, target_world TEXT NOT NULL, distance REAL NOT NULL, cross_world INTEGER NOT NULL, fee REAL NOT NULL, created_at INTEGER NOT NULL)");
-            // 企业表（确保在 EnterpriseManager 之前创建）
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_enterprises (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'PRIVATE', owner_uuids TEXT NOT NULL, registered_capital REAL NOT NULL, current_assets REAL DEFAULT 0.0, employee_count INTEGER DEFAULT 0, region TEXT, status TEXT DEFAULT 'ACTIVE', created_at INTEGER NOT NULL)");
-            try {
-                conn.createStatement().executeUpdate(
-                    "ALTER TABLE ks_ent_enterprises ADD COLUMN dividend_rate REAL NOT NULL DEFAULT 0");
-            } catch (java.sql.SQLException ignored) {
-                // Existing databases already have the column.
-            }
-        try {
-            conn.createStatement().executeUpdate(
-                "ALTER TABLE ks_ent_enterprises ADD COLUMN description TEXT NOT NULL DEFAULT ''");
-            } catch (java.sql.SQLException ignored) {
-                // Existing databases already have the column.
-            }
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_capital_injections (id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, contributor_uuid TEXT NOT NULL, amount REAL NOT NULL, injected_at INTEGER NOT NULL)");
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_dividend_shares (enterprise_id TEXT NOT NULL, owner_uuid TEXT NOT NULL, share_percent REAL NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (enterprise_id, owner_uuid))");
-            // 企业成员表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_members (enterprise_id TEXT NOT NULL, player_uuid TEXT NOT NULL, player_name TEXT DEFAULT '', role TEXT DEFAULT 'EMPLOYEE', salary REAL DEFAULT 0.0, joined_at INTEGER DEFAULT (strftime('%s','now')), PRIMARY KEY (enterprise_id, player_uuid))");
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_join_requests (id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, applicant_uuid TEXT NOT NULL, applicant_name TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'PENDING', created_at INTEGER NOT NULL, reviewed_by TEXT, reviewed_at INTEGER DEFAULT 0, UNIQUE (enterprise_id, applicant_uuid))");
-            conn.createStatement().executeUpdate(
-                "CREATE INDEX IF NOT EXISTS idx_ent_join_requests_status ON ks_ent_join_requests (enterprise_id, status, created_at)");
-            // 招投标项目表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_projects (id TEXT PRIMARY KEY, title TEXT NOT NULL, publisher_uuid TEXT NOT NULL, publisher_type TEXT NOT NULL DEFAULT 'OFFICIAL', budget REAL NOT NULL, prepayment_ratio REAL DEFAULT 0.3, penalty_ratio REAL DEFAULT 0.1, deadline INTEGER NOT NULL, location TEXT, allow_subcontract INTEGER DEFAULT 1, allow_consortium INTEGER DEFAULT 1, status TEXT DEFAULT 'OPEN', created_at INTEGER NOT NULL)");
-            // 投标记录表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_bids (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, enterprise_id TEXT NOT NULL, bid_amount REAL NOT NULL, is_consortium INTEGER DEFAULT 0, consortium_members TEXT, status TEXT DEFAULT 'PENDING', submitted_at INTEGER NOT NULL, FOREIGN KEY (project_id) REFERENCES ks_ent_projects(id))");
-            // 分红表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_dividends (id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, amount REAL NOT NULL, declared_at INTEGER NOT NULL, tax_rate REAL DEFAULT 0.1, tax_paid REAL DEFAULT 0, status TEXT DEFAULT 'PAID')");
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_dividend_payouts (id TEXT PRIMARY KEY, dividend_id TEXT NOT NULL, enterprise_id TEXT NOT NULL, recipient_uuid TEXT NOT NULL, share_percent REAL NOT NULL, gross_amount REAL NOT NULL, tax_amount REAL NOT NULL, net_amount REAL NOT NULL, paid_at INTEGER NOT NULL)");
-            // 合资邀请表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_invites (id TEXT PRIMARY KEY, enterprise_id TEXT, bank_id TEXT, inviter_uuid TEXT NOT NULL, invitee_uuid TEXT NOT NULL, status TEXT DEFAULT 'PENDING', created_at INTEGER NOT NULL, responded_at INTEGER DEFAULT 0)");
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_pending_creations (id TEXT PRIMARY KEY, creator_uuid TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, owner_uuids TEXT NOT NULL, registered_capital REAL NOT NULL, region TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'PENDING', created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, finalized_enterprise_id TEXT)");
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_pending_creation_confirmations (pending_id TEXT NOT NULL, player_uuid TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', responded_at INTEGER DEFAULT 0, PRIMARY KEY (pending_id, player_uuid))");
-            try {
-                conn.createStatement().executeUpdate(
-                    "ALTER TABLE ks_ent_pending_creations ADD COLUMN kind TEXT NOT NULL DEFAULT 'ENTERPRISE'");
-            } catch (java.sql.SQLException ignored) {
-                // Existing databases have already received the column.
-            }
-            // 企业权限表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_permissions (enterprise_id TEXT NOT NULL, player_uuid TEXT NOT NULL, permission TEXT NOT NULL, granted_by TEXT, granted_at INTEGER NOT NULL, PRIMARY KEY (enterprise_id, player_uuid, permission))");
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_ent_role_permissions (enterprise_id TEXT NOT NULL, role TEXT NOT NULL, permission TEXT NOT NULL, PRIMARY KEY (enterprise_id, role, permission))");
-            // 税收表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_tax_records (id INTEGER PRIMARY KEY AUTOINCREMENT, payer_uuid TEXT NOT NULL, payer_name TEXT, category TEXT NOT NULL, base_amount REAL NOT NULL, tax_rate REAL NOT NULL, tax_amount REAL NOT NULL, description TEXT, collected_at INTEGER NOT NULL)");
-            // 税率表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_tax_rates (category TEXT PRIMARY KEY, rate REAL NOT NULL, updated_at INTEGER NOT NULL)");
-            // 罚单表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_tax_penalties (id TEXT PRIMARY KEY, target_uuid TEXT NOT NULL, target_name TEXT, penalty_type TEXT NOT NULL, base_amount REAL NOT NULL, penalty_rate REAL DEFAULT 0.2, penalty_amount REAL NOT NULL, reason TEXT, paid INTEGER DEFAULT 0, issued_at INTEGER NOT NULL)");
-            // 银行账户表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_bank_accounts (id TEXT PRIMARY KEY, bank_id TEXT NOT NULL, player_uuid TEXT NOT NULL, balance REAL DEFAULT 0.0, interest_earned REAL DEFAULT 0.0, opened_at INTEGER NOT NULL, FOREIGN KEY (bank_id) REFERENCES ks_bank_banks(id))");
-            // 贷款表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_bank_loans (id TEXT PRIMARY KEY, bank_id TEXT NOT NULL, borrower_uuid TEXT NOT NULL, principal REAL NOT NULL, remaining REAL NOT NULL, interest_rate REAL NOT NULL, term_days INTEGER NOT NULL, issued_at INTEGER NOT NULL, due_at INTEGER NOT NULL, status TEXT DEFAULT 'ACTIVE', FOREIGN KEY (bank_id) REFERENCES ks_bank_banks(id))");
-            // 银行利率表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_bank_rates (bank_id TEXT PRIMARY KEY, loan_rate REAL DEFAULT 0.05, deposit_rate REAL DEFAULT 0.01, updated_at INTEGER DEFAULT (strftime('%s','now')))");
-            // 银行成员表
-            conn.createStatement().executeUpdate(
-                "CREATE TABLE IF NOT EXISTS ks_bank_members (bank_id TEXT, player_uuid TEXT, player_name TEXT, role TEXT DEFAULT 'MEMBER', joined_at INTEGER DEFAULT (strftime('%s','now')), PRIMARY KEY(bank_id, player_uuid))");
+            CoreBusinessSchema.initialize(conn);
+            EcoWebBusinessSchema.initialize(conn);
             getLogger().info("数据库迁移完成（所有核心表已创建）");
+            return true;
         } catch (java.sql.SQLException e) {
-            getLogger().warning("数据库迁移失败: " + e.getMessage());
+            getLogger().severe("数据库迁移失败: " + e.getMessage());
+            return false;
         }
     }
 
     /** Periodically expire unfinished joint-venture requests without touching Bukkit state. */
     private void startPendingCreationExpiryTask() {
-        pendingCreationExpiryTask = Bukkit.getScheduler().runTaskTimer(this, () -> asyncWorkPool.executeDatabase(() -> {
+        pendingCreationExpiryTask = scheduler.runAsyncTimer(() -> asyncWorkPool.executeDatabase(() -> {
             try (var conn = ksCore.dataStore().getConnection();
                  var ps = conn == null ? null : conn.prepareStatement(
                          "UPDATE ks_ent_pending_creations SET status='EXPIRED' WHERE status IN ('PENDING','FINALIZING') AND expires_at<?")) {
@@ -385,7 +649,28 @@ public final class KsEco extends JavaPlugin {
             } catch (Exception e) {
                 getLogger().warning("Failed to expire pending enterprise creations: " + e.getMessage());
             }
-        }), 20L * 60, 20L * 60 * 5);
+        }), Duration.ofMinutes(1), Duration.ofMinutes(5));
+    }
+
+    private void startDatabaseHeartbeatTask() {
+        if (databaseHeartbeatTask != null) databaseHeartbeatTask.cancel();
+        long intervalTicks = Math.max(20L, ecoDatabase.heartbeatInterval().toSeconds() * 20L);
+        databaseHeartbeatTask = scheduler.runAsyncTimer(() -> {
+            if (getConfig().getBoolean("cross-server.enabled", false)) {
+                CrossServerRuntime runtime = crossServerRuntime;
+                if (runtime == null || !runtime.isHealthy() || !ecoDatabase.identityHealthy()) {
+                    getLogger().severe("跨服运行时或数据库节点身份不健康；为避免节点状态分裂，ks-Eco 将停用。");
+                    scheduler.runGlobal(() -> Bukkit.getPluginManager().disablePlugin(this));
+                    return;
+                }
+            }
+            if (asyncWorkPool == null) return;
+            try {
+                asyncWorkPool.executeDatabase(ecoDatabase::heartbeat);
+            } catch (RejectedExecutionException exception) {
+                getLogger().warning("数据库队列繁忙，ks-Eco 跨服身份心跳未能入队。");
+            }
+        }, Duration.ofMillis(intervalTicks * 50L), Duration.ofMillis(intervalTicks * 50L));
     }
 
     private void registerCommands() {
@@ -477,15 +762,15 @@ public final class KsEco extends JavaPlugin {
 
     private void startPriceRefreshTask() {
         long interval = priceEngine.getPriceRefreshMinutes() * 60 * 20L;
-        priceRefreshTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
-            priceEngine.refreshAllPrices();
-        }, interval, interval);
+        priceRefreshTask = scheduler.runAsyncTimer(() -> {
+            refreshPricesCoordinated();
+        }, Duration.ofMillis(interval * 50L), Duration.ofMillis(interval * 50L));
     }
 
     private void startOfficialMarketSweepTask() {
         if (officialSweepTask != null) officialSweepTask.cancel();
         long interval = Math.max(20L, ecoConfig.getOfficialSweepIntervalSeconds() * 20L);
-        officialSweepTask = Bukkit.getScheduler().runTaskTimer(this,
+        officialSweepTask = scheduler.runGlobalTimer(
                 () -> officialMarketSweepManager.runSweep(), interval, interval);
     }
 
@@ -501,7 +786,7 @@ public final class KsEco extends JavaPlugin {
     /** 启动货币供应量快照任务（每5分钟记录一次 M0/M1/M2） */
     private void startMoneySupplySnapshotTask() {
         // 首次快照延迟 30 秒执行，之后每 5 分钟一次
-        getServer().getScheduler().runTaskTimer(this, () -> {
+        moneySupplySnapshotTask = scheduler.runGlobalTimer(() -> {
             try {
                 if (extraModuleLoader != null) {
                     var bankModule = extraModuleLoader.getModule("ks-eco-bank");
@@ -522,13 +807,13 @@ public final class KsEco extends JavaPlugin {
     /** 启动市场波动报告任务：定期把涨跌幅最大的几个物品汇总成公示，发到公告栏。 */
     private void startMarketVolatilityReportTask() {
         long intervalTicks = ecoConfig.getVolatilityReportIntervalHours() * 3600L * 20L;
-        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+        volatilityReportTask = scheduler.runAsyncTimer(() -> {
             try {
                 postMarketVolatilityReport();
             } catch (Exception e) {
                 getLogger().warning("生成市场波动报告失败: " + e.getMessage());
             }
-        }, intervalTicks, intervalTicks);
+        }, Duration.ofMillis(intervalTicks * 50L), Duration.ofMillis(intervalTicks * 50L));
     }
 
     private double volatilityPctChange(java.util.Map<String, Object> item) {
@@ -697,8 +982,11 @@ public final class KsEco extends JavaPlugin {
         switch (args[0].toLowerCase()) {
             case "reload":
                 boolean reloadExtras = args.length >= 2 && args[1].equalsIgnoreCase("extras");
-                reloadRuntime(reloadExtras);
-                sender.sendMessage("§a[ks-Eco] 配置已重载" + (reloadExtras ? "，Extra 模块已安全重载。" : "。"));
+                scheduler.runGlobal(() -> {
+                    reloadRuntime(reloadExtras && !isFoliaRuntime());
+                    sender.sendMessage("§a[ks-Eco] 配置已重载"
+                            + (reloadExtras && !isFoliaRuntime() ? "，Extra 模块已安全重载。" : "。"));
+                });
                 break;
             case "status":
                 sender.sendMessage("§6[ks-Eco 状态]");
@@ -706,6 +994,10 @@ public final class KsEco extends JavaPlugin {
                 sender.sendMessage("§7  暂存箱物品: §f" + storageManager.totalStoredItems());
                 sender.sendMessage("§7  Vault: " + (vaultHook.isAvailable() ? "§a已对接" : "§c未找到"));
                 sender.sendMessage("§7  Extra 模块: §f" + extraModuleLoader.loadedModuleCount());
+                sender.sendMessage("§7  跨服运行时: "
+                        + (crossServerRuntime != null && crossServerRuntime.isHealthy() ? "§a运行中" : "§8未启用/不健康"));
+                sender.sendMessage("§7  数据库节点: §f" + ecoDatabase.serverId()
+                        + " §8(" + ecoDatabase.dialect() + ")");
                 break;
             case "force-price":
                 if (args.length < 3) {
@@ -1098,8 +1390,22 @@ public final class KsEco extends JavaPlugin {
             player.sendMessage("§c经济系统未就绪，请稍后再试。");
             return true;
         }
-        double balance = vaultHook.getBalance(player);
-        player.sendMessage("§6[ks-Eco] §7你当前的余额: §e" + vaultHook.format(balance));
+        if (vaultHook.directBuiltinActive()) {
+            UUID playerUuid = player.getUniqueId();
+            try {
+                asyncWorkPool.executeDatabase(() -> {
+                    double balance = builtinEconomy.getBalance(playerUuid);
+                    scheduler.runEntity(player,
+                            () -> player.sendMessage("§6[ks-Eco] §7你当前的余额: §e" + vaultHook.format(balance)),
+                            () -> { });
+                });
+            } catch (RejectedExecutionException busy) {
+                player.sendMessage("§c经济数据库繁忙，请稍后再试。");
+            }
+        } else {
+            double balance = vaultHook.getBalance(player);
+            player.sendMessage("§6[ks-Eco] §7你当前的余额: §e" + vaultHook.format(balance));
+        }
         return true;
     }
 
@@ -1149,7 +1455,12 @@ public final class KsEco extends JavaPlugin {
     // ---- Getters ----
 
     public KsCore ksCore() { return ksCore; }
+    public EcoScheduler scheduler() { return scheduler; }
+    public boolean foliaRuntime() { return isFoliaRuntime(); }
     public KsPluginBridge bridge() { return bridge; }
+    public EcoDatabase ecoDatabase() { return ecoDatabase; }
+    public JdbcDemandCampaignStore demandCampaignStore() { return demandCampaignStore; }
+    public boolean demandCampaignsEnabled() { return demandCampaignsEnabled && demandCampaignStore != null; }
     public EcoConfig ecoConfig() { return ecoConfig; }
     public FeatureGateManager featureGate() { return featureGate; }
     public VaultHook vaultHook() { return vaultHook; }
@@ -1162,6 +1473,9 @@ public final class KsEco extends JavaPlugin {
     public PurchaseOrderManager purchaseOrderManager() { return purchaseOrderManager; }
     public OfficialBuyManager officialBuyManager() { return officialBuyManager; }
     public OfficialWarehouseManager officialWarehouseManager() { return officialWarehouseManager; }
+    public OfficialWarehouseLiquidationManager officialWarehouseLiquidationManager() {
+        return officialWarehouseLiquidationManager;
+    }
     public OfficialMarketSweepManager officialMarketSweepManager() { return officialMarketSweepManager; }
     public TradeManager tradeManager() { return tradeManager; }
     public TransportManager transportManager() { return transportManager; }
@@ -1169,8 +1483,8 @@ public final class KsEco extends JavaPlugin {
 
     /** Reload ks-Eco configuration and, optionally, only the managed Extra modules. */
     public void reloadRuntime(boolean reloadExtras) {
-        if (!Bukkit.isPrimaryThread()) {
-            throw new IllegalStateException("ks-Eco runtime reload must run on the server thread");
+        if (!scheduler.isGlobalThread()) {
+            throw new IllegalStateException("ks-Eco runtime reload must run on the global tick thread");
         }
         ecoConfig = new EcoConfig(this);
         featureGate.reload();
@@ -1197,6 +1511,12 @@ public final class KsEco extends JavaPlugin {
     public BankAccessProvider bankAccessProvider() { return bankAccessProvider; }
     public void registerEnterpriseAccessProvider(EnterpriseAccessProvider provider) { this.enterpriseAccessProvider = provider; }
     public EnterpriseAccessProvider enterpriseAccessProvider() { return enterpriseAccessProvider; }
+    public void registerEnterpriseFundSettlementProvider(EnterpriseFundSettlementProvider provider) {
+        this.enterpriseFundSettlementProvider = provider;
+    }
+    public EnterpriseFundSettlementProvider enterpriseFundSettlementProvider() {
+        return enterpriseFundSettlementProvider;
+    }
 
     /**
      * 获取指定税种的动态税率。
@@ -1235,5 +1555,15 @@ public final class KsEco extends JavaPlugin {
      */
     public double getCategoryTaxRate(String category) {
         return getCategoryTaxRate(category, 0.02);
+    }
+
+    private static boolean isFoliaRuntime() {
+        try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer", false,
+                    KsEco.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException ignored) {
+            return false;
+        }
     }
 }

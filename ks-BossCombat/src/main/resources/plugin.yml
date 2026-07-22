@@ -1,5 +1,5 @@
 name: ks-BossCombat
-version: ${project.version}
+version: 1.0.0
 main: org.kseries.bosscombat.KsBossCombat
 api-version: '1.21'
 description: ks-Series boss combat rules that require cross-plugin runtime integration.

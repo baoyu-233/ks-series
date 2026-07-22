@@ -8,6 +8,10 @@ import org.bukkit.entity.Player;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
+import org.kseco.currency.CurrencyPersistenceCompatibility;
+import org.kseco.database.BusinessSchemaDialect;
+import org.kseco.database.DatabaseDialect;
+import org.kseco.database.PortableSqlMutation;
 import org.bukkit.block.ShulkerBox;
 import org.bukkit.inventory.meta.Damageable;
 import org.bukkit.inventory.meta.BlockStateMeta;
@@ -24,9 +28,11 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -34,6 +40,7 @@ public final class LimitedSaleManager {
 
     public static final String SALE_TYPE_ITEM = "ITEM";
     public static final String SALE_TYPE_BLINDBOX = "BLINDBOX";
+    public static final String DEFAULT_CURRENCY_ID = ListingManager.DEFAULT_CURRENCY_ID;
     public static final int BOX_UNITS = 27;
 
     private final KsEco plugin;
@@ -43,6 +50,7 @@ public final class LimitedSaleManager {
     public LimitedSaleManager(KsEco plugin) {
         this.plugin = plugin;
         createTables();
+        plugin.scheduler().runGlobalLater(this::recoverSettlements, 40L);
     }
 
     public record SaleItem(
@@ -63,8 +71,22 @@ public final class LimitedSaleManager {
             String saleType,
             String blindBoxPoolId,
             boolean boxEnabled,
-            double boxPrice
+            double boxPrice,
+            String currencyId
     ) {
+        public SaleItem(String id, String name, String itemMaterial, String displayName, ItemStack item,
+                        double price, int totalStock, int sold, int perPlayerLimit, boolean enabled,
+                        long startsAt, long endsAt, long createdAt, long updatedAt, String saleType,
+                        String blindBoxPoolId, boolean boxEnabled, double boxPrice) {
+            this(id, name, itemMaterial, displayName, item, price, totalStock, sold, perPlayerLimit,
+                    enabled, startsAt, endsAt, createdAt, updatedAt, saleType, blindBoxPoolId,
+                    boxEnabled, boxPrice, DEFAULT_CURRENCY_ID);
+        }
+
+        public SaleItem {
+            currencyId = normalizeCurrencyId(currencyId);
+        }
+
         public boolean blindBoxSale() {
             return SALE_TYPE_BLINDBOX.equalsIgnoreCase(saleType);
         }
@@ -94,6 +116,10 @@ public final class LimitedSaleManager {
             return enabled && timeActive(now) && !soldOut();
         }
 
+        public boolean cashCurrency() {
+            return DEFAULT_CURRENCY_ID.equals(currencyId);
+        }
+
         public boolean boxPurchaseAvailable() {
             return !blindBoxSale() && boxEnabled && boxPrice > 0 && Double.isFinite(boxPrice)
                     && item != null && !item.getType().isAir() && !ShulkerBoxParser.isShulkerBox(item)
@@ -108,10 +134,12 @@ public final class LimitedSaleManager {
             String id, String name, String itemMaterial, String displayName, byte[] itemData,
             double price, int totalStock, int sold, int perPlayerLimit, boolean enabled,
             long startsAt, long endsAt, long createdAt, long updatedAt,
-            String saleType, String blindBoxPoolId, boolean boxEnabled, double boxPrice
+            String saleType, String blindBoxPoolId, boolean boxEnabled, double boxPrice,
+            String currencyId
     ) {
         private SaleSnapshot {
             itemData = itemData == null ? null : itemData.clone();
+            currencyId = normalizePersistedCurrencyId(currencyId);
         }
 
         boolean blindBoxSale() { return SALE_TYPE_BLINDBOX.equalsIgnoreCase(saleType); }
@@ -120,79 +148,122 @@ public final class LimitedSaleManager {
         int remainingStock() { return unlimitedStock() ? Integer.MAX_VALUE : Math.max(0, totalStock - sold); }
     }
 
-    private record PurchasePreparation(SaleSnapshot sale, int purchased, String error) {}
-    private record PurchaseCommit(SaleSnapshot sale, double cost, String error) {}
+    enum CashBackend { VAULT, BUILTIN }
+
+    private record PurchasePreparation(String settlementId, SaleSnapshot sale, int purchased, String currencyId,
+                                       double amount, CashBackend backend, String error) {}
+    private record PurchaseCommit(String settlementId, SaleSnapshot sale, String currencyId, double amount,
+                                  CashBackend backend, String error) {}
+
+    static boolean executeDatabaseOrReject(AsyncWorkPool pool, Runnable task, Runnable onRejected) {
+        Objects.requireNonNull(pool, "pool");
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(onRejected, "onRejected");
+        try {
+            pool.executeDatabase(task);
+            return true;
+        } catch (RejectedExecutionException exception) {
+            onRejected.run();
+            return false;
+        }
+    }
+
+    static boolean executeDatabaseOrFallback(AsyncWorkPool pool, Runnable task,
+                                             Consumer<Runnable> fallbackExecutor, Runnable onRejected) {
+        Objects.requireNonNull(pool, "pool");
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(fallbackExecutor, "fallbackExecutor");
+        Objects.requireNonNull(onRejected, "onRejected");
+        try {
+            pool.executeDatabase(task);
+            return true;
+        } catch (RejectedExecutionException primaryRejection) {
+            try {
+                fallbackExecutor.accept(task);
+                return true;
+            } catch (RuntimeException fallbackRejection) {
+                primaryRejection.addSuppressed(fallbackRejection);
+                onRejected.run();
+                return false;
+            }
+        }
+    }
+
+    static boolean dispatchOrReject(Consumer<Runnable> dispatcher, Runnable task, Runnable onRejected) {
+        Objects.requireNonNull(dispatcher, "dispatcher");
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(onRejected, "onRejected");
+        try {
+            dispatcher.accept(task);
+            return true;
+        } catch (RuntimeException rejection) {
+            onRejected.run();
+            return false;
+        }
+    }
+
+    static <T> Consumer<T> completionClearingPurchase(
+            Set<String> activePurchases,
+            String operationKey,
+            Consumer<T> callback
+    ) {
+        Objects.requireNonNull(activePurchases, "activePurchases");
+        Objects.requireNonNull(operationKey, "operationKey");
+        Objects.requireNonNull(callback, "callback");
+        return result -> {
+            activePurchases.remove(operationKey);
+            callback.accept(result);
+        };
+    }
 
     private void createTables() {
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
-            try (Statement s = conn.createStatement()) {
-                s.execute("""
-                        CREATE TABLE IF NOT EXISTS ks_limited_sale_items (
-                            id TEXT PRIMARY KEY,
-                            name TEXT NOT NULL,
-                            item_material TEXT NOT NULL,
-                            item_data BLOB,
-                            display_name TEXT DEFAULT '',
-                            price REAL NOT NULL DEFAULT 100,
-                            total_stock INTEGER DEFAULT -1,
-                            sold INTEGER DEFAULT 0,
-                            per_player_limit INTEGER DEFAULT -1,
-                            enabled INTEGER DEFAULT 1,
-                            starts_at INTEGER DEFAULT 0,
-                            ends_at INTEGER DEFAULT 0,
-                            sale_type TEXT NOT NULL DEFAULT 'ITEM',
-                            blindbox_pool_id TEXT DEFAULT '',
-                            box_enabled INTEGER NOT NULL DEFAULT 0,
-                            box_price REAL NOT NULL DEFAULT 0,
-                            created_at INTEGER NOT NULL,
-                            updated_at INTEGER NOT NULL
-                        )
-                        """);
-                s.execute("""
-                        CREATE TABLE IF NOT EXISTS ks_limited_sale_players (
-                            sale_id TEXT NOT NULL,
-                            player_uuid TEXT NOT NULL,
-                            purchased INTEGER NOT NULL DEFAULT 0,
-                            updated_at INTEGER NOT NULL,
-                            PRIMARY KEY (sale_id, player_uuid)
-                        )
-                        """);
-                s.execute("""
-                        CREATE TABLE IF NOT EXISTS ks_limited_sale_log (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            sale_id TEXT NOT NULL,
-                            player_uuid TEXT NOT NULL,
-                            player_name TEXT DEFAULT '',
-                            quantity INTEGER NOT NULL,
-                            price_each REAL NOT NULL,
-                            total_price REAL NOT NULL,
-                            bought_at INTEGER NOT NULL
-                        )
-                        """);
-                s.execute("CREATE INDEX IF NOT EXISTS idx_ks_limited_sale_log_sale ON ks_limited_sale_log(sale_id)");
-                s.execute("CREATE INDEX IF NOT EXISTS idx_ks_limited_sale_log_player ON ks_limited_sale_log(player_uuid)");
-            }
-            addColumnIfMissing(conn, "ALTER TABLE ks_limited_sale_items ADD COLUMN total_stock INTEGER DEFAULT -1");
-            addColumnIfMissing(conn, "ALTER TABLE ks_limited_sale_items ADD COLUMN sold INTEGER DEFAULT 0");
-            addColumnIfMissing(conn, "ALTER TABLE ks_limited_sale_items ADD COLUMN per_player_limit INTEGER DEFAULT -1");
-            addColumnIfMissing(conn, "ALTER TABLE ks_limited_sale_items ADD COLUMN starts_at INTEGER DEFAULT 0");
-            addColumnIfMissing(conn, "ALTER TABLE ks_limited_sale_items ADD COLUMN ends_at INTEGER DEFAULT 0");
-            addColumnIfMissing(conn, "ALTER TABLE ks_limited_sale_items ADD COLUMN sale_type TEXT NOT NULL DEFAULT 'ITEM'");
-            addColumnIfMissing(conn, "ALTER TABLE ks_limited_sale_items ADD COLUMN blindbox_pool_id TEXT DEFAULT ''");
-            addColumnIfMissing(conn, "ALTER TABLE ks_limited_sale_items ADD COLUMN box_enabled INTEGER NOT NULL DEFAULT 0");
-            addColumnIfMissing(conn, "ALTER TABLE ks_limited_sale_items ADD COLUMN box_price REAL NOT NULL DEFAULT 0");
-            addColumnIfMissing(conn, "ALTER TABLE ks_limited_sale_items ADD COLUMN updated_at INTEGER DEFAULT 0");
+            initializeSchema(conn);
         } catch (SQLException e) {
             plugin.getLogger().log(Level.WARNING, "限时直售表创建失败", e);
         }
     }
 
-    private void addColumnIfMissing(Connection conn, String sql) {
-        try (Statement s = conn.createStatement()) {
-            s.execute(sql);
-        } catch (SQLException ignored) {
-        }
+    static void initializeSchema(Connection connection) throws SQLException {
+        initializeSchema(connection, BusinessSchemaDialect.detect(connection));
+    }
+
+    static void initializeSchema(Connection conn, DatabaseDialect dialect) throws SQLException {
+        String number = BusinessSchemaDialect.floatingPointType(dialect);
+        String binary = BusinessSchemaDialect.binaryType(dialect);
+        String identity = BusinessSchemaDialect.identityPrimaryKey(dialect);
+            try (Statement s = conn.createStatement()) {
+                s.execute("CREATE TABLE IF NOT EXISTS ks_limited_sale_items (id VARCHAR(128) PRIMARY KEY,name VARCHAR(128) NOT NULL,item_material VARCHAR(128) NOT NULL,item_data " + binary + ",display_name VARCHAR(256) DEFAULT '',price " + number + " NOT NULL DEFAULT 100,currency_id VARCHAR(64) NOT NULL DEFAULT 'CASH',total_stock INTEGER DEFAULT -1,sold INTEGER DEFAULT 0,per_player_limit INTEGER DEFAULT -1,enabled INTEGER DEFAULT 1,starts_at BIGINT DEFAULT 0,ends_at BIGINT DEFAULT 0,sale_type VARCHAR(32) NOT NULL DEFAULT 'ITEM',blindbox_pool_id VARCHAR(128) DEFAULT '',box_enabled INTEGER NOT NULL DEFAULT 0,box_price " + number + " NOT NULL DEFAULT 0,created_at BIGINT NOT NULL,updated_at BIGINT NOT NULL)");
+                s.execute("CREATE TABLE IF NOT EXISTS ks_limited_sale_players (sale_id VARCHAR(128) NOT NULL,player_uuid VARCHAR(36) NOT NULL,purchased INTEGER NOT NULL DEFAULT 0,updated_at BIGINT NOT NULL,PRIMARY KEY(sale_id,player_uuid))");
+                s.execute("CREATE TABLE IF NOT EXISTS ks_limited_sale_log (id " + identity + ",sale_id VARCHAR(128) NOT NULL,player_uuid VARCHAR(36) NOT NULL,player_name VARCHAR(128) DEFAULT '',quantity INTEGER NOT NULL,price_each " + number + " NOT NULL,total_price " + number + " NOT NULL,currency_id VARCHAR(64) NOT NULL DEFAULT 'CASH',bought_at BIGINT NOT NULL)");
+            }
+            BusinessSchemaDialect.createIndexIfMissing(conn, "idx_ks_limited_sale_log_sale", "ks_limited_sale_log", "sale_id");
+            BusinessSchemaDialect.createIndexIfMissing(conn, "idx_ks_limited_sale_log_player", "ks_limited_sale_log", "player_uuid");
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_limited_sale_items", "total_stock", "INTEGER DEFAULT -1");
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_limited_sale_items", "sold", "INTEGER DEFAULT 0");
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_limited_sale_items", "per_player_limit", "INTEGER DEFAULT -1");
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_limited_sale_items", "starts_at", "BIGINT DEFAULT 0");
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_limited_sale_items", "ends_at", "BIGINT DEFAULT 0");
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_limited_sale_items", "sale_type", "VARCHAR(32) NOT NULL DEFAULT 'ITEM'");
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_limited_sale_items", "blindbox_pool_id", "VARCHAR(128) DEFAULT ''");
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_limited_sale_items", "box_enabled", "INTEGER NOT NULL DEFAULT 0");
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_limited_sale_items", "box_price", number + " NOT NULL DEFAULT 0");
+            LimitedSaleSettlementStore.initialize(conn);
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_limited_sale_items", "updated_at", "BIGINT DEFAULT 0");
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_limited_sale_items", "currency_id", "VARCHAR(64) NOT NULL DEFAULT 'CASH'");
+            BusinessSchemaDialect.addColumnIfMissing(conn, "ks_limited_sale_log", "currency_id", "VARCHAR(64) NOT NULL DEFAULT 'CASH'");
+            CurrencyPersistenceCompatibility.canonicalizeLegacyCashRows(conn, "ks_limited_sale_items");
+            CurrencyPersistenceCompatibility.canonicalizeLegacyCashRows(conn, "ks_limited_sale_log");
+    }
+
+    static void incrementPurchased(Connection connection, String saleId, String playerUuid,
+                                   int quantity, long updatedAt) throws SQLException {
+        PortableSqlMutation.upsert(connection,
+                "UPDATE ks_limited_sale_players SET purchased=purchased+?,updated_at=? WHERE sale_id=? AND player_uuid=?",
+                ps -> { ps.setInt(1, quantity); ps.setLong(2, updatedAt); ps.setString(3, saleId); ps.setString(4, playerUuid); },
+                "INSERT INTO ks_limited_sale_players (purchased,updated_at,sale_id,player_uuid) VALUES (?,?,?,?)",
+                ps -> { ps.setInt(1, quantity); ps.setLong(2, updatedAt); ps.setString(3, saleId); ps.setString(4, playerUuid); });
     }
 
     public List<SaleItem> listSales(boolean includeUnavailable) {
@@ -261,7 +332,8 @@ public final class LimitedSaleManager {
                 rs.getInt("total_stock"), rs.getInt("sold"), rs.getInt("per_player_limit"),
                 rs.getInt("enabled") != 0, rs.getLong("starts_at"), rs.getLong("ends_at"),
                 rs.getLong("created_at"), rs.getLong("updated_at"), saleType, blindBoxPoolId,
-                rs.getInt("box_enabled") != 0, rs.getDouble("box_price"));
+                rs.getInt("box_enabled") != 0, rs.getDouble("box_price"),
+                rs.getString("currency_id"));
     }
 
     private SaleItem materialize(SaleSnapshot snapshot) {
@@ -287,13 +359,26 @@ public final class LimitedSaleManager {
                 snapshot.price(), snapshot.totalStock(), snapshot.sold(), snapshot.perPlayerLimit(),
                 snapshot.enabled(), snapshot.startsAt(), snapshot.endsAt(), snapshot.createdAt(),
                 snapshot.updatedAt(), snapshot.saleType(), snapshot.blindBoxPoolId(), snapshot.boxEnabled(),
-                snapshot.boxPrice()
+                snapshot.boxPrice(), snapshot.currencyId()
         );
     }
 
     public String addSale(ItemStack sourceItem, String name, double price, int totalStock, int perPlayerLimit,
-                          long startsAt, long endsAt) {
+                           long startsAt, long endsAt) {
+        return addSale(sourceItem, name, price, totalStock, perPlayerLimit, startsAt, endsAt,
+                DEFAULT_CURRENCY_ID);
+    }
+
+    public String addSale(ItemStack sourceItem, String name, double price, int totalStock, int perPlayerLimit,
+                          long startsAt, long endsAt, String currencyId) {
         if (sourceItem == null || sourceItem.getType().isAir()) return null;
+        if (!isValidPrice(price)) return null;
+        String normalizedCurrencyId;
+        try {
+            normalizedCurrencyId = normalizeCurrencyId(currencyId);
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
         ItemStack item = sourceItem.clone();
         if (item.getAmount() <= 0) item.setAmount(1);
         String id = "sale_" + UUID.randomUUID().toString().substring(0, 8);
@@ -304,26 +389,27 @@ public final class LimitedSaleManager {
             if (conn == null) return null;
             try (PreparedStatement ps = conn.prepareStatement("""
                     INSERT INTO ks_limited_sale_items
-                    (id, name, item_material, item_data, display_name, price, total_stock, sold,
+                    (id, name, item_material, item_data, display_name, price, currency_id, total_stock, sold,
                      per_player_limit, enabled, starts_at, ends_at, sale_type, blindbox_pool_id, created_at, updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """)) {
                 ps.setString(1, id);
                 ps.setString(2, finalName);
                 ps.setString(3, item.getType().name());
                 ps.setBytes(4, blob);
                 ps.setString(5, legacyDisplayName(item));
-                ps.setDouble(6, Math.max(0.01, price));
-                ps.setInt(7, totalStock < 0 ? -1 : Math.max(0, totalStock));
-                ps.setInt(8, 0);
-                ps.setInt(9, perPlayerLimit < 0 ? -1 : Math.max(0, perPlayerLimit));
-                ps.setInt(10, 1);
-                ps.setLong(11, Math.max(0, startsAt));
-                ps.setLong(12, Math.max(0, endsAt));
-                ps.setString(13, SALE_TYPE_ITEM);
-                ps.setString(14, "");
-                ps.setLong(15, now);
+                ps.setDouble(6, price);
+                ps.setString(7, normalizedCurrencyId);
+                ps.setInt(8, totalStock < 0 ? -1 : Math.max(0, totalStock));
+                ps.setInt(9, 0);
+                ps.setInt(10, perPlayerLimit < 0 ? -1 : Math.max(0, perPlayerLimit));
+                ps.setInt(11, 1);
+                ps.setLong(12, Math.max(0, startsAt));
+                ps.setLong(13, Math.max(0, endsAt));
+                ps.setString(14, SALE_TYPE_ITEM);
+                ps.setString(15, "");
                 ps.setLong(16, now);
+                ps.setLong(17, now);
                 ps.executeUpdate();
                 return id;
             }
@@ -334,8 +420,20 @@ public final class LimitedSaleManager {
     }
 
     public String addBlindBoxSale(String poolId, String name, double price, int totalStock, int perPlayerLimit,
-                                  long startsAt, long endsAt) {
+                                   long startsAt, long endsAt) {
+        return addBlindBoxSale(poolId, name, price, totalStock, perPlayerLimit, startsAt, endsAt,
+                DEFAULT_CURRENCY_ID);
+    }
+
+    public String addBlindBoxSale(String poolId, String name, double price, int totalStock, int perPlayerLimit,
+                                  long startsAt, long endsAt, String currencyId) {
         if (poolId == null || poolId.isBlank()) return null;
+        String normalizedCurrencyId;
+        try {
+            normalizedCurrencyId = normalizeCurrencyId(currencyId);
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
         Map<String, Object> pool = plugin.blindBoxManager().getPool(poolId.trim());
         if (pool == null) return null;
         String id = "bb_sale_" + UUID.randomUUID().toString().substring(0, 8);
@@ -344,30 +442,32 @@ public final class LimitedSaleManager {
         String finalName = (name == null || name.isBlank()) ? poolName + " 限时盲盒" : name.trim();
         ItemStack icon = new ItemStack(Material.ENDER_CHEST, 1);
         double finalPrice = price > 0 ? price : (pool.get("price") instanceof Number n ? n.doubleValue() : 100.0);
+        if (!isValidPrice(finalPrice)) return null;
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
             if (conn == null) return null;
             try (PreparedStatement ps = conn.prepareStatement("""
                     INSERT INTO ks_limited_sale_items
-                    (id, name, item_material, item_data, display_name, price, total_stock, sold,
+                    (id, name, item_material, item_data, display_name, price, currency_id, total_stock, sold,
                      per_player_limit, enabled, starts_at, ends_at, sale_type, blindbox_pool_id, created_at, updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """)) {
                 ps.setString(1, id);
                 ps.setString(2, finalName);
                 ps.setString(3, icon.getType().name());
                 ps.setBytes(4, serialize(icon));
                 ps.setString(5, finalName);
-                ps.setDouble(6, Math.max(0.01, finalPrice));
-                ps.setInt(7, totalStock < 0 ? -1 : Math.max(0, totalStock));
-                ps.setInt(8, 0);
-                ps.setInt(9, perPlayerLimit < 0 ? -1 : Math.max(0, perPlayerLimit));
-                ps.setInt(10, 1);
-                ps.setLong(11, Math.max(0, startsAt));
-                ps.setLong(12, Math.max(0, endsAt));
-                ps.setString(13, SALE_TYPE_BLINDBOX);
-                ps.setString(14, poolId.trim());
-                ps.setLong(15, now);
+                ps.setDouble(6, finalPrice);
+                ps.setString(7, normalizedCurrencyId);
+                ps.setInt(8, totalStock < 0 ? -1 : Math.max(0, totalStock));
+                ps.setInt(9, 0);
+                ps.setInt(10, perPlayerLimit < 0 ? -1 : Math.max(0, perPlayerLimit));
+                ps.setInt(11, 1);
+                ps.setLong(12, Math.max(0, startsAt));
+                ps.setLong(13, Math.max(0, endsAt));
+                ps.setString(14, SALE_TYPE_BLINDBOX);
+                ps.setString(15, poolId.trim());
                 ps.setLong(16, now);
+                ps.setLong(17, now);
                 ps.executeUpdate();
                 return id;
             }
@@ -405,6 +505,28 @@ public final class LimitedSaleManager {
     public boolean setPrice(String id, double price) {
         if (!Double.isFinite(price) || price <= 0 || price > 1_000_000_000_000d) return false;
         return updateDouble(id, "price", price);
+    }
+
+    public boolean setCurrencyId(String id, String currencyId) {
+        String normalizedCurrencyId;
+        try {
+            normalizedCurrencyId = normalizeCurrencyId(currencyId);
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
+        try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
+            if (conn == null) return false;
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE ks_limited_sale_items SET currency_id=?, updated_at=? WHERE id=?")) {
+                ps.setString(1, normalizedCurrencyId);
+                ps.setLong(2, now());
+                ps.setString(3, id);
+                return ps.executeUpdate() == 1;
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("更新限时直售货币失败: " + e.getMessage());
+            return false;
+        }
     }
 
     public boolean setBoxEnabled(String id, boolean enabled) {
@@ -594,8 +716,10 @@ public final class LimitedSaleManager {
 
     private void purchaseInternalAsync(Player player, String saleId, int qty, boolean boxed,
                                        Consumer<PurchaseResult> callback) {
-        if (!Bukkit.isPrimaryThread()) {
-            Bukkit.getScheduler().runTask(plugin, () -> purchaseInternalAsync(player, saleId, qty, boxed, callback));
+        if (!plugin.scheduler().isEntityThread(player)) {
+            plugin.scheduler().runEntity(player,
+                    () -> purchaseInternalAsync(player, saleId, qty, boxed, callback),
+                    () -> callback.accept(new PurchaseResult(false, "玩家已离线，购买已取消", null, qty, false)));
             return;
         }
         UUID uuid = player.getUniqueId();
@@ -605,74 +729,169 @@ public final class LimitedSaleManager {
             callback.accept(new PurchaseResult(false, "该商品正在结算，请稍候", null, boxed ? 1 : qty, false));
             return;
         }
-        Consumer<PurchaseResult> completion = result -> {
-            activePurchases.remove(operationKey);
-            callback.accept(result);
-        };
-        plugin.asyncWorkPool().executeDatabase(() -> {
-            PurchasePreparation preparation = preparePurchase(uuid, saleId, qty, boxed);
-            Bukkit.getScheduler().runTask(plugin, () -> {
+        Consumer<PurchaseResult> completion = completionClearingPurchase(
+                activePurchases, operationKey, callback);
+        executeDatabaseOrReject(plugin.asyncWorkPool(), () -> {
+            PurchasePreparation preparation = preparePurchase(uuid, playerName, saleId, qty, boxed);
+            dispatchOrReject(task -> plugin.scheduler().runEntityOrGlobal(uuid, task), () -> {
                 SaleItem sale = materialize(preparation.sale());
                 if (preparation.error() != null) {
                     completion.accept(new PurchaseResult(false, preparation.error(), sale, boxed ? 1 : qty, false));
                     return;
                 }
                 if (!player.isOnline()) {
+                    cancelReadySettlement(preparation.settlementId(), "player offline before charge");
                     completion.accept(new PurchaseResult(false, "玩家已离线，购买已取消", sale, boxed ? 1 : qty, false));
                     return;
                 }
                 if (boxed && (sale == null || !sale.boxPurchaseAvailable())) {
+                    cancelReadySettlement(preparation.settlementId(), "box purchase no longer available");
                     completion.accept(new PurchaseResult(false, "该商品未开放整盒购买", sale, 1, false));
                     return;
                 }
                 if (!sale.blindBoxSale() && (sale.item() == null || sale.item().getType().isAir())) {
+                    cancelReadySettlement(preparation.settlementId(), "sale item materialization failed");
                     completion.accept(new PurchaseResult(false, "商品物品无效", sale, boxed ? 1 : qty, false));
                     return;
                 }
-                double cost = boxed ? sale.boxPrice() : sale.price() * qty;
+                double cost = preparation.amount();
                 if (!Double.isFinite(cost) || cost <= 0 || cost > 1_000_000_000_000d) {
+                    cancelReadySettlement(preparation.settlementId(), "invalid prepared amount");
                     completion.accept(new PurchaseResult(false, "商品价格无效", sale, boxed ? 1 : qty, false));
                     return;
                 }
-                if (!chargePlayer(player, cost)) {
+                if (!DEFAULT_CURRENCY_ID.equals(preparation.currencyId())) {
+                    cancelReadySettlement(preparation.settlementId(), "unsupported currency " + preparation.currencyId());
+                    completion.accept(new PurchaseResult(false,
+                            "该商品使用专属货币 " + preparation.currencyId() + "，结算服务尚未接入",
+                            sale, boxed ? 1 : qty, false));
+                    return;
+                }
+                CashBackend backend = resolveCashBackend();
+                if (backend == null) {
+                    cancelReadySettlement(preparation.settlementId(), "cash backend unavailable");
+                    completion.accept(new PurchaseResult(false, "经济系统不可用", sale, boxed ? 1 : qty, false));
+                    return;
+                }
+                if (!claimSettlementCharge(preparation.settlementId(), backend)) {
+                    completion.accept(new PurchaseResult(false, "无法认领购买扣款，请重试", sale,
+                            boxed ? 1 : qty, false));
+                    return;
+                }
+                final boolean charged;
+                try {
+                    charged = chargePlayer(player, cost, backend);
+                } catch (Throwable uncertain) {
+                    markSettlementReview(preparation.settlementId(), LimitedSaleSettlementStore.CHARGE_CLAIMED,
+                            "charge outcome unknown: " + safeMessage(uncertain));
+                    completion.accept(new PurchaseResult(false, "扣款结果未知，已转人工核对", sale,
+                            boxed ? 1 : qty, false));
+                    return;
+                }
+                if (!charged) {
+                    transitionSettlement(preparation.settlementId(), LimitedSaleSettlementStore.CHARGE_CLAIMED,
+                            LimitedSaleSettlementStore.COMPENSATED, "charge rejected");
                     completion.accept(new PurchaseResult(false, "余额不足，需要 " + formatMoney(cost), sale,
                             boxed ? 1 : qty, false));
                     return;
                 }
-                plugin.asyncWorkPool().executeDatabase(() -> {
-                    PurchaseCommit commit = commitPurchase(uuid, playerName, saleId, qty, boxed, cost);
-                    Bukkit.getScheduler().runTask(plugin, () -> {
+                if (!transitionSettlement(preparation.settlementId(), LimitedSaleSettlementStore.CHARGE_CLAIMED,
+                        LimitedSaleSettlementStore.CHARGED, "")) {
+                    markSettlementReview(preparation.settlementId(), LimitedSaleSettlementStore.CHARGE_CLAIMED,
+                            "charged but state finalization failed");
+                    completion.accept(new PurchaseResult(false, "已扣款但结算状态异常，请联系管理员", sale,
+                            boxed ? 1 : qty, false));
+                    return;
+                }
+                executeDatabaseOrReject(plugin.asyncWorkPool(), () -> {
+                    PurchaseCommit commit = commitPurchase(uuid, playerName, saleId, qty, boxed,
+                            preparation.currencyId(), cost, backend, preparation.settlementId());
+                    dispatchOrReject(task -> plugin.scheduler().runEntityOrGlobal(uuid, task), () -> {
                         SaleItem committedSale = materialize(commit.sale());
                         if (commit.error() != null) {
-                            refundPlayer(player, cost);
-                            completion.accept(new PurchaseResult(false, commit.error() + "，已退款", committedSale,
-                                    boxed ? 1 : qty, false));
+                            prepareSettlementRefund(commit.settlementId(), LimitedSaleSettlementStore.CHARGED,
+                                    "purchase commit failed: " + commit.error());
+                            boolean refunded = refundSettlement(player, commit.settlementId(),
+                                    commit.amount(), commit.backend(), "commit failure");
+                            completion.accept(new PurchaseResult(false,
+                                    commit.error() + (refunded ? "，已退款" : "，退款失败请联系管理员"),
+                                    committedSale, boxed ? 1 : qty, false));
                             return;
                         }
-                        settleCommittedPurchase(player, committedSale, qty, boxed, cost, completion);
+                        settleCommittedPurchase(player, committedSale, qty, boxed, commit.amount(),
+                                commit.backend(), commit.settlementId(), completion);
+                    }, () -> {
+                        boolean compensated = commit.error() != null
+                                ? prepareSettlementRefund(commit.settlementId(), LimitedSaleSettlementStore.CHARGED,
+                                "server-thread failure handoff rejected")
+                                : rollbackPurchaseCounters(commit.settlementId(), saleId, uuid, qty,
+                                LimitedSaleSettlementStore.COUNTERS_COMMITTED);
+                        if (!compensated) {
+                            markSettlementReview(commit.settlementId(),
+                                    commit.error() == null ? LimitedSaleSettlementStore.COUNTERS_COMMITTED
+                                            : LimitedSaleSettlementStore.CHARGED,
+                                    "server-thread delivery handoff failed and compensation failed");
+                        }
+                        activePurchases.remove(operationKey);
+                        plugin.getLogger().severe("Limited sale delivery handoff rejected: player="
+                                + uuid + " sale=" + saleId + "; settlement retained for recovery");
                     });
+                }, () -> {
+                    plugin.getLogger().warning("Limited sale commit queue rejected after charge: player="
+                            + uuid + " sale=" + saleId + " backend=" + backend);
+                    prepareSettlementRefund(preparation.settlementId(), LimitedSaleSettlementStore.CHARGED,
+                            "commit queue rejected");
+                    boolean refunded = refundSettlement(player, preparation.settlementId(),
+                            cost, backend, "commit queue rejection");
+                    completion.accept(new PurchaseResult(false,
+                            "结算队列繁忙" + (refunded ? "，已退款" : "，退款失败请联系管理员"),
+                            sale, boxed ? 1 : qty, false));
                 });
+            }, () -> {
+                cancelReadySettlement(preparation.settlementId(), "server-thread charge handoff rejected");
+                activePurchases.remove(operationKey);
+                plugin.getLogger().warning("Limited sale charge handoff rejected: player="
+                        + uuid + " sale=" + saleId);
             });
+        }, () -> {
+            plugin.getLogger().warning("Limited sale preparation queue rejected: player="
+                    + uuid + " sale=" + saleId);
+            completion.accept(new PurchaseResult(false,
+                    "系统繁忙，请稍后重试", null, boxed ? 1 : qty, false));
         });
     }
 
-    private PurchasePreparation preparePurchase(UUID uuid, String saleId, int qty, boolean boxed) {
+    private PurchasePreparation preparePurchase(UUID uuid, String playerName, String saleId, int qty, boolean boxed) {
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
-            if (conn == null) return new PurchasePreparation(null, 0, "数据库不可用");
+            if (conn == null) return new PurchasePreparation(null, null, 0, DEFAULT_CURRENCY_ID, 0.0, null,
+                    "数据库不可用");
             SaleSnapshot sale = getSaleSnapshot(conn, saleId);
             int purchased = sale == null ? 0 : getPurchased(conn, uuid, saleId);
             String error = validatePurchaseSnapshot(conn, sale, qty, purchased, boxed);
-            return new PurchasePreparation(sale, purchased, error);
+            String currencyId = sale == null ? DEFAULT_CURRENCY_ID : sale.currencyId();
+            double amount = sale == null ? 0.0 : (boxed ? sale.boxPrice() : sale.price() * qty);
+            if (error == null && (!Double.isFinite(amount) || amount <= 0 || amount > 1_000_000_000_000d)) {
+                error = "商品价格无效";
+            }
+            String settlementId = null;
+            if (error == null) {
+                settlementId = "LS-" + UUID.randomUUID();
+                LimitedSaleSettlementStore.insertReady(conn,
+                        new LimitedSaleSettlementStore.Settlement(settlementId, uuid, playerName, saleId,
+                                qty, boxed, amount, "", LimitedSaleSettlementStore.READY, ""), now());
+            }
+            return new PurchasePreparation(settlementId, sale, purchased, currencyId, amount, null, error);
         } catch (SQLException e) {
-            plugin.getLogger().warning("准备限时直售购买失败: " + e.getMessage());
-            return new PurchasePreparation(null, 0, "读取商品失败");
+            plugin.getLogger().warning("准备限时直购购买失败: " + e.getMessage());
+            return new PurchasePreparation(null, null, 0, DEFAULT_CURRENCY_ID, 0.0, null, "读取商品失败");
         }
     }
 
     private PurchaseCommit commitPurchase(UUID uuid, String playerName, String saleId, int qty,
-                                          boolean boxed, double expectedCost) {
+                                           boolean boxed, String expectedCurrencyId, double expectedCost,
+                                           CashBackend backend, String settlementId) {
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
-            if (conn == null) return new PurchaseCommit(null, expectedCost, "数据库不可用");
+            if (conn == null) return new PurchaseCommit(settlementId, null, expectedCurrencyId, expectedCost, backend, "数据库不可用");
             conn.setAutoCommit(false);
             try {
                 SaleSnapshot fresh = getSaleSnapshot(conn, saleId);
@@ -680,34 +899,48 @@ public final class LimitedSaleManager {
                 String error = validatePurchaseSnapshot(conn, fresh, qty, purchased, boxed);
                 if (error != null) {
                     conn.rollback();
-                    return new PurchaseCommit(fresh, expectedCost, error);
+                    return new PurchaseCommit(settlementId, fresh, expectedCurrencyId, expectedCost, backend, error);
                 }
                 double freshCost = boxed ? fresh.boxPrice() : fresh.price() * qty;
+                if (!fresh.currencyId().equals(expectedCurrencyId)) {
+                    conn.rollback();
+                    return new PurchaseCommit(settlementId, fresh, expectedCurrencyId, expectedCost, backend,
+                            "商品计价货币已变化，请重新确认");
+                }
                 if (Double.compare(freshCost, expectedCost) != 0) {
                     conn.rollback();
-                    return new PurchaseCommit(fresh, expectedCost, "商品价格已变化，请重新确认");
+                    return new PurchaseCommit(settlementId, fresh, expectedCurrencyId, expectedCost, backend,
+                            "商品价格已变化，请重新确认");
                 }
                 long timestamp = now();
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "UPDATE ks_limited_sale_items SET sold=sold+?, updated_at=? WHERE id=?")) {
-                    ps.setInt(1, qty);
-                    ps.setLong(2, timestamp);
-                    ps.setString(3, saleId);
-                    if (ps.executeUpdate() != 1) throw new SQLException("商品库存更新失败");
+                if (fresh.unlimitedStock()) {
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "UPDATE ks_limited_sale_items SET sold=sold+?, updated_at=? WHERE id=?")) {
+                        ps.setInt(1, qty);
+                        ps.setLong(2, timestamp);
+                        ps.setString(3, saleId);
+                        if (ps.executeUpdate() != 1) throw new SQLException("商品库存更新失败");
+                    }
+                } else {
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "UPDATE ks_limited_sale_items SET sold=sold+?, updated_at=? "
+                                    + "WHERE id=? AND total_stock>=0 AND sold+?<=total_stock")) {
+                        ps.setInt(1, qty);
+                        ps.setLong(2, timestamp);
+                        ps.setString(3, saleId);
+                        ps.setInt(4, qty);
+                        if (ps.executeUpdate() != 1) {
+                            conn.rollback();
+                            return new PurchaseCommit(settlementId, fresh, expectedCurrencyId, expectedCost, backend,
+                                    "库存不足，请重试");
+                        }
+                    }
                 }
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT INTO ks_limited_sale_players (sale_id, player_uuid, purchased, updated_at) VALUES (?,?,?,?) " +
-                                "ON CONFLICT(sale_id, player_uuid) DO UPDATE SET purchased=purchased+excluded.purchased, updated_at=excluded.updated_at")) {
-                    ps.setString(1, saleId);
-                    ps.setString(2, uuid.toString());
-                    ps.setInt(3, qty);
-                    ps.setLong(4, timestamp);
-                    ps.executeUpdate();
-                }
+                incrementPurchased(conn, saleId, uuid.toString(), qty, timestamp);
                 try (PreparedStatement ps = conn.prepareStatement("""
                         INSERT INTO ks_limited_sale_log
-                        (sale_id, player_uuid, player_name, quantity, price_each, total_price, bought_at)
-                        VALUES (?,?,?,?,?,?,?)
+                        (sale_id, player_uuid, player_name, quantity, price_each, total_price, currency_id, bought_at)
+                        VALUES (?,?,?,?,?,?,?,?)
                         """)) {
                     ps.setString(1, saleId);
                     ps.setString(2, uuid.toString());
@@ -715,18 +948,24 @@ public final class LimitedSaleManager {
                     ps.setInt(4, qty);
                     ps.setDouble(5, expectedCost / qty);
                     ps.setDouble(6, expectedCost);
-                    ps.setLong(7, timestamp);
+                    ps.setString(7, expectedCurrencyId);
+                    ps.setLong(8, timestamp);
                     ps.executeUpdate();
                 }
+                if (!LimitedSaleSettlementStore.transition(conn, settlementId,
+                        LimitedSaleSettlementStore.CHARGED,
+                        LimitedSaleSettlementStore.COUNTERS_COMMITTED, "", timestamp)) {
+                    throw new SQLException("limited-sale settlement state changed");
+                }
                 conn.commit();
-                return new PurchaseCommit(fresh, expectedCost, null);
+                return new PurchaseCommit(settlementId, fresh, expectedCurrencyId, expectedCost, backend, null);
             } catch (SQLException e) {
                 conn.rollback();
                 throw e;
             }
         } catch (SQLException e) {
-            plugin.getLogger().warning("限时直售购买事务失败: " + e.getMessage());
-            return new PurchaseCommit(null, expectedCost, "购买失败");
+            plugin.getLogger().warning("限时直购购买事务失败: " + e.getMessage());
+            return new PurchaseCommit(settlementId, null, expectedCurrencyId, expectedCost, backend, "购买失败");
         }
     }
 
@@ -761,42 +1000,53 @@ public final class LimitedSaleManager {
     }
 
     private void settleCommittedPurchase(Player player, SaleItem sale, int qty, boolean boxed, double cost,
+                                         CashBackend backend, String settlementId,
                                          Consumer<PurchaseResult> callback) {
+        if (!transitionSettlement(settlementId, LimitedSaleSettlementStore.COUNTERS_COMMITTED,
+                LimitedSaleSettlementStore.DELIVERING, "")) {
+            callback.accept(new PurchaseResult(false, "无法认领商品交付，已转人工核对",
+                    sale, boxed ? 1 : qty, false));
+            return;
+        }
         if (sale == null) {
-            rollbackAndRefund(player, null, qty, cost, "商品数据异常", callback);
+            rollbackAndRefund(player, null, qty, cost, backend, settlementId, "商品数据异常", callback);
             return;
         }
         if (sale.blindBoxSale()) {
             plugin.blindBoxManager().pullNoChargeBatchAsync(player.getUniqueId(), sale.blindBoxPoolId(), qty,
                     "LIMITED_BLINDBOX:" + sale.id(), results -> fulfillBlindBoxPurchaseAsync(
-                            player, sale, qty, cost, results, callback));
+                            player, sale, qty, cost, backend, settlementId, results, callback));
             return;
         }
         if (boxed) {
             ItemStack box = createFilledBox(sale);
             if (box == null) {
-                rollbackAndRefund(player, sale, qty, cost, "整盒生成失败", callback);
+                rollbackAndRefund(player, sale, qty, cost, backend, settlementId, "整盒生成失败", callback);
                 return;
             }
             boolean stored = giveSingleItem(player, box, "LIMITED_SALE_BOX:" + sale.id());
+            completeSettlementDelivery(settlementId);
             callback.accept(new PurchaseResult(true,
                     "整盒购买成功: " + sale.name() + " x" + BOX_UNITS + " 份，花费 " + formatMoney(cost)
                             + (stored ? "（背包已满，整盒已进暂存箱）" : ""), sale, 1, stored));
             return;
         }
         boolean stored = giveItems(player, sale.item(), qty, "LIMITED_SALE:" + sale.id());
+        completeSettlementDelivery(settlementId);
         callback.accept(new PurchaseResult(true,
                 "购买成功: " + sale.name() + " x" + qty + "，花费 " + formatMoney(cost)
                         + (stored ? "（背包满的部分已进暂存箱）" : ""), sale, qty, stored));
     }
 
     private void fulfillBlindBoxPurchaseAsync(Player player, SaleItem sale, int quantity, double paidCost,
-                                              List<BlindBoxManager.PullResult> results,
-                                              Consumer<PurchaseResult> callback) {
+                                               CashBackend backend, String settlementId,
+                                               List<BlindBoxManager.PullResult> results,
+                                               Consumer<PurchaseResult> callback) {
         if (results.size() != quantity || results.stream().anyMatch(result -> !result.success)) {
             String error = results.stream().filter(result -> !result.success).map(result -> result.error)
                     .filter(message -> message != null && !message.isBlank()).findFirst().orElse("未知错误");
-            rollbackAndRefund(player, sale, quantity, paidCost, "限时盲盒抽取失败: " + error, callback);
+            rollbackAndRefund(player, sale, quantity, paidCost, backend, settlementId,
+                    "限时盲盒抽取失败: " + error, callback);
             return;
         }
         boolean stored = results.stream().anyMatch(result -> result.storedToBox);
@@ -806,36 +1056,234 @@ public final class LimitedSaleManager {
                     ? result.itemDisplayName : result.itemMaterial;
             summary.add(result.rarity + ":" + itemName);
         }
+        completeSettlementDelivery(settlementId);
         callback.accept(new PurchaseResult(true,
                 "限时盲盒抽取成功: " + sale.name() + " x" + quantity + "，花费 " + formatMoney(paidCost)
                         + "。结果: " + String.join(", ", summary)
                         + (stored ? "（背包满的部分已进暂存箱）" : ""), sale, quantity, stored));
     }
 
-    private void rollbackAndRefund(Player player, SaleItem sale, int amount, double cost, String error,
+    private void rollbackAndRefund(Player player, SaleItem sale, int amount, double cost,
+                                   CashBackend backend, String settlementId, String error,
                                    Consumer<PurchaseResult> callback) {
         String saleId = sale == null ? null : sale.id();
         UUID uuid = player.getUniqueId();
-        plugin.asyncWorkPool().executeDatabase(() -> {
-            if (saleId != null) rollbackPurchaseCounters(saleId, uuid, amount);
-            Bukkit.getScheduler().runTask(plugin, () -> {
-                refundPlayer(player, cost);
-                callback.accept(new PurchaseResult(false, error + "，已退款", sale, amount, false));
-            });
+        Runnable rollbackTask = () -> {
+            boolean rolledBack = saleId != null
+                    && rollbackPurchaseCounters(settlementId, saleId, uuid, amount,
+                    LimitedSaleSettlementStore.DELIVERING);
+            dispatchOrReject(task -> plugin.scheduler().runEntityOrGlobal(uuid, task), () -> {
+                        if (!rolledBack) {
+                            callback.accept(new PurchaseResult(false,
+                                    error + "，库存补偿失败，请联系管理员", sale, amount, false));
+                            return;
+                        }
+                        finishRefund(player, sale, amount, cost, backend, settlementId, error, callback);
+                    }, () -> {
+                        activePurchases.remove(uuid + ":" + (saleId == null ? "" : saleId));
+                        plugin.getLogger().severe("Limited sale refund handoff rejected after counters rollback: player="
+                                + uuid + " sale=" + saleId + "; REFUND_READY retained for startup recovery");
+                    });
+        };
+        executeDatabaseOrFallback(plugin.asyncWorkPool(), rollbackTask,
+                task -> plugin.scheduler().runAsync(task), () -> {
+            plugin.getLogger().severe("Limited sale rollback queue rejected after charge: player="
+                    + uuid + " sale=" + saleId + " backend=" + backend
+                    + "; emergency rollback scheduling also failed");
+            Runnable finish = () -> callback.accept(new PurchaseResult(false,
+                    error + "，库存补偿无法排队，请联系管理员", sale, amount, false));
+            Player online = Bukkit.getPlayer(uuid);
+            if (online != null && plugin.scheduler().isEntityThread(online)) finish.run();
+            else dispatchOrReject(task -> plugin.scheduler().runEntityOrGlobal(uuid, task), finish,
+                    () -> activePurchases.remove(uuid + ":" + (saleId == null ? "" : saleId)));
         });
     }
 
-    private void rollbackPurchaseCounters(String saleId, UUID uuid, int amount) {
-        if (amount <= 0) return;
+    private void finishRefund(Player player, SaleItem sale, int amount, double cost,
+                              CashBackend backend, String settlementId, String error,
+                              Consumer<PurchaseResult> callback) {
+        boolean refunded = refundSettlement(player.getUniqueId(), player.getName(), settlementId,
+                cost, backend, "rollback");
+        callback.accept(new PurchaseResult(false,
+                error + (refunded ? "，已退款" : "，退款失败请联系管理员"),
+                sale, amount, false));
+    }
+
+    private boolean refundPlayerSafely(Player player, double amount, CashBackend backend, String context) {
+        try {
+            return refundPlayer(player, amount, backend);
+        } catch (RuntimeException exception) {
+            plugin.getLogger().log(Level.SEVERE,
+                    "Limited sale refund threw after " + context + ": player=" + player.getUniqueId()
+                            + " amount=" + amount + " backend=" + backend,
+                    exception);
+            return false;
+        }
+    }
+
+    private void recoverSettlements() {
+        if (!plugin.scheduler().isGlobalThread()) {
+            dispatchOrReject(task -> plugin.scheduler().runGlobal(task), this::recoverSettlements,
+                    () -> plugin.getLogger().severe("Limited-sale recovery handoff rejected"));
+            return;
+        }
+        executeDatabaseOrReject(plugin.asyncWorkPool(), () -> {
+            int review = 0;
+            List<LimitedSaleSettlementStore.Settlement> refunds = new ArrayList<>();
+            try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+                if (connection == null) return;
+                review = LimitedSaleSettlementStore.markUnknownCallsForReview(connection, now());
+            } catch (SQLException failure) {
+                plugin.getLogger().warning("Limited-sale startup recovery failed: " + failure.getMessage());
+                return;
+            }
+            List<LimitedSaleSettlementStore.Settlement> open;
+            try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+                if (connection == null) return;
+                open = LimitedSaleSettlementStore.open(connection);
+            } catch (SQLException failure) {
+                plugin.getLogger().warning("Limited-sale startup recovery load failed: " + failure.getMessage());
+                return;
+            }
+            for (LimitedSaleSettlementStore.Settlement settlement : open) {
+                switch (settlement.status()) {
+                    case LimitedSaleSettlementStore.READY ->
+                            transitionSettlement(settlement.id(), LimitedSaleSettlementStore.READY,
+                                    LimitedSaleSettlementStore.COMPENSATED, "startup cancelled before charge");
+                    case LimitedSaleSettlementStore.CHARGED -> {
+                        if (prepareSettlementRefund(settlement.id(), LimitedSaleSettlementStore.CHARGED,
+                                "startup refund before counters")) refunds.add(settlement);
+                    }
+                    case LimitedSaleSettlementStore.COUNTERS_COMMITTED -> {
+                        if (rollbackPurchaseCounters(settlement.id(), settlement.saleId(),
+                                settlement.playerUuid(), settlement.quantity(),
+                                LimitedSaleSettlementStore.COUNTERS_COMMITTED)) refunds.add(settlement);
+                    }
+                    case LimitedSaleSettlementStore.REFUND_READY -> refunds.add(settlement);
+                    default -> { }
+                }
+            }
+            int finalReview = review;
+            dispatchOrReject(task -> plugin.scheduler().runGlobal(task), () -> {
+                if (finalReview > 0) {
+                    plugin.getLogger().severe("Limited-sale external outcomes require manual review: " + finalReview);
+                }
+                for (LimitedSaleSettlementStore.Settlement settlement : refunds) {
+                    CashBackend backend;
+                    try {
+                        backend = CashBackend.valueOf(settlement.backend());
+                    } catch (IllegalArgumentException invalidBackend) {
+                        markSettlementReview(settlement.id(), LimitedSaleSettlementStore.REFUND_READY,
+                                "unknown refund backend " + settlement.backend());
+                        continue;
+                    }
+                    refundSettlement(settlement.playerUuid(), settlement.playerName(), settlement.id(),
+                            settlement.amount(), backend, "startup recovery");
+                }
+            }, () -> plugin.getLogger().severe(
+                    "Limited-sale recovery refund handoff rejected; REFUND_READY rows retained"));
+        }, () -> plugin.getLogger().severe("Limited-sale startup recovery queue rejected"));
+    }
+
+    private boolean claimSettlementCharge(String settlementId, CashBackend backend) {
+        try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+            return connection != null && LimitedSaleSettlementStore.claimCharge(
+                    connection, settlementId, backend.name(), now());
+        } catch (SQLException failure) {
+            plugin.getLogger().warning("Limited-sale charge claim failed: " + failure.getMessage());
+            return false;
+        }
+    }
+
+    private boolean transitionSettlement(String settlementId, String expected, String next, String error) {
+        if (settlementId == null || settlementId.isBlank()) return false;
+        try (Connection connection = plugin.ksCore().dataStore().getConnection()) {
+            return connection != null && LimitedSaleSettlementStore.transition(
+                    connection, settlementId, expected, next, error, now());
+        } catch (SQLException failure) {
+            plugin.getLogger().warning("Limited-sale settlement transition failed: " + failure.getMessage());
+            return false;
+        }
+    }
+
+    private void cancelReadySettlement(String settlementId, String reason) {
+        transitionSettlement(settlementId, LimitedSaleSettlementStore.READY,
+                LimitedSaleSettlementStore.COMPENSATED, reason);
+    }
+
+    private void markSettlementReview(String settlementId, String expected, String error) {
+        if (!transitionSettlement(settlementId, expected,
+                LimitedSaleSettlementStore.REVIEW_REQUIRED, error)) {
+            plugin.getLogger().severe("Limited-sale review state could not be persisted: "
+                    + settlementId + " error=" + error);
+        }
+    }
+
+    private boolean prepareSettlementRefund(String settlementId, String expected, String error) {
+        return transitionSettlement(settlementId, expected,
+                LimitedSaleSettlementStore.REFUND_READY, error);
+    }
+
+    private void completeSettlementDelivery(String settlementId) {
+        if (!transitionSettlement(settlementId, LimitedSaleSettlementStore.DELIVERING,
+                LimitedSaleSettlementStore.DELIVERED, "")) {
+            plugin.getLogger().severe("Limited-sale delivery completed but state did not finalize: " + settlementId);
+        }
+    }
+
+    private boolean refundSettlement(Player player, String settlementId, double amount,
+                                     CashBackend backend, String context) {
+        return refundSettlement(player.getUniqueId(), player.getName(), settlementId, amount, backend, context);
+    }
+
+    private boolean refundSettlement(UUID playerUuid, String playerName, String settlementId, double amount,
+                                     CashBackend backend, String context) {
+        if (!transitionSettlement(settlementId, LimitedSaleSettlementStore.REFUND_READY,
+                LimitedSaleSettlementStore.REFUND_CLAIMED, "")) return false;
+        final boolean refunded;
+        try {
+            refunded = refundPlayer(playerUuid, playerName, amount, backend);
+        } catch (Throwable uncertain) {
+            markSettlementReview(settlementId, LimitedSaleSettlementStore.REFUND_CLAIMED,
+                    "refund outcome unknown after " + context + ": " + safeMessage(uncertain));
+            return false;
+        }
+        if (refunded) {
+            return transitionSettlement(settlementId, LimitedSaleSettlementStore.REFUND_CLAIMED,
+                    LimitedSaleSettlementStore.COMPENSATED, "");
+        }
+        transitionSettlement(settlementId, LimitedSaleSettlementStore.REFUND_CLAIMED,
+                LimitedSaleSettlementStore.REFUND_READY, "refund rejected after " + context);
+        return false;
+    }
+
+    private static String safeMessage(Throwable failure) {
+        return failure == null || failure.getMessage() == null ? "unknown" : failure.getMessage();
+    }
+
+    private boolean rollbackPurchaseCounters(String settlementId, String saleId, UUID uuid, int amount,
+                                             String expectedState) {
+        if (amount <= 0) return false;
         try (Connection conn = plugin.ksCore().dataStore().getConnection()) {
-            if (conn == null) return;
-            long now = now();
+            if (conn == null) return false;
+            return rollbackPurchaseCounters(conn, settlementId, saleId, uuid, amount, expectedState, now());
+        } catch (SQLException e) {
+            plugin.getLogger().warning("回滚限时盲盒次数失败: " + e.getMessage());
+            return false;
+        }
+    }
+
+    static boolean rollbackPurchaseCounters(Connection conn, String settlementId, String saleId, UUID uuid,
+                                            int amount, String expectedState, long now) throws SQLException {
+        if (conn == null || amount <= 0) return false;
+        conn.setAutoCommit(false);
+        try {
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE ks_limited_sale_items SET sold=MAX(0, sold-?), updated_at=? WHERE id=?")) {
                 ps.setInt(1, amount);
                 ps.setLong(2, now);
                 ps.setString(3, saleId);
-                ps.executeUpdate();
+                if (ps.executeUpdate() != 1) throw new SQLException("sale counter missing");
             }
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE ks_limited_sale_players SET purchased=MAX(0, purchased-?), updated_at=? WHERE sale_id=? AND player_uuid=?")) {
@@ -843,10 +1291,19 @@ public final class LimitedSaleManager {
                 ps.setLong(2, now);
                 ps.setString(3, saleId);
                 ps.setString(4, uuid.toString());
-                ps.executeUpdate();
+                if (ps.executeUpdate() != 1) throw new SQLException("player counter missing");
             }
-        } catch (SQLException e) {
-            plugin.getLogger().warning("回滚限时盲盒次数失败: " + e.getMessage());
+            if (!LimitedSaleSettlementStore.transition(conn, settlementId, expectedState,
+                    LimitedSaleSettlementStore.REFUND_READY, "delivery rollback", now)) {
+                throw new SQLException("settlement rollback state changed");
+            }
+            conn.commit();
+            return true;
+        } catch (SQLException | RuntimeException failure) {
+            conn.rollback();
+            throw failure;
+        } finally {
+            conn.setAutoCommit(true);
         }
     }
 
@@ -927,23 +1384,56 @@ public final class LimitedSaleManager {
         return true;
     }
 
-    private boolean chargePlayer(Player player, double amount) {
+    private CashBackend resolveCashBackend() {
+        if (plugin.vaultHook() != null && plugin.vaultHook().isAvailable()) return CashBackend.VAULT;
+        if (plugin.builtinEconomy() != null) return CashBackend.BUILTIN;
+        return null;
+    }
+
+    private boolean chargePlayer(Player player, double amount, CashBackend backend) {
         if (amount <= 0) return true;
-        if (plugin.vaultHook() != null && plugin.vaultHook().isAvailable()) {
+        if (backend == CashBackend.VAULT) {
+            if (plugin.vaultHook() == null || !plugin.vaultHook().isAvailable()) return false;
             if (!plugin.vaultHook().has(player, amount)) return false;
             return plugin.vaultHook().withdraw(player, amount);
         }
-        return plugin.builtinEconomy() != null
-                && plugin.builtinEconomy().withdraw(player.getUniqueId(), player.getName(), amount);
+        if (backend == CashBackend.BUILTIN) {
+            return plugin.builtinEconomy() != null
+                    && plugin.builtinEconomy().withdraw(player.getUniqueId(), player.getName(), amount);
+        }
+        return false;
     }
 
-    private void refundPlayer(Player player, double amount) {
-        if (amount <= 0) return;
-        if (plugin.vaultHook() != null && plugin.vaultHook().isAvailable()) {
-            plugin.vaultHook().deposit(player, amount);
-        } else if (plugin.builtinEconomy() != null) {
-            plugin.builtinEconomy().deposit(player.getUniqueId(), player.getName(), amount);
+    private boolean refundPlayer(Player player, double amount, CashBackend backend) {
+        return refundPlayer(player.getUniqueId(), player.getName(), amount, backend);
+    }
+
+    private boolean refundPlayer(UUID playerUuid, String playerName, double amount, CashBackend backend) {
+        if (amount <= 0) return true;
+        if (backend == CashBackend.VAULT) {
+            if (plugin.vaultHook() == null || !plugin.vaultHook().isAvailable()) {
+                plugin.getLogger().warning("限时直购退款失败: Vault 不可用, player="
+                        + playerUuid + " amount=" + amount);
+                return false;
+            }
+            boolean ok = plugin.vaultHook().deposit(Bukkit.getOfflinePlayer(playerUuid), amount);
+            if (!ok) {
+                plugin.getLogger().warning("限时直购 Vault 退款失败: player="
+                        + playerUuid + " amount=" + amount);
+            }
+            return ok;
         }
+        if (backend == CashBackend.BUILTIN) {
+            if (plugin.builtinEconomy() == null) {
+                plugin.getLogger().warning("限时直购退款失败: Builtin 经济不可用, player="
+                        + playerUuid + " amount=" + amount);
+                return false;
+            }
+            return plugin.builtinEconomy().deposit(playerUuid, playerName, amount);
+        }
+        plugin.getLogger().warning("限时直购退款失败: 未知后端, player="
+                + playerUuid + " amount=" + amount);
+        return false;
     }
 
     public String itemName(ItemStack item) {
@@ -1083,6 +1573,22 @@ public final class LimitedSaleManager {
 
     public String formatMoney(double amount) {
         return plugin.vaultHook() != null ? plugin.vaultHook().format(amount) : String.format("%.2f", amount);
+    }
+
+    static String normalizeCurrencyId(String currencyId) {
+        return ListingManager.normalizeCurrencyId(currencyId);
+    }
+
+    static boolean isValidPrice(double price) {
+        return Double.isFinite(price) && price > 0.0d && price <= 1_000_000_000_000d;
+    }
+
+    private static String normalizePersistedCurrencyId(String currencyId) {
+        try {
+            return normalizeCurrencyId(currencyId);
+        } catch (IllegalArgumentException ignored) {
+            return "INVALID";
+        }
     }
 
     public String stockText(int stock) {

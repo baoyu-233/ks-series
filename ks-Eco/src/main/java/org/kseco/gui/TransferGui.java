@@ -205,7 +205,7 @@ public final class TransferGui implements InventoryHolder {
             if (type == null) return;
             event.setCancelled(true);
             String input = event.getMessage().trim();
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.scheduler().runPlayer(playerId, () -> {
                 Player player = Bukkit.getPlayer(playerId);
                 if (player != null) handleInput(player, type, input);
             });

@@ -31,7 +31,7 @@ public final class RefineSession {
         this.handSlot = player.getInventory().getHeldItemSlot();
 
         // ★ 从玩家手中取出物品，防止编辑期间丢弃
-        this.originalItem = player.getInventory().getItem(handSlot);
+        this.originalItem = player.getInventory().getItem(handSlot).clone();
         this.snapshot = originalItem.clone();
         player.getInventory().setItem(handSlot, null);
     }
@@ -81,7 +81,7 @@ public final class RefineSession {
         handled = true;
         Player p = player();
         if (p != null) {
-            p.getInventory().setItem(handSlot, snapshot);
+            deliver(p, snapshot);
         }
         cleanup();
     }
@@ -92,12 +92,24 @@ public final class RefineSession {
         handled = true;
         Player p = player();
         if (p != null) {
-            p.getInventory().setItem(handSlot, originalItem);
+            deliver(p, originalItem);
         }
         cleanup();
     }
 
     private void cleanup() {
         plugin.refineSessions().remove(playerId);
+    }
+
+    private void deliver(Player player, ItemStack item) {
+        ItemStack returned = item.clone();
+        ItemStack occupying = player.getInventory().getItem(handSlot);
+        if (occupying == null || occupying.getType().isAir()) {
+            player.getInventory().setItem(handSlot, returned);
+            return;
+        }
+        for (ItemStack overflow : player.getInventory().addItem(returned).values()) {
+            player.getWorld().dropItemNaturally(player.getLocation(), overflow);
+        }
     }
 }

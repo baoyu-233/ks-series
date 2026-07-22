@@ -141,6 +141,16 @@ public final class RefineLoreMenu implements InventoryHolder {
         }
     }
 
+    RefineSession session() {
+        return session;
+    }
+
+    boolean isOwnedBy(Player player) {
+        return player != null
+                && session.player() == player
+                && plugin.refineSession(player) == session;
+    }
+
     private void refresh() {
         int size = inventory.getSize();
         for (int i = 0; i < size; i++) inventory.setItem(i, null);

@@ -277,6 +277,16 @@ public final class RefineMenu implements InventoryHolder {
         }
     }
 
+    RefineSession session() {
+        return session;
+    }
+
+    boolean isOwnedBy(Player player) {
+        return player != null
+                && session.player() == player
+                && plugin.refineSession(player) == session;
+    }
+
     // ---- 聊天输入：名称 / Lore ----
 
     private String currentName() {
@@ -333,8 +343,7 @@ public final class RefineMenu implements InventoryHolder {
             // 在快照上应用模板数据
             boolean isAdmin = p.hasPermission("itemedit.admin");
             ItemData itemData = isAdmin ? template.item : sanitizePlayerTemplate(template.item);
-            ItemStack newItem = ItemSerializer.fromItemData(itemData);
-            ItemSerializer.applyExtendedData(newItem, itemData);
+            ItemStack newItem = applyTemplateToSnapshot(session.snapshot(), itemData);
             session.setSnapshot(newItem);
 
             p.sendMessage(TextUtil.parse("&a✅ 模板已加载: &e" + code
@@ -344,6 +353,38 @@ public final class RefineMenu implements InventoryHolder {
             session.setPendingChatInput(false);
             open();
         });
+    }
+
+    private ItemStack applyTemplateToSnapshot(ItemStack current, ItemData data) {
+        ItemStack result = current.clone();
+        if (data.name == null || data.name.isBlank()) ItemEdits.clearName(result);
+        else ItemEdits.setName(result, data.name);
+
+        List<Component> lore = new ArrayList<>();
+        if (data.lore != null) {
+            for (String line : data.lore) {
+                if (line != null && !line.isEmpty()) lore.add(TextUtil.parse(line));
+            }
+        }
+        ItemEdits.setLore(result, lore);
+
+        ItemEdits.clearEnchants(result);
+        if (data.enchantments != null) {
+            for (Map.Entry<String, Integer> entry : data.enchantments.entrySet()) {
+                try {
+                    Enchantment enchantment = Registry.ENCHANTMENT.get(
+                            net.kyori.adventure.key.Key.key(entry.getKey()));
+                    if (enchantment != null && entry.getValue() > 0) {
+                        ItemEdits.setEnchant(result, enchantment, entry.getValue());
+                    }
+                } catch (IllegalArgumentException ignored) {
+                    // Ignore malformed template keys without replacing the held item body.
+                }
+            }
+        }
+        ItemEdits.setUnbreakable(result, data.unbreakable);
+        ItemEdits.setGlowing(result, data.glowing);
+        return result;
     }
 
     private ItemData sanitizePlayerTemplate(ItemData source) {

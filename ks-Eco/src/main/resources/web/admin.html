@@ -48,6 +48,7 @@
 <div class="nav-hub" data-label="安全与审计 · SECURITY">
   <button class="hub-label" type="button" data-hub-nav="security-hub" onclick="switchHub('security-hub')">安全与审计 SECURITY</button>
   <a data-nav="ops" onclick="switchTab('ops')"><span>运营配置</span></a>
+  <a data-nav="settlement-review" onclick="switchTab('settlement-review')"><span>结算复核</span></a>
   <a data-nav="audit-log" onclick="switchTab('audit-log')"><span>审计日志</span></a>
 </div>
 </nav>
@@ -224,6 +225,8 @@
   <button class="ks-action-tile magenta" onclick="ksDrill('央行注资 // LIQUIDITY INJECT',['ks-cb-inject'])"><span class="kat-ico">💉</span>流动性注资</button>
   <button class="ks-action-tile" onclick="ksDrill('王国开发银行 // GUIDANCE POLICY',['ks-cb-guidance'])"><span class="kat-ico">🏦</span>引导政策</button>
   <button class="ks-action-tile" onclick="ksDrill('央行借贷 // CB LOANS',['ks-cb-loans']);loadCbLoans()"><span class="kat-ico">📋</span>央行借贷</button>
+  <button class="ks-action-tile magenta" onclick="ksDrill('银行风险与保险处置 // BANK RESOLUTION',['ks-cb-events','ks-bank-resolution']);loadBankPolicyEvents();loadBankResolutionConsole()"><span class="kat-ico">🛡</span>风险与保险</button>
+  <button class="ks-action-tile" onclick="ksDrill('贷款放款人工复核 // PAYOUT REVIEW',['ks-bank-loan-payout-review']);loadBankLoanPayoutReviews()"><span class="kat-ico">🧾</span>放款复核</button>
 </div>
 <div class="ks-drill-stash">
 <div class="card" id="ks-cb-rates"><h3>🏛 央行利率调控</h3>
@@ -248,14 +251,40 @@
 </div>
 <div id="cbRateRangeCurrent" style="margin-top:8px;font-size:12px;color:#aaa;"></div>
 </div>
+<div class="card" id="ks-cb-events"><h3>🌐 政策周期与银行风险处置</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">政策事件只调整后续贷款报价和风险环境，不直接增减任何玩家余额。风险处置会暂停目标银行新增贷款或定期存款，但保留存款支取和对账。</p>
+<div class="form-row">
+<label>事件类型<br><select id="bankPolicyType"><option value="RATE_CYCLE">利率周期</option><option value="LIQUIDITY">流动性环境</option><option value="REAL_ESTATE">房地产周期</option><option value="DEFAULT_WAVE">违约冲击</option><option value="DEPOSIT_COMPETITION">存款竞争</option></select></label>
+<label>标题<br><input id="bankPolicyTitle" placeholder="例：季度加息周期"/></label>
+<label>报价修正<br><input id="bankPolicyRate" type="number" min="-0.25" max="0.25" step="0.001" value="0.005"/></label>
+<label>风险修正<br><input id="bankPolicyRisk" type="number" min="-1" max="1" step="0.01" value="0"/></label>
+</div>
+<div class="form-row"><label>说明<br><input id="bankPolicyDescription" maxlength="1024" placeholder="向玩家说明本次政策影响" style="width:320px;"/></label><label>开始<br><input id="bankPolicyStarts" type="datetime-local"/></label><label>结束<br><input id="bankPolicyEnds" type="datetime-local"/></label><button class="btn" onclick="createBankPolicyEvent()">创建政策事件</button></div>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>事件</th><th>类型</th><th>报价修正</th><th>时间窗</th><th>状态</th></tr></thead><tbody id="bankPolicyEventBody"></tbody></table></div>
+<hr style="border-color:var(--border);margin:12px 0;"/>
+<div class="form-row"><label>目标银行<br><select id="bankResolutionBank"><option value="">请选择商业银行</option></select></label><label>处置状态<br><select id="bankResolutionStatus"><option value="NORMAL">恢复正常</option><option value="WATCH">风险观察</option><option value="RESTRICTED">限制新增业务</option><option value="RESOLUTION">央行接管/处置</option></select></label><button class="btn btn-danger" onclick="setBankOperatingStatus()">更新处置状态</button></div>
+</div>
+<div class="card" id="ks-bank-resolution"><h3>🛡 存款保险与桥接银行清算</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">先将失败银行置为 RESOLUTION，再进行测算。系统按每名存款人 100,000 保额全额保护，未保险部分按资产回收率折价；执行后存款转入桥接银行，贷款、抵押物和拍卖一并接管。</p>
+<div id="bankInsuranceFund" style="color:#aaa;font-size:12px;margin-bottom:8px;">正在读取存款保险基金...</div>
+<div class="form-row"><label>央行补充保险基金<br><input id="bankInsuranceTopUp" type="number" min="1" step="1000" value="1000000"/></label><button class="btn" onclick="topUpBankInsuranceFund()">确认注资</button></div>
+<div class="form-row"><label>失败银行<br><select id="bankFailureBank"><option value="">请选择失败银行</option></select></label><label>桥接/收购银行<br><select id="bankBridgeBank"><option value="">请选择接管银行</option></select></label><button class="btn" onclick="previewBankResolution()">测算损失瀑布</button><button class="btn btn-danger" onclick="executeBankResolution()">执行不可逆清算</button></div>
+<div id="bankResolutionPreview" style="color:#888;font-size:12px;margin-top:8px;">尚未测算。</div>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>处置案</th><th>失败银行</th><th>桥接银行</th><th>存款</th><th>回收率</th><th>保险赔付</th><th>客户折价</th><th>时间</th></tr></thead><tbody id="bankResolutionCaseBody"></tbody></table></div>
+</div>
+<div class="card" id="ks-bank-loan-payout-review"><h3>🧾 贷款放款人工复核</h3>
+<p style="color:#888;font-size:11px;margin-bottom:8px;">仅处理服务器在“银行已扣流动性、玩家钱包到账结果未知”的临界点中断。请先核对 Vault 流水：确认到账会激活贷款；确认未到账会回滚银行流动性、申请与抵押物。</p>
+<button class="btn btn-sm" onclick="loadBankLoanPayoutReviews()">刷新待复核清单</button>
+<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>贷款</th><th>银行</th><th>借款人</th><th>本金</th><th>产品</th><th>申请</th><th>操作</th></tr></thead><tbody id="bankLoanPayoutReviewBody"></tbody></table></div>
+</div>
 <div class="card" id="ks-cb-inject"><h3>💉 央行注资（仅限商业银行）</h3>
 <div class="form-row">
 <label>商业银行ID<br><input id="injectBankId" placeholder="目标银行ID"/></label>
 <label>金额<br><input id="injectAmount" type="number" step="1" value="100000"/></label>
-<label>模式<br><select id="injectMode"><option value="GRANT">GRANT 无偿拨款</option><option value="LOAN">LOAN 计息贷款</option></select></label>
+<label>模式<br><select id="injectMode"><option value="LOAN">LOAN 计息贷款</option></select></label>
 <button class="btn" onclick="cbInject()">💉 注入流动性</button>
 </div>
-<p style="color:#888;font-size:10px;margin-top:6px;">GRANT = 直接增加银行资产（不需偿还）；LOAN = 形成央行贷款，按央行基准利率计息，在下方「央行借贷」还款。</p>
+<p style="color:#888;font-size:10px;margin-top:6px;">央行流动性支持只允许 LOAN：形成计息贷款，并在下方「央行借贷」还款；不提供无偿注资。</p>
 <div id="injectMsg" style="margin-top:8px;"></div>
 </div>
 <div class="card" id="ks-cb-guidance"><h3>🏦 王国开发银行（引导政策）</h3>
@@ -966,6 +995,18 @@
 </div>
 </div>
 
+<!-- ================= 结算人工复核 ================= -->
+<div class="tab-section" id="tab-settlement-review">
+<div class="card">
+<h3>结算人工复核 <button class="btn btn-sm" type="button" style="float:right;" onclick="loadSettlementReviews()">刷新</button></h3>
+<p style="color:#aaa;font-size:11px;margin-bottom:8px;">这里只列出外部钱包或产权操作结果未知的结算。处理前必须结合流水、玩家余额和产权现状核实；按钮仅按当前结算类型与中断阶段开放。</p>
+<div id="settlementReviewSummary" style="color:var(--dim);font-size:11px;">正在读取待复核结算...</div>
+<div class="table-wrap" style="max-height:520px;">
+<table style="min-width:1120px;"><thead><tr><th>类型 / 结算 ID</th><th>业务对象</th><th>相关账户</th><th>金额</th><th>中断阶段</th><th>最后错误</th><th>允许操作</th></tr></thead><tbody id="settlementReviewBody"></tbody></table>
+</div>
+</div>
+</div>
+
 <!-- ================= 审计日志 ================= -->
 <div class="tab-section" id="tab-audit-log">
 <div class="card"><h3>📋 操作审计日志</h3>
@@ -981,7 +1022,7 @@
 </div><!-- end #main -->
 
 
-<script src="assets/admin-core.js"></script>
+<script src="assets/admin-core.js?v=20260721-bank-gameplay2"></script>
 <script src="assets/admin-player-picker.js"></script>
 <script src="assets/admin-labels.js"></script>
 <script src="assets/admin-smart-inputs.js"></script>

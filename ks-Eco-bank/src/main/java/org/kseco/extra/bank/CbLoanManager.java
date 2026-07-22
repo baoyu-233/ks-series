@@ -31,20 +31,7 @@ public final class CbLoanManager {
     private void ensureTable() {
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
-            try (Statement s = conn.createStatement()) {
-                s.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_bank_cb_loans (
-                        id TEXT PRIMARY KEY,
-                        bank_id TEXT NOT NULL,
-                        principal REAL NOT NULL,
-                        interest_rate REAL NOT NULL,
-                        term_days INTEGER NOT NULL,
-                        issued_at INTEGER NOT NULL,
-                        due_at INTEGER NOT NULL,
-                        repaid INTEGER NOT NULL DEFAULT 0
-                    )
-                """);
-            }
+            CentralBankLoanSchema.initialize(conn);
         } catch (SQLException e) {
             eco.getLogger().warning("[央行贷款] 建表失败: " + e.getMessage());
         }
@@ -102,33 +89,11 @@ public final class CbLoanManager {
             if (conn == null) return false;
             conn.setAutoCommit(false);
             try {
-                String bankId;
-                double principal, interest;
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "SELECT bank_id, principal, interest_rate, term_days, issued_at, due_at, repaid " +
-                        "FROM ks_bank_cb_loans WHERE id=?")) {
-                    ps.setString(1, loanId);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (!rs.next()) { conn.rollback(); return false; }
-                        if (rs.getInt("repaid") == 1) { conn.rollback(); return false; }
-                        bankId = rs.getString("bank_id");
-                        principal = rs.getDouble("principal");
-                        double rate = rs.getDouble("interest_rate");
-                        interest = principal * rate;
-                    }
-                }
-                double repayAmt = principal + interest;
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "UPDATE ks_bank_banks SET total_assets=total_assets-? WHERE id=? AND total_assets>=?")) {
-                    ps.setDouble(1, repayAmt);
-                    ps.setString(2, bankId);
-                    ps.setDouble(3, repayAmt);
-                    if (ps.executeUpdate() == 0) { conn.rollback(); return false; }
-                }
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "UPDATE ks_bank_cb_loans SET repaid=1 WHERE id=?")) {
-                    ps.setString(1, loanId);
-                    ps.executeUpdate();
+                CentralBankLoanRepaymentStore.Result result =
+                        CentralBankLoanRepaymentStore.apply(conn, loanId);
+                if (!result.paid()) {
+                    conn.rollback();
+                    return false;
                 }
                 conn.commit();
                 return true;
@@ -155,7 +120,7 @@ public final class CbLoanManager {
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
             try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT id FROM ks_bank_cb_loans WHERE repaid=0 AND due_at < ?")) {
+                    "SELECT id FROM ks_bank_cb_loans WHERE repaid=0 AND due_at <= ?")) {
                 ps.setLong(1, now);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) dueIds.add(rs.getString("id"));

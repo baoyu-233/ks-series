@@ -3,6 +3,7 @@ package org.kseco.extra.politic;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.kseco.KsEco;
+import org.kseco.database.PortableSqlMutation;
 
 import java.sql.*;
 import java.util.*;
@@ -20,8 +21,8 @@ public final class PoliticManager {
     // 内存缓存 — 职务在内存中维护，DB 做持久化。
     // 用 CopyOnWriteArrayList：选举定时器（异步线程）会增删 offices，
     // 而 Web/命令线程同时迭代它 → 普通 ArrayList 会抛 ConcurrentModificationException。
-    private final List<Office> offices = new java.util.concurrent.CopyOnWriteArrayList<>();
-    private final Map<String, String> config = new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile List<Office> offices = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private volatile Map<String, String> config = new java.util.concurrent.ConcurrentHashMap<>();
 
     // 默认配置
     private static final int DEF_SENATE_SEATS = 8;
@@ -50,102 +51,9 @@ public final class PoliticManager {
                 eco.getLogger().warning("[政治系统] 数据库连接未就绪");
                 return;
             }
-            try (Statement stmt = conn.createStatement()) {
-                // 职务表
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_politic_offices (
-                        id TEXT PRIMARY KEY,
-                        player_uuid TEXT NOT NULL,
-                        player_name TEXT NOT NULL DEFAULT '',
-                        office_type TEXT NOT NULL,
-                        enterprise_id TEXT DEFAULT '',
-                        elected_at INTEGER NOT NULL,
-                        term_ends_at INTEGER DEFAULT 0,
-                        elected_by TEXT DEFAULT '',
-                        is_active INTEGER DEFAULT 1,
-                        seat_index INTEGER DEFAULT 0
-                    )
-                """);
-                // 兼容旧 DB（缺 seat_index 列）— 2026-06-27 修复
-                try {
-                    stmt.execute("ALTER TABLE ks_politic_offices ADD COLUMN seat_index INTEGER DEFAULT 0");
-                } catch (SQLException ignore) { /* 已存在 */ }
-
-                // 提案表
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_politic_proposals (
-                        id TEXT PRIMARY KEY,
-                        title TEXT NOT NULL,
-                        description TEXT DEFAULT '',
-                        proposal_type TEXT NOT NULL,
-                        target_endpoint TEXT DEFAULT '',
-                        payload_json TEXT DEFAULT '',
-                        proposer_uuid TEXT NOT NULL,
-                        proposer_name TEXT NOT NULL DEFAULT '',
-                        proposer_office TEXT NOT NULL,
-                        status TEXT NOT NULL DEFAULT 'PROPOSED',
-                        result_summary TEXT DEFAULT '',
-                        created_at INTEGER NOT NULL,
-                        enacted_at INTEGER DEFAULT 0
-                    )
-                """);
-                for (String migration : List.of(
-                        "ALTER TABLE ks_politic_proposals ADD COLUMN stage_started_at INTEGER DEFAULT 0",
-                        "ALTER TABLE ks_politic_proposals ADD COLUMN stage_deadline_at INTEGER DEFAULT 0")) {
-                    try { stmt.execute(migration); }
-                    catch (SQLException ignore) { /* column already exists */ }
-                }
-
-                // 投票表
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_politic_votes (
-                        id TEXT PRIMARY KEY,
-                        proposal_id TEXT NOT NULL,
-                        voter_uuid TEXT NOT NULL,
-                        voter_name TEXT NOT NULL DEFAULT '',
-                        voter_office TEXT NOT NULL,
-                        vote TEXT NOT NULL,
-                        vote_stage TEXT NOT NULL,
-                        cast_at INTEGER NOT NULL
-                    )
-                """);
-                conn.createStatement().execute(
-                    "CREATE INDEX IF NOT EXISTS idx_pv_proposal ON ks_politic_votes(proposal_id, vote_stage)");
-
-                // 玩家针对表决中提案发起的全服呼吁；用于持久化冷却与审计。
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_politic_appeals (
-                        id TEXT PRIMARY KEY,
-                        proposal_id TEXT NOT NULL,
-                        actor_uuid TEXT NOT NULL,
-                        actor_name TEXT NOT NULL DEFAULT '',
-                        proposal_stage TEXT NOT NULL,
-                        appealed_at INTEGER NOT NULL
-                    )
-                """);
-                stmt.execute("CREATE INDEX IF NOT EXISTS idx_pa_proposal_time ON ks_politic_appeals(proposal_id, appealed_at)");
-                stmt.execute("CREATE INDEX IF NOT EXISTS idx_pa_actor_time ON ks_politic_appeals(actor_uuid, appealed_at)");
-
-                // 选举投票表
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_politic_election_votes (
-                        id TEXT PRIMARY KEY,
-                        election_id TEXT NOT NULL,
-                        voter_uuid TEXT NOT NULL,
-                        candidate_uuid TEXT NOT NULL,
-                        candidate_name TEXT NOT NULL DEFAULT '',
-                        cast_at INTEGER NOT NULL,
-                        UNIQUE(election_id, voter_uuid)
-                    )
-                """);
-
-                // 配置表
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_politic_config (
-                        key TEXT PRIMARY KEY,
-                        value TEXT NOT NULL
-                    )
-                """);
+            int removed = PoliticSchema.initialize(conn);
+            if (removed > 0) {
+                eco.getLogger().warning("[政治系统] 已清理 " + removed + " 条重复投票记录");
             }
         } catch (SQLException e) {
             eco.getLogger().warning("[政治系统] 建表失败: " + e.getMessage());
@@ -153,47 +61,52 @@ public final class PoliticManager {
     }
 
     private void loadConfig() {
-        config.clear();
-        config.put("senate_seats", String.valueOf(DEF_SENATE_SEATS));
-        config.put("equestrian_seats", String.valueOf(DEF_EQUESTRIAN_SEATS));
-        config.put("tribune_seats", String.valueOf(DEF_TRIBUNE_SEATS));
-        config.put("term_duration_hours", String.valueOf(DEF_TERM_HOURS));
-        config.put("legislative_mode", String.valueOf(DEF_LEGISLATIVE_MODE));
-        config.put("election_check_interval_min", "30");
-        config.put("tribune_election_interval_hours", "24");
-        config.put("proposal_vote_duration_minutes", "1440");
-        config.put("proposal_override_duration_minutes", "720");
-        config.put("proposal_progress_interval_minutes", "15");
-        config.put("proposal_deadline_warning_minutes", "10");
-        config.put("appeal_player_cooldown_seconds", "900");
-        config.put("appeal_proposal_cooldown_seconds", "180");
-        config.put("appeal_global_cooldown_seconds", "60");
-        config.put("appeal_bulletin_duration_seconds", "900");
+        Map<String, String> loaded = new java.util.concurrent.ConcurrentHashMap<>();
+        loaded.put("senate_seats", String.valueOf(DEF_SENATE_SEATS));
+        loaded.put("equestrian_seats", String.valueOf(DEF_EQUESTRIAN_SEATS));
+        loaded.put("tribune_seats", String.valueOf(DEF_TRIBUNE_SEATS));
+        loaded.put("term_duration_hours", String.valueOf(DEF_TERM_HOURS));
+        loaded.put("legislative_mode", String.valueOf(DEF_LEGISLATIVE_MODE));
+        loaded.put("election_check_interval_min", "30");
+        loaded.put("tribune_election_interval_hours", "24");
+        loaded.put("proposal_vote_duration_minutes", "1440");
+        loaded.put("proposal_override_duration_minutes", "720");
+        loaded.put("proposal_progress_interval_minutes", "15");
+        loaded.put("proposal_deadline_warning_minutes", "10");
+        loaded.put("appeal_player_cooldown_seconds", "900");
+        loaded.put("appeal_proposal_cooldown_seconds", "180");
+        loaded.put("appeal_global_cooldown_seconds", "60");
+        loaded.put("appeal_bulletin_duration_seconds", "900");
 
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return;
+            if (conn == null) {
+                config = loaded;
+                return;
+            }
             try (Statement stmt = conn.createStatement();
-                 ResultSet rs = stmt.executeQuery("SELECT key, value FROM ks_politic_config")) {
+                 ResultSet rs = stmt.executeQuery("SELECT config_key, config_value FROM ks_politic_config")) {
                 while (rs.next()) {
-                    config.put(rs.getString("key"), rs.getString("value"));
+                    loaded.put(rs.getString("config_key"), rs.getString("config_value"));
                 }
             }
+            config = loaded;
         } catch (SQLException e) {
             eco.getLogger().warning("[政治系统] 加载配置失败: " + e.getMessage());
         }
     }
 
     private void loadOffices() {
-        offices.clear();
+        List<Office> loaded = new ArrayList<>();
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(
                      "SELECT * FROM ks_politic_offices WHERE is_active=1 ORDER BY office_type, seat_index")) {
                 while (rs.next()) {
-                    offices.add(new Office(rs));
+                    loaded.add(new Office(rs));
                 }
             }
+            offices = new java.util.concurrent.CopyOnWriteArrayList<>(loaded);
         } catch (SQLException e) {
             eco.getLogger().warning("[政治系统] 加载职务失败: " + e.getMessage());
         }
@@ -219,18 +132,27 @@ public final class PoliticManager {
     }
 
     public void setConfig(String key, String value) {
-        config.put(key, value);
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
             try (PreparedStatement ps = conn.prepareStatement(
-                "INSERT OR REPLACE INTO ks_politic_config (key, value) VALUES (?,?)")) {
-                ps.setString(1, key);
-                ps.setString(2, value);
-                ps.executeUpdate();
+                "UPDATE ks_politic_config SET config_value=? WHERE config_key=?")) {
+                ps.setString(1, value);
+                ps.setString(2, key);
+                if (ps.executeUpdate() == 0) {
+                    try (PreparedStatement insert = conn.prepareStatement(
+                            "INSERT INTO ks_politic_config (config_key,config_value) VALUES (?,?)")) {
+                        insert.setString(1, key);
+                        insert.setString(2, value);
+                        insert.executeUpdate();
+                    }
+                }
             }
         } catch (SQLException e) {
             eco.getLogger().warning("[政治系统] 保存配置失败: " + e.getMessage());
+            return;
         }
+        config.put(key, value);
+        eco.publishCrossServerInvalidation("politic", "state");
     }
 
     public Map<String, String> getAllConfig() { return new LinkedHashMap<>(config); }
@@ -346,6 +268,7 @@ public final class PoliticManager {
             }
             Office o = new Office(id, playerUuid.toString(), playerName, officeType, enterpriseId != null ? enterpriseId : "", now, termEnds, electedBy, true);
             offices.add(o);
+            eco.publishCrossServerInvalidation("politic", "state");
             return o;
         } catch (SQLException e) {
             eco.getLogger().warning("[政治系统] 任命失败: " + e.getMessage());
@@ -364,6 +287,7 @@ public final class PoliticManager {
                 ps.executeUpdate();
             }
             offices.removeIf(o -> o.playerUuid.equals(uuid) && o.officeType.equals(officeType));
+            eco.publishCrossServerInvalidation("politic", "state");
             return true;
         } catch (SQLException e) {
             eco.getLogger().warning("[政治系统] 免职失败: " + e.getMessage());
@@ -380,11 +304,17 @@ public final class PoliticManager {
                 ps.executeUpdate();
             }
             offices.removeIf(o -> o.id.equals(officeId));
+            eco.publishCrossServerInvalidation("politic", "state");
             return true;
         } catch (SQLException e) {
             eco.getLogger().warning("[政治系统] 免职失败: " + e.getMessage());
             return false;
         }
+    }
+
+    public void refreshSharedStateFromRemote() {
+        loadConfig();
+        loadOffices();
     }
 
     // ================================================================
@@ -511,17 +441,15 @@ public final class PoliticManager {
         if (!isTribuneCandidateEligible(candidateUuid)) return AssignResult.fail("该玩家不具备保民官候选资格（元老/执政官/骑士/管理员不可被选）");
         try (Connection conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return AssignResult.fail("数据库连接失败");
-            try (PreparedStatement ps = conn.prepareStatement(
-                "INSERT OR REPLACE INTO ks_politic_election_votes (id, election_id, voter_uuid, candidate_uuid, candidate_name, cast_at) " +
-                "VALUES (?,?,?,?,?,?)")) {
-                ps.setString(1, electionId + ":" + voterUuid);
-                ps.setString(2, electionId);
-                ps.setString(3, voterUuid.toString());
-                ps.setString(4, candidateUuid.toString());
-                ps.setString(5, candidateName);
-                ps.setLong(6, System.currentTimeMillis() / 1000);
-                ps.executeUpdate();
-            }
+            long now = System.currentTimeMillis() / 1000;
+            PortableSqlMutation.upsert(conn,
+                    "UPDATE ks_politic_election_votes SET candidate_uuid=?,candidate_name=?,cast_at=? WHERE election_id=? AND voter_uuid=?",
+                    ps -> { ps.setString(1, candidateUuid.toString()); ps.setString(2, candidateName);
+                        ps.setLong(3, now); ps.setString(4, electionId); ps.setString(5, voterUuid.toString()); },
+                    "INSERT INTO ks_politic_election_votes (id,election_id,voter_uuid,candidate_uuid,candidate_name,cast_at) VALUES (?,?,?,?,?,?)",
+                    ps -> { ps.setString(1, electionId + ":" + voterUuid); ps.setString(2, electionId);
+                        ps.setString(3, voterUuid.toString()); ps.setString(4, candidateUuid.toString());
+                        ps.setString(5, candidateName); ps.setLong(6, now); });
             return AssignResult.success(null, "投票成功，已投给 " + candidateName);
         } catch (SQLException e) {
             return AssignResult.fail("投票失败: " + e.getMessage());

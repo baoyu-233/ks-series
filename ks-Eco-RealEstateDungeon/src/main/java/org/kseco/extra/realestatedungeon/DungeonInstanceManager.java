@@ -1,19 +1,29 @@
 package org.kseco.extra.realestatedungeon;
 
 import org.bukkit.Bukkit;
+import org.bukkit.GameMode;
 import org.bukkit.Location;
-import org.bukkit.Material;
 import org.bukkit.World;
-import org.bukkit.block.Block;
-import org.bukkit.block.Sign;
-import org.bukkit.entity.Entity;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.kseco.KsEco;
+import org.kseco.database.BusinessSchemaDialect;
+import org.kseco.database.PortableSqlMutation;
+import org.kseries.instanceworld.api.InstanceGridSpec;
+import org.kseries.instanceworld.api.InstanceMarker;
+import org.kseries.instanceworld.api.InstancePreparation;
+import org.kseries.instanceworld.api.InstancePrepareRequest;
+import org.kseries.instanceworld.api.InstanceWorldApi;
+import org.kseries.instanceworld.api.PreparedInstance;
+import org.kseries.instanceworld.api.ReleaseCause;
 
-import java.io.File;
 import java.sql.*;
+import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * 副本实例生命周期管理。
@@ -21,9 +31,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * 状态机：
  *   WAITING (购票后立即) → ACTIVE (玩家进入并 spawn) → COMPLETED / ABANDONED (结束)
  *
- * 异步副本生成/销毁：使用 BukkitScheduler 切到异步任务。
+ * 实例世界、网格、schematic 与清理由 ks-InstanceWorld 管理；本类只编排经济和战斗流程。
  */
 public final class DungeonInstanceManager {
+
+    private static final int MAX_AUTO_REWARD_ATTEMPTS = 3;
 
     public static final String STATUS_WAITING = "WAITING";
     public static final String STATUS_ACTIVE = "ACTIVE";
@@ -32,38 +44,45 @@ public final class DungeonInstanceManager {
 
     private final KsEco eco;
     private final DungeonConfigManager configManager;
-    private final DungeonGridAllocator gridAllocator;
+    private final InstanceWorldApi instanceWorld;
     private final DungeonRpgBridge rpgBridge;
     private final ConcurrentHashMap<String, String> playerToInstance = new ConcurrentHashMap<>();
-    /** 实例 → [spawn] 告示牌标记的出生点覆盖（贴图时若发现则用它替代网格中心传送）。 */
-    private final ConcurrentHashMap<String, Location> instanceSpawnOverride = new ConcurrentHashMap<>();
-    /** 实例 → 贴图包围盒几何中心（无 [spawn] 标记时的兜底出生点，远比网格角落可靠）。 */
-    private final ConcurrentHashMap<String, Location> instancePasteCenter = new ConcurrentHashMap<>();
-    /** 实例 → 标记为 boss 的怪物实体 UUID（[mm] 告示牌第3行写 boss）。监控任务靠这个判断是否通关。 */
-    private final ConcurrentHashMap<String, UUID> instanceBoss = new ConcurrentHashMap<>();
+    private final Set<String> pendingPlayers = ConcurrentHashMap.newKeySet();
+    private final String localSettlementInstanceId = UUID.randomUUID().toString().replace("-", "");
+    private final ConcurrentHashMap<String, InstancePreparation> pendingPreparations = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, PreparedInstance> pendingAdmissions = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, PreparedInstance> preparedWorlds = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> worldInstanceIds = new ConcurrentHashMap<>();
+    /** 实例 → 全部通关目标 UUID；只有集合中所有目标均死亡才允许完成。 */
+    private final ConcurrentHashMap<String, Set<UUID>> instanceBosses = new ConcurrentHashMap<>();
     private org.bukkit.scheduler.BukkitTask monitorTask;
 
-    public DungeonInstanceManager(KsEco eco, DungeonConfigManager configManager,
-                                  DungeonGridAllocator gridAllocator) {
-        this(eco, configManager, gridAllocator, null);
-    }
+    private record TemplateWrite(String id, String name, String difficulty, double ticketPrice,
+                                 int minPlayers, int maxPlayers, int timeLimitMinutes, int monsterLevel,
+                                 String description, String schematic, int requirePropertyKey,
+                                 String rewardConfig, long createdAt) { }
 
     public DungeonInstanceManager(KsEco eco, DungeonConfigManager configManager,
-                                  DungeonGridAllocator gridAllocator,
+                                  InstanceWorldApi instanceWorld,
                                   DungeonRpgBridge rpgBridge) {
         this.eco = eco;
         this.configManager = configManager;
-        this.gridAllocator = gridAllocator;
+        this.instanceWorld = instanceWorld;
         this.rpgBridge = rpgBridge;
     }
 
     public void init() {
         ensureTables();
+        recoverTicketSettlements();
+        recoverActiveInstances();
+        recoverPendingRevives();
+        recoverRewardGrants();
     }
 
     private void ensureTables() {
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
+            DungeonSchema.initializeBase(conn);
             try (var s = conn.createStatement()) {
                 s.execute("""
                     CREATE TABLE IF NOT EXISTS ks_dungeon_templates (
@@ -91,21 +110,11 @@ public final class DungeonInstanceManager {
                         created_at INTEGER NOT NULL
                     )
                 """);
-                s.execute("CREATE INDEX IF NOT EXISTS idx_di_status ON ks_dungeon_instances(status)");
-                s.execute("CREATE INDEX IF NOT EXISTS idx_di_owner ON ks_dungeon_instances(owner_uuid)");
+                BusinessSchemaDialect.createIndexIfMissing(
+                        conn, "idx_di_status", "ks_dungeon_instances", "status");
+                BusinessSchemaDialect.createIndexIfMissing(
+                        conn, "idx_di_owner", "ks_dungeon_instances", "owner_uuid");
 
-                s.execute("""
-                    CREATE TABLE IF NOT EXISTS ks_dungeon_grids (
-                        id TEXT PRIMARY KEY,
-                        world TEXT NOT NULL,
-                        grid_x INTEGER NOT NULL,
-                        grid_z INTEGER NOT NULL,
-                        status TEXT NOT NULL DEFAULT 'FREE',
-                        occupied_since INTEGER DEFAULT 0,
-                        last_used_at INTEGER DEFAULT 0,
-                        UNIQUE(world, grid_x, grid_z)
-                    )
-                """);
                 s.execute("""
                     CREATE TABLE IF NOT EXISTS ks_dungeon_participants (
                         instance_id TEXT NOT NULL,
@@ -126,14 +135,17 @@ public final class DungeonInstanceManager {
                         revive_count INTEGER NOT NULL,
                         cost_paid REAL NOT NULL,
                         formula_cost REAL NOT NULL,
-                        revived_at INTEGER NOT NULL
+                        revived_at INTEGER NOT NULL,
+                        return_status TEXT NOT NULL DEFAULT 'RETURNED',
+                        last_error TEXT NOT NULL DEFAULT ''
                     )
                 """);
-                s.execute("CREATE INDEX IF NOT EXISTS idx_dr_instance ON ks_dungeon_revivals(instance_id)");
+                BusinessSchemaDialect.createIndexIfMissing(
+                        conn, "idx_dr_instance", "ks_dungeon_revivals", "instance_id");
 
                 s.execute("""
                     CREATE TABLE IF NOT EXISTS ks_dungeon_log (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        id INTEGER PRIMARY KEY,
                         instance_id TEXT NOT NULL,
                         event_type TEXT NOT NULL,
                         player_uuid TEXT DEFAULT '',
@@ -141,7 +153,16 @@ public final class DungeonInstanceManager {
                         created_at INTEGER NOT NULL
                     )
                 """);
-                s.execute("CREATE INDEX IF NOT EXISTS idx_dl_instance ON ks_dungeon_log(instance_id)");
+                BusinessSchemaDialect.createIndexIfMissing(
+                        conn, "idx_dl_instance", "ks_dungeon_log", "instance_id");
+
+                s.execute("""
+                    CREATE TABLE IF NOT EXISTS ks_dungeon_reward_roster (
+                        instance_id TEXT NOT NULL,
+                        player_uuid TEXT NOT NULL,
+                        PRIMARY KEY(instance_id, player_uuid)
+                    )
+                """);
 
                 // 地图：模板关联的 schematic 图名（FAWE 贴图）。老库兼容用 ALTER。
                 try { s.execute("ALTER TABLE ks_dungeon_templates ADD COLUMN schematic TEXT DEFAULT ''"); }
@@ -151,7 +172,21 @@ public final class DungeonInstanceManager {
                 catch (SQLException ignore) { /* 列已存在 */ }
                 try { s.execute("ALTER TABLE ks_dungeon_templates ADD COLUMN reward_config TEXT DEFAULT ''"); }
                 catch (SQLException ignore) { /* column already exists */ }
+                try { s.execute("ALTER TABLE ks_dungeon_instances ADD COLUMN instance_world_id TEXT DEFAULT ''"); }
+                catch (SQLException ignore) { /* column already exists */ }
+                try { s.execute("ALTER TABLE ks_dungeon_instances ADD COLUMN reward_status TEXT DEFAULT 'NONE'"); }
+                catch (SQLException ignore) { /* column already exists */ }
+                try { s.execute("ALTER TABLE ks_dungeon_revivals ADD COLUMN return_status TEXT NOT NULL DEFAULT 'RETURNED'"); }
+                catch (SQLException ignore) { /* column already exists */ }
+                try { s.execute("ALTER TABLE ks_dungeon_revivals ADD COLUMN last_error TEXT NOT NULL DEFAULT ''"); }
+                catch (SQLException ignore) { /* column already exists */ }
+                try {
+                    s.execute("UPDATE ks_dungeon_instances SET reward_status='NONE' " +
+                            "WHERE reward_status IS NULL OR reward_status=''");
+                } catch (SQLException ignore) { /* best effort backfill */ }
             }
+            DungeonTicketSettlementStore.createSchema(conn);
+            DungeonRewardGrantStore.initialize(conn);
             // 注：副本房产现由 ks-Eco-RealEstate 维护（含 ks_re_plots 的 instance_id/property_function 两列），本插件不再扩列。
         } catch (SQLException e) {
             eco.getLogger().warning("[副本系统] 建表失败: " + e.getMessage());
@@ -178,39 +213,58 @@ public final class DungeonInstanceManager {
         if (name == null || name.isEmpty()) name = "未命名副本";
         if (difficulty == null) difficulty = "NORMAL";
         long now = System.currentTimeMillis() / 1000;
+        TemplateWrite row = new TemplateWrite(id, name, difficulty, Math.max(0, ticketPrice),
+                Math.max(1, minPlayers), Math.max(minPlayers, maxPlayers), Math.max(5, timeLimitMinutes),
+                Math.max(1, monsterLevel), description == null ? "" : description,
+                schematic == null ? "" : schematic.trim(), requirePropertyKey ? 1 : 0,
+                rewardConfig == null ? "" : rewardConfig.trim(), now);
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return null;
-            // UPSERT
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_dungeon_templates (id, name, difficulty, ticket_price, " +
-                    "min_players, max_players, time_limit_minutes, monster_level, description, schematic, " +
-                    "require_property_key, reward_config, created_at) " +
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) " +
-                    "ON CONFLICT(id) DO UPDATE SET name=excluded.name, difficulty=excluded.difficulty, " +
-                    "ticket_price=excluded.ticket_price, min_players=excluded.min_players, " +
-                    "max_players=excluded.max_players, time_limit_minutes=excluded.time_limit_minutes, " +
-                    "monster_level=excluded.monster_level, description=excluded.description, schematic=excluded.schematic, " +
-                    "require_property_key=excluded.require_property_key, reward_config=excluded.reward_config")) {
-                ps.setString(1, id);
-                ps.setString(2, name);
-                ps.setString(3, difficulty);
-                ps.setDouble(4, Math.max(0, ticketPrice));
-                ps.setInt(5, Math.max(1, minPlayers));
-                ps.setInt(6, Math.max(minPlayers, maxPlayers));
-                ps.setInt(7, Math.max(5, timeLimitMinutes));
-                ps.setInt(8, Math.max(1, monsterLevel));
-                ps.setString(9, description == null ? "" : description);
-                ps.setString(10, schematic == null ? "" : schematic.trim());
-                ps.setInt(11, requirePropertyKey ? 1 : 0);
-                ps.setString(12, rewardConfig == null ? "" : rewardConfig.trim());
-                ps.setLong(13, now);
-                ps.executeUpdate();
-                return id;
-            }
+            PortableSqlMutation.upsert(conn,
+                    "UPDATE ks_dungeon_templates SET name=?,difficulty=?,ticket_price=?,min_players=?,"
+                            + "max_players=?,time_limit_minutes=?,monster_level=?,description=?,schematic=?,"
+                            + "require_property_key=?,reward_config=? WHERE id=?",
+                    statement -> bindTemplateUpdate(statement, row),
+                    "INSERT INTO ks_dungeon_templates (id,name,difficulty,ticket_price,min_players,max_players,"
+                            + "time_limit_minutes,monster_level,description,schematic,require_property_key,"
+                            + "reward_config,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    statement -> bindTemplateInsert(statement, row));
+            return row.id();
         } catch (SQLException e) {
             eco.getLogger().warning("[副本系统] upsert 模板失败: " + e.getMessage());
         }
         return null;
+    }
+
+    private static void bindTemplateUpdate(PreparedStatement statement, TemplateWrite row) throws SQLException {
+        statement.setString(1, row.name());
+        statement.setString(2, row.difficulty());
+        statement.setDouble(3, row.ticketPrice());
+        statement.setInt(4, row.minPlayers());
+        statement.setInt(5, row.maxPlayers());
+        statement.setInt(6, row.timeLimitMinutes());
+        statement.setInt(7, row.monsterLevel());
+        statement.setString(8, row.description());
+        statement.setString(9, row.schematic());
+        statement.setInt(10, row.requirePropertyKey());
+        statement.setString(11, row.rewardConfig());
+        statement.setString(12, row.id());
+    }
+
+    private static void bindTemplateInsert(PreparedStatement statement, TemplateWrite row) throws SQLException {
+        statement.setString(1, row.id());
+        statement.setString(2, row.name());
+        statement.setString(3, row.difficulty());
+        statement.setDouble(4, row.ticketPrice());
+        statement.setInt(5, row.minPlayers());
+        statement.setInt(6, row.maxPlayers());
+        statement.setInt(7, row.timeLimitMinutes());
+        statement.setInt(8, row.monsterLevel());
+        statement.setString(9, row.description());
+        statement.setString(10, row.schematic());
+        statement.setInt(11, row.requirePropertyKey());
+        statement.setString(12, row.rewardConfig());
+        statement.setLong(13, row.createdAt());
     }
 
     public List<Map<String, Object>> listTemplates() {
@@ -369,211 +423,787 @@ public final class DungeonInstanceManager {
     // 实例生命周期
     // ================================================================
 
-    /**
-     * 购票进入副本。
-     * @return instanceId 或 null（失败）
-     */
-    public String createInstance(String templateId, UUID ownerUuid, String ownerName) {
-        Map<String, Object> template = getTemplate(templateId);
-        if (template == null) return null;
-        double price = ((Number) template.get("ticketPrice")).doubleValue();
-
-        // 1) 扣门票
-        if (!eco.vaultHook().isAvailable()) return null;
-        var p = Bukkit.getOfflinePlayer(ownerUuid);
-        if (!eco.vaultHook().has(p, price)) return null;
-        if (!eco.vaultHook().withdraw(p, price)) return null;
-
-        // 2) 分配网格
-        Map<String, Object> grid = gridAllocator.allocate();
-        if (grid == null) {
-            eco.vaultHook().deposit(p, price);
-            return null;
-        }
-        String gridId = (String) grid.get("id");
-
-        // 3) 写实例
-        String instanceId = "DI" + UUID.randomUUID().toString().substring(0, 8);
-        long now = System.currentTimeMillis() / 1000;
-        int timeLimitMin = ((Number) template.get("timeLimitMinutes")).intValue();
-        long expiresAt = now + timeLimitMin * 60L;
-        try (var conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) {
-                refundAndRelease(ownerUuid, price, gridId);
-                return null;
-            }
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_dungeon_instances (id, template_id, grid_id, status, " +
-                    "started_at, expires_at, owner_uuid, created_at) VALUES (?,?,?,?,?,?,?,?)")) {
-                ps.setString(1, instanceId);
-                ps.setString(2, templateId);
-                ps.setString(3, gridId);
-                ps.setString(4, STATUS_WAITING);
-                ps.setLong(5, now);
-                ps.setLong(6, expiresAt);
-                ps.setString(7, ownerUuid.toString());
-                ps.setLong(8, now);
-                ps.executeUpdate();
-            }
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_dungeon_participants (instance_id, player_uuid, player_name, joined_at, status) " +
-                    "VALUES (?,?,?,?, 'ALIVE')")) {
-                ps.setString(1, instanceId);
-                ps.setString(2, ownerUuid.toString());
-                ps.setString(3, ownerName == null ? "" : ownerName);
-                ps.setLong(4, now);
-                ps.executeUpdate();
-            }
-            logEvent(instanceId, "START", ownerUuid.toString(), "template=" + templateId + " grid=" + gridId);
-        } catch (SQLException e) {
-            eco.getLogger().warning("[副本系统] 创建实例失败: " + e.getMessage());
-            refundAndRelease(ownerUuid, price, gridId);
-            return null;
-        }
-
-        // 4) 异步加载虚空世界（如果还没加载）→ 主线程贴图/刷怪 → 传送
-        asyncLoadDungeonWorld((String) grid.get("world"), () ->
-                Bukkit.getScheduler().runTask(eco, () ->
-                        prepareMapAndActivate(instanceId, templateId,
-                                () -> activateAndTeleport(instanceId, ownerUuid))));
-        playerToInstance.put(ownerUuid.toString(), instanceId);
-        return instanceId;
+    public CompletableFuture<String> createInstanceAsync(String templateId, UUID ownerUuid, String ownerName) {
+        return beginCreate(templateId, ownerUuid,
+                List.of(new DungeonTicketSettlementStore.Participant(ownerUuid, ownerName)),
+                List.of(ownerUuid));
     }
 
-    private void activateAndTeleport(String instanceId, UUID ownerUuid) {
-        // 1) 更新状态为 ACTIVE
-        try (var conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return;
-            try (var ps = conn.prepareStatement(
-                    "UPDATE ks_dungeon_instances SET status='ACTIVE' WHERE id=? AND status='WAITING'")) {
-                ps.setString(1, instanceId);
-                ps.executeUpdate();
-            }
-        } catch (SQLException ignored) {}
-
-        // 2) 传送玩家到网格中心
-        Map<String, Object> grid = getGridByInstance(instanceId);
-        if (grid == null) return;
-        Player player = Bukkit.getPlayer(ownerUuid);
-        if (player == null || !player.isOnline()) return;
-        World world = Bukkit.getWorld((String) grid.get("world"));
-        if (world == null) return;
-        int cx = ((Number) grid.get("centerX")).intValue();
-        int cz = ((Number) grid.get("centerZ")).intValue();
-        Location loc = resolveSpawnLocation(instanceId, world, cx, cz);
-        player.teleport(loc);
-        player.sendMessage("§6[副本] §a你已进入副本 " + instanceId);
+    /** The leader pays once; all members are frozen before any Vault withdrawal starts. */
+    public CompletableFuture<String> createInstanceForPartyAsync(String templateId, UUID leaderUuid,
+                                                                  String leaderName, List<UUID> members) {
+        LinkedHashSet<UUID> uniqueMembers = new LinkedHashSet<>(members == null ? List.of() : members);
+        uniqueMembers.add(leaderUuid);
+        List<DungeonTicketSettlementStore.Participant> participants = new ArrayList<>();
+        for (UUID member : uniqueMembers) {
+            var offline = Bukkit.getOfflinePlayer(member);
+            String name = member.equals(leaderUuid) && leaderName != null
+                    ? leaderName : Objects.toString(offline.getName(), "");
+            participants.add(new DungeonTicketSettlementStore.Participant(member, name));
+        }
+        return beginCreate(templateId, leaderUuid, participants, List.copyOf(uniqueMembers));
     }
 
-    /**
-     * 组队开本：队长付一张门票，全队一次性进入。members 必须含队长，人数应已由调用方校验在 [min,max]。
-     * @return instanceId 或 null（失败）
-     */
-    public String createInstanceForParty(String templateId, UUID leaderUuid, String leaderName, List<UUID> members) {
-        Map<String, Object> template = getTemplate(templateId);
-        if (template == null) return null;
-        double price = ((Number) template.get("ticketPrice")).doubleValue();
-        if (!eco.vaultHook().isAvailable()) return null;
-        var lp = Bukkit.getOfflinePlayer(leaderUuid);
-        if (!eco.vaultHook().has(lp, price)) return null;
-        if (!eco.vaultHook().withdraw(lp, price)) return null;
-
-        Map<String, Object> grid = gridAllocator.allocate();
-        if (grid == null) { eco.vaultHook().deposit(lp, price); return null; }
-        String gridId = (String) grid.get("id");
-
+    private CompletableFuture<String> beginCreate(String templateId, UUID payerUuid,
+                                                   List<DungeonTicketSettlementStore.Participant> participants,
+                                                   List<UUID> members) {
+        CompletableFuture<String> result = new CompletableFuture<>();
+        if (!Bukkit.isPrimaryThread()) {
+            result.completeExceptionally(new IllegalStateException("Dungeon admission must start on the server thread"));
+            return result;
+        }
+        if (templateId == null || templateId.isBlank() || members.isEmpty() || !reservePlayers(members)) {
+            result.complete(null);
+            return result;
+        }
         String instanceId = "DI" + UUID.randomUUID().toString().substring(0, 8);
-        long now = System.currentTimeMillis() / 1000;
-        int timeLimitMin = ((Number) template.get("timeLimitMinutes")).intValue();
-        long expiresAt = now + timeLimitMin * 60L;
-        try (var conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) { refundAndRelease(leaderUuid, price, gridId); return null; }
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_dungeon_instances (id, template_id, grid_id, status, " +
-                    "started_at, expires_at, owner_uuid, created_at) VALUES (?,?,?,?,?,?,?,?)")) {
-                ps.setString(1, instanceId);
-                ps.setString(2, templateId);
-                ps.setString(3, gridId);
-                ps.setString(4, STATUS_WAITING);
-                ps.setLong(5, now);
-                ps.setLong(6, expiresAt);
-                ps.setString(7, leaderUuid.toString());
-                ps.setLong(8, now);
-                ps.executeUpdate();
-            }
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_dungeon_participants (instance_id, player_uuid, player_name, joined_at, status) " +
-                    "VALUES (?,?,?,?, 'ALIVE')")) {
-                for (UUID m : members) {
-                    var op = Bukkit.getOfflinePlayer(m);
-                    ps.setString(1, instanceId);
-                    ps.setString(2, m.toString());
-                    ps.setString(3, op.getName() == null ? "" : op.getName());
-                    ps.setLong(4, now);
-                    ps.addBatch();
+        executeTicketSql(() -> {
+                Map<String, Object> template = getTemplate(templateId);
+                if (template == null) {
+                    finishCreateFailure(members, result, null);
+                    return;
                 }
-                ps.executeBatch();
-            }
-            logEvent(instanceId, "START", leaderUuid.toString(),
-                    "template=" + templateId + " grid=" + gridId + " party=" + members.size());
-        } catch (SQLException e) {
-            eco.getLogger().warning("[副本系统] 组队创建实例失败: " + e.getMessage());
-            refundAndRelease(leaderUuid, price, gridId);
-            return null;
-        }
-        for (UUID m : members) playerToInstance.put(m.toString(), instanceId);
-        final List<UUID> snapshot = new ArrayList<>(members);
-        asyncLoadDungeonWorld((String) grid.get("world"), () ->
-                Bukkit.getScheduler().runTask(eco, () ->
-                        prepareMapAndActivate(instanceId, templateId,
-                                () -> activateAndTeleportAll(instanceId, snapshot))));
-        return instanceId;
+                double price = ((Number) template.get("ticketPrice")).doubleValue();
+                if (!Double.isFinite(price) || price < 0) {
+                    finishCreateFailure(members, result,
+                            new IllegalArgumentException("Invalid dungeon ticket price"));
+                    return;
+                }
+                long now = System.currentTimeMillis() / 1000;
+                int timeLimit = ((Number) template.get("timeLimitMinutes")).intValue();
+                var settlement = new DungeonTicketSettlementStore.Settlement(
+                        instanceId, templateId, payerUuid, price, settlementServerId(),
+                        settlementInstanceId(), now);
+                try (var connection = eco.ksCore().dataStore().getConnection()) {
+                    if (connection == null || hasOpenParticipant(connection, members)) {
+                        finishCreateFailure(members, result, null);
+                        return;
+                    }
+                    DungeonTicketSettlementStore.insertChargeReady(connection, settlement);
+                    if (!DungeonTicketSettlementStore.claimCharge(connection, instanceId, now)) {
+                        finishCreateFailure(members, result, null);
+                        return;
+                    }
+                } catch (SQLException failure) {
+                    eco.getLogger().warning("[副本系统] 门票预留失败: " + failure.getMessage());
+                    finishCreateFailure(members, result, failure);
+                    return;
+                }
+                runOnServerThread(() -> chargeTicket(settlement, template, timeLimit, participants, members, result));
+            }, () -> finishCreateFailure(members, result,
+                    new RejectedExecutionException("Database queue rejected ticket reservation")));
+        return result;
     }
 
-    private void activateAndTeleportAll(String instanceId, List<UUID> members) {
-        try (var conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn != null) try (var ps = conn.prepareStatement(
-                    "UPDATE ks_dungeon_instances SET status='ACTIVE' WHERE id=? AND status='WAITING'")) {
-                ps.setString(1, instanceId);
-                ps.executeUpdate();
+    private void chargeTicket(DungeonTicketSettlementStore.Settlement settlement,
+                              Map<String, Object> template, int timeLimit,
+                              List<DungeonTicketSettlementStore.Participant> participants,
+                              List<UUID> members, CompletableFuture<String> result) {
+        boolean charged;
+        try {
+            if (settlement.amount() <= 0) {
+                charged = true;
+            } else {
+                var payer = Bukkit.getOfflinePlayer(settlement.payerUuid());
+                charged = eco.vaultHook().isAvailable() && eco.vaultHook().has(payer, settlement.amount())
+                        && eco.vaultHook().withdraw(payer, settlement.amount());
             }
-        } catch (SQLException ignored) {}
-        Map<String, Object> grid = getGridByInstance(instanceId);
-        if (grid == null) return;
-        World world = Bukkit.getWorld((String) grid.get("world"));
-        if (world == null) return;
-        int cx = ((Number) grid.get("centerX")).intValue();
-        int cz = ((Number) grid.get("centerZ")).intValue();
-        Location loc = resolveSpawnLocation(instanceId, world, cx, cz);
-        for (UUID m : members) {
-            Player pl = Bukkit.getPlayer(m);
-            if (pl != null && pl.isOnline()) {
-                pl.teleport(loc);
-                pl.sendMessage("§6[副本] §a你已进入副本 " + instanceId);
+        } catch (Throwable uncertain) {
+            markTicketReview(settlement.instanceId(), "Vault withdrawal outcome unknown: " + uncertain.getMessage());
+            releasePlayers(members);
+            result.completeExceptionally(uncertain);
+            return;
+        }
+        if (!charged) {
+            executeTicketSql(() -> {
+                try (var connection = eco.ksCore().dataStore().getConnection()) {
+                    if (connection != null) DungeonTicketSettlementStore.markChargeRejected(connection,
+                            settlement.instanceId(), "Vault rejected ticket withdrawal", nowSeconds());
+                }
+                finishCreateFailure(members, result, null);
+            }, () -> finishCreateFailure(members, result, null));
+            return;
+        }
+
+        executeTicketSql(() -> {
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection == null) throw new SQLException("数据库连接不可用");
+                DungeonTicketSettlementStore.commitCharge(connection, settlement,
+                        settlement.createdAt() + Math.max(5, timeLimit) * 60L, participants);
+            } catch (SQLException failure) {
+                eco.getLogger().severe("[副本系统] 扣款后无法提交入场记录 " + settlement.instanceId()
+                        + ": " + failure.getMessage());
+                prepareRefundAfterCommitFailure(settlement, members, result, failure);
+                return;
+            }
+            runOnServerThread(() -> {
+                releasePlayers(members);
+                for (UUID member : members) playerToInstance.put(member.toString(), settlement.instanceId());
+                logEvent(settlement.instanceId(), "START", settlement.payerUuid().toString(),
+                        "template=" + settlement.templateId() + " participants=" + participants.size());
+                requestInstanceWorld(settlement.instanceId(), settlement.templateId(), template,
+                        settlement.payerUuid(), settlement.amount(), members);
+                result.complete(settlement.instanceId());
+            });
+        }, () -> prepareRefundAfterCommitFailure(settlement, members, result,
+                new RejectedExecutionException("Database queue rejected charged ticket commit")));
+    }
+
+    private void prepareRefundAfterCommitFailure(DungeonTicketSettlementStore.Settlement settlement,
+                                                 List<UUID> members, CompletableFuture<String> result,
+                                                 Throwable failure) {
+        executeTicketSql(() -> {
+            boolean ready = false;
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection != null) ready = DungeonTicketSettlementStore.markChargeForRefund(connection,
+                        settlement.instanceId(), messageOf(failure), nowSeconds());
+            } catch (SQLException databaseFailure) {
+                eco.getLogger().severe("[副本系统] 无法持久化门票退款状态 " + settlement.instanceId()
+                        + ": " + databaseFailure.getMessage());
+            }
+            releasePlayers(members);
+            if (ready) {
+                refundTicket(settlement.instanceId(), settlement.payerUuid(), settlement.amount(), ignored ->
+                        result.complete(null));
+            } else {
+                markTicketReview(settlement.instanceId(), "Charged ticket commit failed before refund could be claimed");
+                runOnServerThread(() -> result.completeExceptionally(failure));
+            }
+        }, () -> {
+            releasePlayers(members);
+            markTicketReview(settlement.instanceId(), "Database queue rejected refund preparation");
+            result.completeExceptionally(failure);
+        });
+    }
+
+    private void activateAndTeleportAll(String instanceId, List<UUID> members,
+                                        Map<String, Object> template, PreparedInstance prepared) {
+        String preparedWorldId = prepared.instanceId();
+        pendingAdmissions.put(instanceId, prepared);
+        executeTicketSql(() -> {
+            boolean activated = false;
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection != null) activated = DungeonTicketSettlementStore.activateAdmission(
+                        connection, instanceId, nowSeconds());
+            } catch (SQLException failure) {
+                eco.getLogger().warning("[副本系统] 入场状态提交失败: " + failure.getMessage());
+            }
+            boolean admitted = activated;
+            runOnServerThread(() -> {
+                PreparedInstance ready = pendingAdmissions.remove(instanceId);
+                if (!admitted || ready == null) {
+                    instanceWorld.release(ready == null ? preparedWorldId : ready.instanceId(), ReleaseCause.ABANDONED);
+                    handlePreparationFailure(instanceId, members, new SQLException("入场状态提交失败"));
+                    return;
+                }
+                preparedWorlds.put(instanceId, ready);
+                int defaultLevel = template.get("monsterLevel") == null ? 10
+                        : ((Number) template.get("monsterLevel")).intValue();
+                int mobs = spawnDungeonMarkers(instanceId, ready, defaultLevel,
+                        configManager.snapshot().mapSpawnMobs);
+                logEvent(instanceId, "MAP_PASTED", "", "schem=" + template.get("schematic") + " mobs=" + mobs);
+                Location loc = ready.spawn().toLocation(ready.world());
+                for (UUID member : members) {
+                    Player player = Bukkit.getPlayer(member);
+                    if (player != null && player.isOnline()) {
+                        player.teleport(loc);
+                        player.sendMessage("§6[副本] §a你已进入副本 " + instanceId);
+                    }
+                }
+            });
+        }, () -> {
+            PreparedInstance ready = pendingAdmissions.remove(instanceId);
+            instanceWorld.release(ready == null ? preparedWorldId : ready.instanceId(), ReleaseCause.ABANDONED);
+            handlePreparationFailure(instanceId, members,
+                    new RejectedExecutionException("数据库队列繁忙"));
+        });
+    }
+
+    private void requestInstanceWorld(String instanceId, String templateId, Map<String, Object> template,
+                                      UUID payerUuid, double ticketPrice, List<UUID> members) {
+        String schematic = Objects.toString(template.get("schematic"), "").trim();
+        if (schematic.isBlank()) {
+            handlePreparationFailure(instanceId, payerUuid, ticketPrice, members,
+                    new IllegalArgumentException("副本模板未配置 schematic"));
+            return;
+        }
+        DungeonConfigManager.ConfigSnapshot cfg = configManager.snapshot();
+        InstancePrepareRequest request = new InstancePrepareRequest(
+                "ks-eco-dungeon",
+                templateId,
+                schematic,
+                new InstanceGridSpec(cfg.gridWorldName, cfg.gridSpacing, cfg.maxGrids),
+                cfg.mapBaseY,
+                cfg.mapArenaRadius,
+                Duration.ofSeconds(Math.max(30, cfg.mapPrepareTimeoutSeconds))
+        );
+        final InstancePreparation preparation;
+        try {
+            preparation = instanceWorld.prepare(request);
+        } catch (Throwable failure) {
+            handlePreparationFailure(instanceId, payerUuid, ticketPrice, members, failure);
+            return;
+        }
+        String worldInstanceId = preparation.instanceId();
+        pendingPreparations.put(instanceId, preparation);
+        worldInstanceIds.put(instanceId, worldInstanceId);
+        executeTicketSql(() -> {
+            Throwable updateFailure = null;
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection == null) throw new SQLException("数据库连接不可用");
+                try (var statement = connection.prepareStatement(
+                        "UPDATE ks_dungeon_instances SET instance_world_id=? WHERE id=? AND status='WAITING'")) {
+                    statement.setString(1, worldInstanceId);
+                    statement.setString(2, instanceId);
+                    if (statement.executeUpdate() != 1) throw new SQLException("副本已不再等待准备");
+                }
+            } catch (SQLException failure) {
+                updateFailure = failure;
+            }
+            Throwable finalFailure = updateFailure;
+            runOnServerThread(() -> {
+                if (finalFailure != null) {
+                    pendingPreparations.remove(instanceId);
+                    instanceWorld.release(worldInstanceId, ReleaseCause.ABANDONED);
+                    handlePreparationFailure(instanceId, members, finalFailure);
+                    return;
+                }
+                InstancePreparation pending = pendingPreparations.remove(instanceId);
+                if (pending == null) {
+                    instanceWorld.release(worldInstanceId, ReleaseCause.ABANDONED);
+                    handlePreparationFailure(instanceId, members,
+                            new IllegalStateException("副本准备句柄已丢失"));
+                    return;
+                }
+                pending.ready().whenComplete((prepared, failure) -> runOnServerThread(() -> {
+                    if (failure != null) {
+                        handlePreparationFailure(instanceId, members, unwrap(failure));
+                    } else {
+                        activateAndTeleportAll(instanceId, members, template, prepared);
+                    }
+                }));
+            });
+        }, () -> {
+            pendingPreparations.remove(instanceId);
+            instanceWorld.release(worldInstanceId, ReleaseCause.ABANDONED);
+            handlePreparationFailure(instanceId, members,
+                    new RejectedExecutionException("数据库队列繁忙"));
+        });
+    }
+
+    private void handlePreparationFailure(String instanceId, UUID payerUuid, double ticketPrice,
+                                          List<UUID> members, Throwable failure) {
+        handlePreparationFailure(instanceId, members, failure);
+    }
+
+    private void handlePreparationFailure(String instanceId, List<UUID> members, Throwable failure) {
+        playerToInstance.values().removeIf(instanceId::equals);
+        pendingPreparations.remove(instanceId);
+        pendingAdmissions.remove(instanceId);
+        preparedWorlds.remove(instanceId);
+        worldInstanceIds.remove(instanceId);
+        String message = messageOf(failure);
+        logEvent(instanceId, "PREPARE_FAILED", "", message);
+        executeTicketSql(() -> {
+            DungeonTicketSettlementStore.Settlement settlement = null;
+            boolean refundReady = false;
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection != null) {
+                    settlement = DungeonTicketSettlementStore.load(connection, instanceId);
+                    refundReady = settlement != null && DungeonTicketSettlementStore.prepareRefund(
+                            connection, instanceId, message, nowSeconds());
+                }
+            } catch (SQLException databaseFailure) {
+                eco.getLogger().warning("[副本系统] 记录地图准备失败时数据库异常: "
+                        + databaseFailure.getMessage());
+            }
+            DungeonTicketSettlementStore.Settlement refund = settlement;
+            if (refundReady && refund != null) {
+                refundTicket(instanceId, refund.payerUuid(), refund.amount(), refunded ->
+                        notifyPreparationFailure(members, message, refunded));
+            } else {
+                runOnServerThread(() -> notifyPreparationFailure(members, message, false));
+            }
+        }, () -> notifyPreparationFailure(members, message, false));
+    }
+
+    private synchronized boolean reservePlayers(List<UUID> members) {
+        for (UUID member : members) {
+            String key = member.toString();
+            if (playerToInstance.containsKey(key) || pendingPlayers.contains(key)) return false;
+        }
+        for (UUID member : members) pendingPlayers.add(member.toString());
+        return true;
+    }
+
+    private void releasePlayers(List<UUID> members) {
+        for (UUID member : members) pendingPlayers.remove(member.toString());
+    }
+
+    private static boolean hasOpenParticipant(Connection connection, List<UUID> members) throws SQLException {
+        if (members.isEmpty()) return false;
+        String placeholders = String.join(",", Collections.nCopies(members.size(), "?"));
+        String sql = "SELECT 1 FROM ks_dungeon_participants p JOIN ks_dungeon_instances i "
+                + "ON i.id=p.instance_id WHERE p.player_uuid IN (" + placeholders + ") "
+                + "AND p.status<>'LEFT' AND i.status IN ('WAITING','ACTIVE') LIMIT 1";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            for (int i = 0; i < members.size(); i++) statement.setString(i + 1, members.get(i).toString());
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next();
             }
         }
     }
 
-    private Map<String, Object> getGridByInstance(String instanceId) {
-        try (var conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return null;
-            try (var ps = conn.prepareStatement(
-                    "SELECT g.* FROM ks_dungeon_grids g " +
-                    "JOIN ks_dungeon_instances i ON i.grid_id=g.id WHERE i.id=?")) {
-                ps.setString(1, instanceId);
-                try (var rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        Map<String, Object> m = new LinkedHashMap<>();
-                        m.put("id", rs.getString("id"));
-                        m.put("world", rs.getString("world"));
-                        m.put("centerX", rs.getInt("grid_x"));
-                        m.put("centerZ", rs.getInt("grid_z"));
-                        return m;
+    private void refundTicket(String instanceId, UUID payerUuid, double amount,
+                              java.util.function.Consumer<Boolean> completion) {
+        executeTicketSql(() -> {
+            boolean claimed;
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                claimed = connection != null && DungeonTicketSettlementStore.claimRefund(
+                        connection, instanceId, nowSeconds());
+            }
+            if (!claimed) {
+                runOnServerThread(() -> completion.accept(false));
+                return;
+            }
+            runOnServerThread(() -> {
+                boolean refunded;
+                try {
+                    refunded = amount <= 0 || (eco.vaultHook().isAvailable()
+                            && eco.vaultHook().deposit(Bukkit.getOfflinePlayer(payerUuid), amount));
+                } catch (Throwable uncertain) {
+                    markTicketReview(instanceId, "Vault refund outcome unknown: " + uncertain.getMessage());
+                    completion.accept(false);
+                    return;
+                }
+                executeTicketSql(() -> {
+                    boolean persisted;
+                    try (var connection = eco.ksCore().dataStore().getConnection()) {
+                        if (connection == null) {
+                            persisted = false;
+                        } else if (refunded) {
+                            persisted = DungeonTicketSettlementStore.markRefunded(
+                                    connection, instanceId, nowSeconds());
+                        } else {
+                            persisted = DungeonTicketSettlementStore.returnRefundReady(connection, instanceId,
+                                    "Vault rejected ticket refund", nowSeconds());
+                        }
+                    }
+                    boolean completed = refunded && persisted;
+                    runOnServerThread(() -> completion.accept(completed));
+                }, () -> {
+                    markTicketReview(instanceId, "Database queue rejected refund finalization");
+                    completion.accept(false);
+                });
+            });
+        }, () -> completion.accept(false));
+    }
+
+    private void notifyPreparationFailure(List<UUID> members, String message, boolean refunded) {
+        String settlement = refunded ? "门票已退还" : "门票退款待核对";
+        for (UUID member : members) {
+            Player player = Bukkit.getPlayer(member);
+            if (player != null && player.isOnline()) {
+                player.sendMessage("§6[副本] §c地图准备失败，" + settlement + ": " + message);
+            }
+        }
+    }
+
+    private void recoverTicketSettlements() {
+        executeTicketSql(() -> {
+            DungeonTicketSettlementStore.Recovery recovery;
+            List<DungeonTicketSettlementStore.Settlement> refunds = new ArrayList<>();
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection == null) return;
+                recovery = DungeonTicketSettlementStore.recoverInterrupted(
+                        connection, settlementServerId(), nowSeconds());
+                for (String instanceId : recovery.refundReady()) {
+                    DungeonTicketSettlementStore.Settlement settlement =
+                            DungeonTicketSettlementStore.load(connection, instanceId);
+                    if (settlement != null) refunds.add(settlement);
+                }
+            }
+            if (!recovery.reviewRequired().isEmpty()) {
+                eco.getLogger().severe("[副本系统] 门票结算需人工核对: "
+                        + String.join(",", recovery.reviewRequired()));
+            }
+            for (DungeonTicketSettlementStore.Settlement refund : refunds) {
+                refundTicket(refund.instanceId(), refund.payerUuid(), refund.amount(), success -> {
+                    if (!success) eco.getLogger().warning("[副本系统] 重启恢复退款尚未完成: " + refund.instanceId());
+                });
+            }
+        }, () -> eco.getLogger().severe("[副本系统] 数据库队列拒绝门票结算恢复"));
+    }
+
+    private void recoverActiveInstances() {
+        executeTicketSql(() -> {
+            Map<String, MutableActiveRecovery> rows = new LinkedHashMap<>();
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection == null) return;
+                try (var statement = connection.prepareStatement("""
+                        SELECT i.id, COALESCE(NULLIF(i.instance_world_id,''), i.grid_id), i.template_id,
+                               p.player_uuid, p.status
+                        FROM ks_dungeon_instances i
+                        JOIN ks_dungeon_participants p ON p.instance_id=i.id
+                        WHERE i.status='ACTIVE' AND p.status<>'LEFT'
+                        ORDER BY i.created_at,p.joined_at
+                        """)) {
+                    try (var result = statement.executeQuery()) {
+                        while (result.next()) {
+                            String instanceId = result.getString(1);
+                            MutableActiveRecovery recovery = rows.get(instanceId);
+                            if (recovery == null) {
+                                recovery = new MutableActiveRecovery(instanceId,
+                                        resultString(result, 2), resultString(result, 3));
+                                rows.put(instanceId, recovery);
+                            }
+                            try {
+                                recovery.participants.put(UUID.fromString(result.getString(4)), result.getString(5));
+                            } catch (IllegalArgumentException ignored) {
+                                eco.getLogger().warning("[副本系统] 忽略无效恢复玩家 UUID: " + result.getString(4));
+                            }
+                        }
                     }
                 }
             }
-        } catch (SQLException ignored) {}
-        return null;
+            List<ActiveRecovery> recoveries = rows.values().stream().map(MutableActiveRecovery::freeze).toList();
+            runOnServerThread(() -> recoveries.forEach(this::resumeActiveInstance));
+        }, () -> eco.getLogger().severe("[副本系统] 数据库队列拒绝 ACTIVE 实例恢复"));
+    }
+
+    private void resumeActiveInstance(ActiveRecovery recovery) {
+        if (recovery.worldInstanceId().isBlank() || "PENDING".equals(recovery.worldInstanceId())) {
+            abandonUnrecoverable(recovery.instanceId(), "缺少持久化 InstanceWorld ID");
+            return;
+        }
+        recovery.participants().keySet().forEach(uuid ->
+                playerToInstance.put(uuid.toString(), recovery.instanceId()));
+        worldInstanceIds.put(recovery.instanceId(), recovery.worldInstanceId());
+        instanceWorld.resume(recovery.worldInstanceId()).whenComplete((prepared, failure) -> runOnServerThread(() -> {
+            if (failure != null || prepared == null) {
+                abandonUnrecoverable(recovery.instanceId(), messageOf(unwrap(failure)));
+                return;
+            }
+            preparedWorlds.put(recovery.instanceId(), prepared);
+            resetRecoveredEncounter(recovery.instanceId(), prepared);
+            logEvent(recovery.instanceId(), "RECOVERED", "",
+                    "world=" + recovery.worldInstanceId() + " participants=" + recovery.participants().size());
+            for (var participant : recovery.participants().entrySet()) {
+                Player online = Bukkit.getPlayer(participant.getKey());
+                if (online == null || !online.isOnline()) continue;
+                if ("ALIVE".equals(participant.getValue())) {
+                    returnPlayerToInstance(recovery.instanceId(), online);
+                } else if ("DEAD".equals(participant.getValue())) {
+                    online.sendMessage("§6[副本] §c副本已恢复，你仍处于阵亡状态；使用 /dungeon revive 回场。");
+                }
+            }
+            resumePendingRevives(recovery.instanceId());
+        }));
+    }
+
+    private void resetRecoveredEncounter(String instanceId, PreparedInstance prepared) {
+        Location center = new Location(prepared.world(),
+                (prepared.bounds().minX() + prepared.bounds().maxX()) / 2.0 + 0.5,
+                (prepared.bounds().minY() + prepared.bounds().maxY()) / 2.0 + 0.5,
+                (prepared.bounds().minZ() + prepared.bounds().maxZ()) / 2.0 + 0.5);
+        double halfX = (prepared.bounds().maxX() - prepared.bounds().minX()) / 2.0 + 2;
+        double halfY = (prepared.bounds().maxY() - prepared.bounds().minY()) / 2.0 + 2;
+        double halfZ = (prepared.bounds().maxZ() - prepared.bounds().minZ()) / 2.0 + 2;
+        for (var entity : prepared.world().getNearbyEntities(center, halfX, halfY, halfZ)) {
+            if (entity instanceof LivingEntity && !(entity instanceof Player)) entity.remove();
+        }
+        instanceBosses.remove(instanceId);
+        Map<String, Object> template = getTemplate(prepared.templateKey());
+        int level = template == null || template.get("monsterLevel") == null
+                ? 10 : ((Number) template.get("monsterLevel")).intValue();
+        int mobs = spawnDungeonMarkers(instanceId, prepared, level, configManager.snapshot().mapSpawnMobs);
+        eco.getLogger().info("[副本系统] 已恢复副本 " + instanceId + " 并重建遭遇，刷怪 " + mobs + " 个。");
+    }
+
+    private void abandonUnrecoverable(String instanceId, String reason) {
+        eco.getLogger().severe("[副本系统] ACTIVE 副本无法恢复，执行失败关闭: " + instanceId + " reason=" + reason);
+        endInstance(instanceId, STATUS_ABANDONED, "RECOVERY_FAILED",
+                "§6[副本] §c服务器恢复后无法重建本副本，实例已安全关闭。请联系管理员处理门票补偿。");
+    }
+
+    private static String resultString(ResultSet result, int column) throws SQLException {
+        String value = result.getString(column);
+        return value == null ? "" : value;
+    }
+
+    private void recoverPendingRevives() {
+        executeTicketSql(() -> {
+            List<DungeonReviveStore.Revival> activePending;
+            List<DungeonReviveStore.Revival> refunds;
+            List<DungeonReviveStore.Revival> inactive = new ArrayList<>();
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection == null) return;
+                DungeonReviveStore.recoverUncertainClaims(connection, nowSeconds());
+                DungeonReviveStore.cancelUnclaimedCharges(connection, nowSeconds());
+                activePending = DungeonReviveStore.pending(connection).stream().filter(revival -> {
+                    try {
+                        DungeonReviveStore.Candidate candidate = DungeonReviveStore.candidate(
+                                connection, revival.instanceId(), revival.playerUuid());
+                        if (candidate != null && STATUS_ACTIVE.equals(candidate.instanceStatus())) return true;
+                        inactive.add(revival);
+                    } catch (SQLException failure) {
+                        eco.getLogger().warning("[副本系统] 读取待恢复复活实例状态失败: " + failure.getMessage());
+                    }
+                    return false;
+                }).toList();
+                refunds = DungeonReviveStore.pendingRefunds(connection);
+            }
+            runOnServerThread(() -> {
+                activePending.forEach(this::tryCompletePendingRevive);
+                inactive.forEach(revival -> requestReviveRefund(
+                        revival, DungeonReviveStore.PAID_PENDING, "instance no longer active"));
+                refunds.forEach(revival -> continueReviveRefund(revival, "startup refund recovery"));
+            });
+        }, () -> eco.getLogger().severe("[副本系统] 数据库队列拒绝复活回场恢复"));
+    }
+
+    void resumePendingRevives(String instanceId) {
+        executeTicketSql(() -> {
+            List<DungeonReviveStore.Revival> pending;
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection == null) return;
+                pending = DungeonReviveStore.pending(connection).stream()
+                        .filter(revival -> instanceId.equals(revival.instanceId())).toList();
+            }
+            runOnServerThread(() -> pending.forEach(this::tryCompletePendingRevive));
+        }, () -> eco.getLogger().severe("[副本系统] 数据库队列拒绝实例复活恢复: " + instanceId));
+    }
+
+    private void tryCompletePendingRevive(DungeonReviveStore.Revival revival) {
+        Player player = Bukkit.getPlayer(revival.playerUuid());
+        if (!revival.instanceId().equals(getPlayerActiveInstance(revival.playerUuid()))) return;
+        if (player == null || !player.isOnline() || !preparedWorlds.containsKey(revival.instanceId())) return;
+        if (returnPlayerToInstance(revival.instanceId(), player)) {
+            submitReviveSql(connection -> DungeonReviveStore.completeReturn(connection, revival, nowSeconds()))
+                    .whenComplete((completed, failure) -> runOnServerThread(() -> {
+                        if (failure == null && Boolean.TRUE.equals(completed)) {
+                            player.sendMessage("§a[副本] §f已恢复上次未完成的付费复活回场。");
+                        } else {
+                            eco.getLogger().severe("[副本系统] 已回场但复活完成状态未落库，保留 PAID_PENDING 供恢复: "
+                                    + revival.id());
+                        }
+                    }));
+        }
+    }
+
+    void requestReviveRefund(DungeonReviveStore.Revival revival, String expectedStatus, String reason) {
+        submitReviveSql(connection -> {
+            if (!DungeonReviveStore.prepareRefund(connection, revival, expectedStatus, reason, nowSeconds())) {
+                return false;
+            }
+            return DungeonReviveStore.claimRefund(connection, revival, nowSeconds());
+        }).whenComplete((claimed, failure) -> runOnServerThread(() -> {
+            if (failure != null || !Boolean.TRUE.equals(claimed)) {
+                eco.getLogger().severe("[副本系统] 无法持久化复活退款 claim，未执行 Vault 退款: "
+                        + revival.id() + " reason=" + messageOf(failure));
+                return;
+            }
+            finishClaimedReviveRefund(revival, reason);
+        }));
+    }
+
+    private void continueReviveRefund(DungeonReviveStore.Revival revival, String reason) {
+        submitReviveSql(connection -> DungeonReviveStore.claimRefund(connection, revival, nowSeconds()))
+                .whenComplete((claimed, failure) -> runOnServerThread(() -> {
+                    if (failure == null && Boolean.TRUE.equals(claimed)) {
+                        finishClaimedReviveRefund(revival, reason);
+                    }
+                }));
+    }
+
+    private void finishClaimedReviveRefund(DungeonReviveStore.Revival revival, String reason) {
+        boolean refunded;
+        String detail = reason;
+        try {
+            refunded = revival.costPaid() <= 0 || (eco.vaultHook().isAvailable()
+                    && eco.vaultHook().deposit(Bukkit.getOfflinePlayer(revival.playerUuid()), revival.costPaid()));
+            if (!refunded) detail += "; Vault rejected refund";
+        } catch (Throwable uncertain) {
+            refunded = false;
+            detail += "; refund outcome unknown: " + messageOf(uncertain);
+        }
+        boolean refundResult = refunded;
+        String refundDetail = detail;
+        submitReviveSql(connection -> DungeonReviveStore.finishRefund(
+                connection, revival, refundResult, refundDetail, nowSeconds()))
+                .whenComplete((finished, failure) -> runOnServerThread(() -> {
+                    if (failure != null || !Boolean.TRUE.equals(finished)) {
+                        eco.getLogger().severe("[副本系统] 复活退款结果未能落库，保留 REFUND_CLAIMED 人工复核: "
+                                + revival.id());
+                    }
+                }));
+    }
+
+    private static final class MutableActiveRecovery {
+        private final String instanceId;
+        private final String worldInstanceId;
+        private final String templateId;
+        private final Map<UUID, String> participants = new LinkedHashMap<>();
+
+        private MutableActiveRecovery(String instanceId, String worldInstanceId, String templateId) {
+            this.instanceId = instanceId;
+            this.worldInstanceId = worldInstanceId;
+            this.templateId = templateId;
+        }
+
+        private ActiveRecovery freeze() {
+            return new ActiveRecovery(instanceId, worldInstanceId, templateId, Map.copyOf(participants));
+        }
+    }
+
+    private record ActiveRecovery(String instanceId, String worldInstanceId, String templateId,
+                                  Map<UUID, String> participants) { }
+
+    private void markTicketReview(String instanceId, String error) {
+        executeTicketSql(() -> {
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection != null) DungeonTicketSettlementStore.markReviewRequired(
+                        connection, instanceId, error, nowSeconds());
+            }
+        }, () -> eco.getLogger().severe("[副本系统] 无法写入门票人工核对状态: " + instanceId));
+    }
+
+    private void finishCreateFailure(List<UUID> members, CompletableFuture<String> result, Throwable failure) {
+        runOnServerThread(() -> {
+            releasePlayers(members);
+            if (failure == null) result.complete(null);
+            else result.completeExceptionally(failure);
+        });
+    }
+
+    private void executeTicketSql(SqlTask task, Runnable rejectedCallback) {
+        try {
+            eco.asyncWorkPool().executeDatabase(() -> {
+                try {
+                    task.run();
+                } catch (Throwable failure) {
+                    eco.getLogger().warning("[副本系统] 门票数据库任务失败: " + messageOf(failure));
+                    runOnServerThread(rejectedCallback);
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            runOnServerThread(rejectedCallback);
+        }
+    }
+
+    void runOnServerThread(Runnable action) {
+        if (Bukkit.isPrimaryThread()) action.run();
+        else Bukkit.getScheduler().runTask(eco, action);
+    }
+
+    <T> CompletableFuture<T> submitReviveSql(ReviveSqlTask<T> task) {
+        CompletableFuture<T> result = new CompletableFuture<>();
+        try {
+            eco.asyncWorkPool().executeDatabase(() -> {
+                try (var connection = eco.ksCore().dataStore().getConnection()) {
+                    if (connection == null) throw new SQLException("数据库连接不可用");
+                    result.complete(task.run(connection));
+                } catch (Throwable failure) {
+                    result.completeExceptionally(failure);
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            result.completeExceptionally(rejected);
+        }
+        return result;
+    }
+
+    CompletableFuture<Integer> recordDeathAsync(String instanceId, UUID playerUuid) {
+        return submitReviveSql(connection -> {
+            try (var statement = connection.prepareStatement(
+                    "UPDATE ks_dungeon_participants SET status='DEAD', died_at=? " +
+                            "WHERE instance_id=? AND player_uuid=? AND status='ALIVE' " +
+                            "AND EXISTS (SELECT 1 FROM ks_dungeon_instances i WHERE i.id=? AND i.status='ACTIVE')")) {
+                statement.setLong(1, nowSeconds());
+                statement.setString(2, instanceId);
+                statement.setString(3, playerUuid.toString());
+                statement.setString(4, instanceId);
+                if (statement.executeUpdate() != 1) return -1;
+            }
+            DungeonReviveStore.Candidate candidate = DungeonReviveStore.candidate(connection, instanceId, playerUuid);
+            return candidate == null ? -1 : candidate.reviveCount();
+        });
+    }
+
+    @FunctionalInterface
+    interface ReviveSqlTask<T> {
+        T run(Connection connection) throws Exception;
+    }
+
+    private String settlementServerId() {
+        return eco.ecoDatabase() == null ? "local" : eco.ecoDatabase().serverId();
+    }
+
+    private String settlementInstanceId() {
+        return eco.ecoDatabase() == null ? localSettlementInstanceId : eco.ecoDatabase().instanceId();
+    }
+
+    private static long nowSeconds() {
+        return System.currentTimeMillis() / 1000;
+    }
+
+    private static String messageOf(Throwable failure) {
+        return failure == null || failure.getMessage() == null ? "未知错误" : failure.getMessage();
+    }
+
+    @FunctionalInterface
+    private interface SqlTask {
+        void run() throws Exception;
+    }
+
+    private int spawnDungeonMarkers(String instanceId, PreparedInstance prepared,
+                                    int defaultLevel, boolean spawnMobs) {
+        int spawned = 0;
+        for (InstanceMarker marker : prepared.markers()) {
+            String mobSpec;
+            boolean boss;
+            if ("[mm]".equalsIgnoreCase(marker.tag())) {
+                mobSpec = marker.argument(1);
+                boss = "boss".equalsIgnoreCase(marker.argument(2));
+            } else if ("[marker]".equalsIgnoreCase(marker.tag())
+                    && "mm".equalsIgnoreCase(marker.argument(1))) {
+                mobSpec = marker.argument(2);
+                boss = "boss".equalsIgnoreCase(marker.argument(3));
+            } else {
+                continue;
+            }
+            if (!spawnMobs || mobSpec.isBlank()) continue;
+            String mobName = mobSpec;
+            int level = defaultLevel;
+            int colon = mobSpec.lastIndexOf(':');
+            if (colon > 0) {
+                mobName = mobSpec.substring(0, colon).trim();
+                try {
+                    level = Integer.parseInt(mobSpec.substring(colon + 1).trim());
+                } catch (NumberFormatException ignored) { }
+            }
+            boolean completionTarget = boss || MythicSpawner.isCompletionController(mobName);
+            UUID spawnedUuid = MythicSpawner.spawn(eco, mobName,
+                    marker.point().toLocation(prepared.world()), level);
+            if (spawnedUuid != null) {
+                spawned++;
+                if (completionTarget) {
+                    instanceBosses.computeIfAbsent(instanceId, ignored -> ConcurrentHashMap.newKeySet())
+                            .add(spawnedUuid);
+                }
+            } else if (completionTarget) {
+                eco.getLogger().warning("[副本系统] 通关检测目标刷怪失败: " + mobName + " instance=" + instanceId);
+            }
+        }
+        return spawned;
+    }
+
+    private static Throwable unwrap(Throwable failure) {
+        Throwable current = failure;
+        while (current instanceof java.util.concurrent.CompletionException && current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
     }
 
     public boolean leaveInstance(String instanceId, UUID playerUuid) {
@@ -595,6 +1225,17 @@ public final class DungeonInstanceManager {
                             player.teleport(mainWorld.getSpawnLocation());
                             player.sendMessage("§6[副本] §a你已离开副本 " + instanceId);
                         }
+                    }
+                    int remaining = 0;
+                    try (var count = conn.prepareStatement(
+                            "SELECT COUNT(*) FROM ks_dungeon_participants WHERE instance_id=? AND status<>'LEFT'")) {
+                        count.setString(1, instanceId);
+                        try (var rs = count.executeQuery()) {
+                            if (rs.next()) remaining = rs.getInt(1);
+                        }
+                    }
+                    if (remaining == 0) {
+                        endInstance(instanceId, STATUS_ABANDONED, "PARTY_LEFT", null);
                     }
                 }
                 return ok;
@@ -624,110 +1265,78 @@ public final class DungeonInstanceManager {
 
     /**
      * 通用结束流程（强制结束/通关/超时三处共用）：标记终态 → 踢出并传送在线参与者回主世界 →
-     * 清空副本内房产 → 清场（杀实体+清地形）→ 标记网格 CLEANING → 调度释放。
+     * 清空副本内房产 → 请求 ks-InstanceWorld 幂等清场并释放。
      * @param finalStatus COMPLETED 或 ABANDONED
      */
     private boolean endInstance(String instanceId, String finalStatus, String eventType, String kickMessage) {
+        final DungeonLifecycleStore.EndPlan plan;
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return false;
-            String gridId;
-            String templateId;
-            String rewardConfig = "";
-            try (var ps = conn.prepareStatement(
-                    "UPDATE ks_dungeon_instances SET status=? WHERE id=? AND status IN ('WAITING','ACTIVE')")) {
-                ps.setString(1, finalStatus);
-                ps.setString(2, instanceId);
-                if (ps.executeUpdate() == 0) return false;
-            }
-            try (var ps = conn.prepareStatement("SELECT grid_id, template_id FROM ks_dungeon_instances WHERE id=?")) {
-                ps.setString(1, instanceId);
-                try (var rs = ps.executeQuery()) {
-                    if (!rs.next()) return false;
-                    gridId = rs.getString(1);
-                    templateId = rs.getString(2);
-                }
-            }
-            if (STATUS_COMPLETED.equals(finalStatus)) {
-                try (var ps = conn.prepareStatement("SELECT reward_config FROM ks_dungeon_templates WHERE id=?")) {
-                    ps.setString(1, templateId);
-                    try (var rs = ps.executeQuery()) {
-                        if (rs.next()) rewardConfig = readRewardConfig(rs);
-                    }
-                }
-            }
-            // 结束前先拿到仍在副本里的参与者名单（用于传送+提示），再统一标 LEFT
-            List<String> remaining = new ArrayList<>();
-            try (var ps = conn.prepareStatement(
-                    "SELECT player_uuid FROM ks_dungeon_participants WHERE instance_id=? AND status<>'LEFT'")) {
-                ps.setString(1, instanceId);
-                try (var rs = ps.executeQuery()) {
-                    while (rs.next()) remaining.add(rs.getString(1));
-                }
-            }
-            List<UUID> rewardParticipants = new ArrayList<>();
-            if (STATUS_COMPLETED.equals(finalStatus)) {
-                try (var ps = conn.prepareStatement(
-                        "SELECT player_uuid FROM ks_dungeon_participants WHERE instance_id=?")) {
-                    ps.setString(1, instanceId);
-                    try (var rs = ps.executeQuery()) {
-                        while (rs.next()) {
-                            try {
-                                rewardParticipants.add(UUID.fromString(rs.getString(1)));
-                            } catch (IllegalArgumentException ignored) {}
-                        }
-                    }
-                }
-            }
-            if (STATUS_COMPLETED.equals(finalStatus) && rpgBridge != null && !rewardParticipants.isEmpty()) {
-                rpgBridge.grantCompletionRewards(instanceId, templateId, rewardConfig, rewardParticipants,
-                        (uuid, detail) -> logEvent(instanceId, "REWARD", uuid.toString(), detail));
-            }
-            try (var ps = conn.prepareStatement(
-                    "UPDATE ks_dungeon_participants SET status='LEFT' WHERE instance_id=? AND status<>'LEFT'")) {
-                ps.setString(1, instanceId);
-                ps.executeUpdate();
-            }
-            logEvent(instanceId, eventType, "", "");
-            // 清理副本内房产（实例生命周期清理；ks_re_plots 由 ks-Eco-RealEstate 拥有，此处仅删本实例 instance_id 行）
-            int deleted = 0;
-            try (var ps = conn.prepareStatement("DELETE FROM ks_re_plots WHERE instance_id=?")) {
-                ps.setString(1, instanceId);
-                deleted = ps.executeUpdate();
-            } catch (SQLException ignore) { /* 列不存在/房产插件未装：忽略 */ }
-            final int plotsDeleted = deleted;
-            // 清出内存映射
-            playerToInstance.values().removeIf(v -> v.equals(instanceId));
-            instanceSpawnOverride.remove(instanceId);
-            instancePasteCenter.remove(instanceId);
-            instanceBoss.remove(instanceId);
-            // 把还在副本里的在线玩家传送回主世界（此前漏了这一步，结束时玩家会被晾在即将清空的场地里）
-            World mainWorld = Bukkit.getWorld("world");
-            Bukkit.getScheduler().runTask(eco, () -> {
-                for (String uuidStr : remaining) {
-                    try {
-                        Player pl = Bukkit.getPlayer(UUID.fromString(uuidStr));
-                        if (pl != null && pl.isOnline()) {
-                            if (mainWorld != null) pl.teleport(mainWorld.getSpawnLocation());
-                            if (kickMessage != null) pl.sendMessage(kickMessage);
-                        }
-                    } catch (IllegalArgumentException ignored) {}
-                }
-            });
-            // 清场：杀实体 + 清地形（异步），回收内存
-            cleanupArena(gridId);
-            // 标记网格 CLEANING
-            gridAllocator.markCleaning(gridId);
-            // 调度释放网格
-            long delayTicks = configManager.snapshot().cleanTimeoutSeconds * 20L;
-            Bukkit.getScheduler().runTaskLater(eco, () -> {
-                gridAllocator.release(gridId);
-                eco.getLogger().info("[副本系统] 副本 " + instanceId + " 已清理（房产 " + plotsDeleted + " 个）");
-            }, delayTicks);
-            return true;
-        } catch (SQLException e) {
+            Optional<DungeonLifecycleStore.EndPlan> result =
+                    DungeonLifecycleStore.endInstance(conn, instanceId, finalStatus);
+            if (result.isEmpty()) return false;
+            plan = result.get();
+        } catch (SQLException | RuntimeException e) {
             eco.getLogger().warning("[副本系统] 结束副本失败: " + e.getMessage());
+            return false;
         }
-        return false;
+
+        if (plan.transitioned()) {
+            logEvent(instanceId, eventType, "", "");
+        }
+        if (STATUS_COMPLETED.equals(finalStatus) && plan.rewardsPending()) {
+            if (rpgBridge == null) {
+                eco.getLogger().severe("[副本系统] RPG 奖励桥不可用，保持 PENDING: " + instanceId);
+            } else if (plan.rewardParticipants().isEmpty()) {
+                eco.getLogger().severe("[副本系统] 通关奖励 roster 缺失，保持 PENDING 人工核对: " + instanceId);
+            } else {
+                scheduleCompletionRewards(instanceId, plan);
+            }
+        }
+
+        playerToInstance.values().removeIf(instanceId::equals);
+        instanceBosses.remove(instanceId);
+        preparedWorlds.remove(instanceId);
+        String mappedWorldInstanceId = worldInstanceIds.remove(instanceId);
+        String releaseId = mappedWorldInstanceId == null || mappedWorldInstanceId.isBlank()
+                ? plan.worldInstanceId() : mappedWorldInstanceId;
+        ReleaseCause releaseCause = switch (eventType) {
+            case "BOSS_KILLED" -> ReleaseCause.COMPLETED;
+            case "TIMEOUT" -> ReleaseCause.TIMEOUT;
+            case "FORCE_END" -> ReleaseCause.ABANDONED;
+            case "PLUGIN_DISABLE" -> ReleaseCause.PLUGIN_DISABLE;
+            default -> ReleaseCause.EXTERNAL;
+        };
+        Runnable evacuateAndRelease = () -> {
+            World mainWorld = Bukkit.getWorld("world");
+            for (String uuidStr : plan.remainingParticipants()) {
+                try {
+                    Player player = Bukkit.getPlayer(UUID.fromString(uuidStr));
+                    if (player != null && player.isOnline()) {
+                        if (mainWorld != null) player.teleport(mainWorld.getSpawnLocation());
+                        if (kickMessage != null) player.sendMessage(kickMessage);
+                    }
+                } catch (IllegalArgumentException ignored) {
+                    // Ignore malformed legacy participant rows.
+                }
+            }
+            if (releaseId == null || releaseId.isBlank() || "PENDING".equals(releaseId)) return;
+            try {
+                instanceWorld.release(releaseId, releaseCause).whenComplete((result, failure) -> {
+                    if (failure != null) {
+                        eco.getLogger().warning("[副本系统] 副本世界释放失败 " + instanceId + ": " + failure.getMessage());
+                    } else {
+                        eco.getLogger().info("[副本系统] 副本 " + instanceId
+                                + " 已清理（房产 " + plan.plotsDeleted() + " 个）");
+                    }
+                });
+            } catch (Throwable failure) {
+                eco.getLogger().warning("[副本系统] 无法请求释放副本世界 " + instanceId + ": " + failure.getMessage());
+            }
+        };
+        if (Bukkit.isPrimaryThread()) evacuateAndRelease.run();
+        else Bukkit.getScheduler().runTask(eco, evacuateAndRelease);
+        return true;
     }
 
     // ================================================================
@@ -752,15 +1361,21 @@ public final class DungeonInstanceManager {
 
     /** 逐个检查已记录 boss 的副本，boss 死亡（MM 已不再追踪该实体）则自动通关。 */
     private void checkBossDeaths() {
-        if (instanceBoss.isEmpty()) return;
-        for (var entry : new ArrayList<>(instanceBoss.entrySet())) {
+        if (instanceBosses.isEmpty()) return;
+        for (var entry : new ArrayList<>(instanceBosses.entrySet())) {
             String instanceId = entry.getKey();
-            UUID bossUuid = entry.getValue();
-            if (!MythicSpawner.isAlive(bossUuid)) {
-                eco.getLogger().info("[副本系统] 副本 " + instanceId + " 的 boss 已死亡，自动判定通关。");
-                completeInstance(instanceId);
+            Set<UUID> bosses = entry.getValue();
+            if (allRegisteredBossesDead(bosses, MythicSpawner::isAlive)
+                    && instanceBosses.remove(instanceId, bosses)) {
+                eco.getLogger().info("[副本系统] 副本 " + instanceId + " 的全部 boss 已死亡，自动判定通关。");
+                if (!completeInstance(instanceId)) instanceBosses.putIfAbsent(instanceId, bosses);
             }
         }
+    }
+
+    static boolean allRegisteredBossesDead(Set<UUID> bosses,
+                                           java.util.function.Predicate<UUID> aliveCheck) {
+        return bosses != null && !bosses.isEmpty() && bosses.stream().noneMatch(aliveCheck);
     }
 
     /** 查所有未结束但已超过 expires_at 的实例，逐个自动结束（标 ABANDONED）。 */
@@ -802,7 +1417,7 @@ public final class DungeonInstanceManager {
                         Map<String, Object> m = new LinkedHashMap<>();
                         m.put("id", rs.getString("id"));
                         m.put("templateId", rs.getString("template_id"));
-                        m.put("gridId", rs.getString("grid_id"));
+                        m.put("gridId", readInstanceWorldId(rs));
                         m.put("status", rs.getString("status"));
                         m.put("startedAt", rs.getLong("started_at"));
                         m.put("expiresAt", rs.getLong("expires_at"));
@@ -829,7 +1444,7 @@ public final class DungeonInstanceManager {
                         Map<String, Object> m = new LinkedHashMap<>();
                         m.put("id", rs.getString("id"));
                         m.put("templateId", rs.getString("template_id"));
-                        m.put("gridId", rs.getString("grid_id"));
+                        m.put("gridId", readInstanceWorldId(rs));
                         m.put("status", rs.getString("status"));
                         m.put("startedAt", rs.getLong("started_at"));
                         m.put("expiresAt", rs.getLong("expires_at"));
@@ -843,6 +1458,11 @@ public final class DungeonInstanceManager {
             eco.getLogger().warning("[副本系统] 查实例失败: " + e.getMessage());
         }
         return null;
+    }
+
+    private static String readInstanceWorldId(ResultSet rs) throws SQLException {
+        String value = rs.getString("instance_world_id");
+        return value == null || value.isBlank() ? rs.getString("grid_id") : value;
     }
 
     /**
@@ -877,49 +1497,298 @@ public final class DungeonInstanceManager {
         return playerToInstance.get(playerUuid.toString());
     }
 
-    public void recordDeath(String instanceId, UUID playerUuid) {
-        try (var conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return;
-            try (var ps = conn.prepareStatement(
-                    "UPDATE ks_dungeon_participants SET status='DEAD', died_at=? " +
-                    "WHERE instance_id=? AND player_uuid=?")) {
-                ps.setLong(1, System.currentTimeMillis() / 1000);
-                ps.setString(2, instanceId);
-                ps.setString(3, playerUuid.toString());
-                ps.executeUpdate();
-            }
-            logEvent(instanceId, "DEATH", playerUuid.toString(), "");
-        } catch (SQLException ignored) {}
+    private void scheduleCompletionRewards(String instanceId, DungeonLifecycleStore.EndPlan plan) {
+        executeRewardSql(() -> prepareCompletionRewards(instanceId, plan),
+                () -> eco.getLogger().severe("[副本系统] 奖励数据库队列拒绝任务，需人工核对: " + instanceId));
     }
 
-    public void recordRevive(String instanceId, UUID playerUuid, int reviveCount,
-                              double costPaid, double formulaCost) {
-        try (var conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return;
-            String revId = "DR" + UUID.randomUUID().toString().substring(0, 8);
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_dungeon_revivals (id, instance_id, player_uuid, revive_count, " +
-                    "cost_paid, formula_cost, revived_at) VALUES (?,?,?,?,?,?,?)")) {
-                ps.setString(1, revId);
-                ps.setString(2, instanceId);
-                ps.setString(3, playerUuid.toString());
-                ps.setInt(4, reviveCount);
-                ps.setDouble(5, costPaid);
-                ps.setDouble(6, formulaCost);
-                ps.setLong(7, System.currentTimeMillis() / 1000);
-                ps.executeUpdate();
+    private void prepareCompletionRewards(String instanceId, DungeonLifecycleStore.EndPlan plan) throws Exception {
+        List<DungeonRpgBridge.RewardGrant> definitions = rpgBridge.parseRewardGrants(plan.rewardConfig());
+        if (definitions.isEmpty()) {
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection != null) DungeonLifecycleStore.markRewardsGranted(connection, instanceId);
             }
-            try (var ps = conn.prepareStatement(
-                    "UPDATE ks_dungeon_participants SET status='ALIVE', revive_count=?, died_at=0 " +
-                    "WHERE instance_id=? AND player_uuid=?")) {
-                ps.setInt(1, reviveCount);
-                ps.setString(2, instanceId);
-                ps.setString(3, playerUuid.toString());
-                ps.executeUpdate();
+            return;
+        }
+        Map<String, DungeonRpgBridge.RewardGrant> definitionByKey = new LinkedHashMap<>();
+        for (DungeonRpgBridge.RewardGrant definition : definitions) {
+            if (definitionByKey.putIfAbsent(definition.rewardKey(), definition) != null) {
+                throw new IllegalArgumentException("Duplicate reward key: " + definition.rewardKey());
             }
-            logEvent(instanceId, "REVIVE", playerUuid.toString(),
-                    "count=" + reviveCount + " cost=" + costPaid);
-        } catch (SQLException ignored) {}
+        }
+
+        List<DungeonRewardGrantStore.Grant> grants;
+        List<ClaimedReward> claimed = new ArrayList<>();
+        try (var connection = eco.ksCore().dataStore().getConnection()) {
+            if (connection == null) throw new SQLException("数据库连接不可用");
+            grants = DungeonRewardGrantStore.listForInstance(connection, instanceId);
+            if (grants.isEmpty()) {
+                boolean previousAutoCommit = connection.getAutoCommit();
+                connection.setAutoCommit(false);
+                try {
+                    long now = nowSeconds();
+                    for (UUID playerUuid : plan.rewardParticipants()) {
+                        for (DungeonRpgBridge.RewardGrant definition : definitions) {
+                            DungeonRewardGrantStore.ensure(connection, instanceId, playerUuid,
+                                    definition.rewardKey(), now);
+                        }
+                    }
+                    connection.commit();
+                } catch (SQLException | RuntimeException failure) {
+                    connection.rollback();
+                    throw failure;
+                } finally {
+                    connection.setAutoCommit(previousAutoCommit);
+                }
+                grants = DungeonRewardGrantStore.listForInstance(connection, instanceId);
+            }
+
+            if (!rewardManifestMatches(plan.rewardParticipants(), definitionByKey.keySet(), grants)) {
+                eco.getLogger().severe("[副本系统] 奖励清单与已持久化账目不一致，保持 PENDING 人工核对: "
+                        + instanceId);
+                return;
+            }
+
+            long now = nowSeconds();
+            for (DungeonRewardGrantStore.Grant grant : grants) {
+                if (!DungeonRewardGrantStore.STATUS_NONE.equals(grant.status())
+                        && !DungeonRewardGrantStore.STATUS_RETRY_REQUIRED.equals(grant.status())) continue;
+                if (grant.attemptCount() >= MAX_AUTO_REWARD_ATTEMPTS) continue;
+                DungeonRpgBridge.RewardGrant definition = definitionByKey.get(grant.rewardKey());
+                if (definition == null) continue;
+                if (DungeonRewardGrantStore.claim(connection, instanceId, grant.playerUuid(),
+                        grant.rewardKey(), now) == DungeonRewardGrantStore.ClaimResult.CLAIMED) {
+                    claimed.add(new ClaimedReward(grant.playerUuid(), definition));
+                }
+            }
+
+            if (DungeonRewardGrantStore.allGranted(connection, instanceId)) {
+                if (DungeonLifecycleStore.markRewardsGranted(connection, instanceId)) {
+                    notifyRewardCompletion(plan.rewardParticipants());
+                }
+                return;
+            }
+        }
+
+        if (claimed.isEmpty()) {
+            long pending = grants.stream().filter(grant ->
+                    DungeonRewardGrantStore.STATUS_PENDING.equals(grant.status())).count();
+            long exhausted = grants.stream().filter(grant ->
+                    DungeonRewardGrantStore.STATUS_RETRY_REQUIRED.equals(grant.status())
+                            && grant.attemptCount() >= MAX_AUTO_REWARD_ATTEMPTS).count();
+            if (pending > 0 || exhausted > 0) {
+                eco.getLogger().severe("[副本系统] 奖励保持待核对状态 instance=" + instanceId
+                        + " pending=" + pending + " retryExhausted=" + exhausted);
+            }
+            return;
+        }
+
+        List<ClaimedReward> immutableClaims = List.copyOf(claimed);
+        runOnServerThread(() -> deliverClaimedRewards(instanceId, plan, immutableClaims));
+    }
+
+    private void deliverClaimedRewards(String instanceId, DungeonLifecycleStore.EndPlan plan,
+                                       List<ClaimedReward> claimed) {
+        List<RewardDeliveryResult> results = new ArrayList<>(claimed.size());
+        for (ClaimedReward reward : claimed) {
+            DungeonRpgBridge.Delivery delivery;
+            try {
+                delivery = rpgBridge.deliverReward(instanceId, plan.templateId(),
+                        reward.playerUuid(), reward.definition());
+            } catch (Throwable uncertain) {
+                delivery = new DungeonRpgBridge.Delivery(DungeonRpgBridge.DeliveryOutcome.REVIEW_REQUIRED,
+                        reward.definition().rewardKey() + " outcome_unknown=" + messageOf(uncertain));
+            }
+            results.add(new RewardDeliveryResult(reward.playerUuid(), reward.definition(), delivery));
+        }
+        List<RewardDeliveryResult> immutableResults = List.copyOf(results);
+        executeRewardSql(() -> persistRewardDeliveries(instanceId, plan, immutableResults),
+                () -> eco.getLogger().severe("[副本系统] 奖励结果无法落库，PENDING 需人工核对: " + instanceId));
+    }
+
+    private void persistRewardDeliveries(String instanceId, DungeonLifecycleStore.EndPlan plan,
+                                         List<RewardDeliveryResult> results) throws Exception {
+        boolean retry = false;
+        try (var connection = eco.ksCore().dataStore().getConnection()) {
+            if (connection == null) throw new SQLException("数据库连接不可用");
+            long now = nowSeconds();
+            for (RewardDeliveryResult result : results) {
+                switch (result.delivery().outcome()) {
+                    case DELIVERED, SKIPPED -> {
+                        if (DungeonRewardGrantStore.complete(connection, instanceId, result.playerUuid(),
+                                result.definition().rewardKey(), now)) {
+                            insertRewardLog(connection, instanceId, result.playerUuid(), result.delivery().detail(), now);
+                        }
+                    }
+                    case RETRY_REQUIRED -> {
+                        if (DungeonRewardGrantStore.fail(connection, instanceId, result.playerUuid(),
+                                result.definition().rewardKey(), result.delivery().detail(), now)) retry = true;
+                    }
+                    case REVIEW_REQUIRED -> {
+                        DungeonRewardGrantStore.markReviewRequired(connection, instanceId, result.playerUuid(),
+                                result.definition().rewardKey(), result.delivery().detail(), now);
+                        eco.getLogger().severe(
+                                "[副本系统] 奖励外部结果未知，保持 PENDING 人工核对 instance=" + instanceId
+                                        + " player=" + result.playerUuid() + " detail=" + result.delivery().detail());
+                    }
+                }
+            }
+
+            if (DungeonRewardGrantStore.allGranted(connection, instanceId)) {
+                if (DungeonLifecycleStore.markRewardsGranted(connection, instanceId)) {
+                    notifyRewardCompletion(plan.rewardParticipants());
+                }
+                return;
+            }
+
+            retry = retry && DungeonRewardGrantStore.listClaimable(connection, instanceId).stream()
+                    .anyMatch(grant -> grant.attemptCount() < MAX_AUTO_REWARD_ATTEMPTS);
+        }
+
+        if (retry) {
+            runOnServerThread(() -> Bukkit.getScheduler().runTaskLater(eco,
+                    () -> scheduleCompletionRewards(instanceId, plan), 20L));
+        }
+    }
+
+    private static boolean rewardManifestMatches(List<UUID> players, Set<String> rewardKeys,
+                                                 List<DungeonRewardGrantStore.Grant> grants) {
+        Set<String> expected = new HashSet<>();
+        for (UUID player : players) {
+            for (String rewardKey : rewardKeys) expected.add(player + "|" + rewardKey);
+        }
+        Set<String> actual = new HashSet<>();
+        for (DungeonRewardGrantStore.Grant grant : grants) {
+            actual.add(grant.playerUuid() + "|" + grant.rewardKey());
+        }
+        return expected.equals(actual);
+    }
+
+    private void notifyRewardCompletion(List<UUID> participants) {
+        runOnServerThread(() -> {
+            for (UUID participant : participants) {
+                Player player = Bukkit.getPlayer(participant);
+                if (player != null && player.isOnline()) player.sendMessage("§6[副本] §a通关奖励已发放。");
+            }
+        });
+    }
+
+    private static void insertRewardLog(Connection connection, String instanceId, UUID playerUuid,
+                                        String detail, long now) throws SQLException {
+        try (var statement = connection.prepareStatement(
+                "INSERT INTO ks_dungeon_log (instance_id, event_type, player_uuid, detail, created_at) " +
+                        "VALUES (?,?,?,?,?)")) {
+            statement.setString(1, instanceId);
+            statement.setString(2, "REWARD");
+            statement.setString(3, playerUuid.toString());
+            statement.setString(4, detail == null ? "" : detail);
+            statement.setLong(5, now);
+            statement.executeUpdate();
+        }
+    }
+
+    private void recoverRewardGrants() {
+        executeRewardSql(() -> {
+            List<String> instances = new ArrayList<>();
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection == null) return;
+                try (var statement = connection.prepareStatement(
+                        "SELECT id FROM ks_dungeon_instances WHERE status=? AND reward_status=?")) {
+                    statement.setString(1, STATUS_COMPLETED);
+                    statement.setString(2, DungeonLifecycleStore.REWARD_PENDING);
+                    try (var rows = statement.executeQuery()) {
+                        while (rows.next()) instances.add(rows.getString(1));
+                    }
+                }
+            }
+            for (String instanceId : instances) {
+                try (var connection = eco.ksCore().dataStore().getConnection()) {
+                    if (connection == null) continue;
+                    DungeonLifecycleStore.endInstance(connection, instanceId, STATUS_COMPLETED)
+                            .filter(DungeonLifecycleStore.EndPlan::rewardsPending)
+                            .ifPresent(plan -> scheduleCompletionRewards(instanceId, plan));
+                }
+            }
+        }, () -> eco.getLogger().severe("[副本系统] 奖励恢复任务被数据库队列拒绝"));
+    }
+
+    private void executeRewardSql(SqlTask task, Runnable rejectedCallback) {
+        try {
+            eco.asyncWorkPool().executeDatabase(() -> {
+                try {
+                    task.run();
+                } catch (Throwable failure) {
+                    eco.getLogger().warning("[副本系统] 奖励数据库任务失败: " + messageOf(failure));
+                    runOnServerThread(rejectedCallback);
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            runOnServerThread(rejectedCallback);
+        }
+    }
+
+    private record ClaimedReward(UUID playerUuid, DungeonRpgBridge.RewardGrant definition) { }
+
+    private record RewardDeliveryResult(UUID playerUuid, DungeonRpgBridge.RewardGrant definition,
+                                        DungeonRpgBridge.Delivery delivery) { }
+    public boolean returnPlayerToInstance(String instanceId, Player player) {
+        if (!Bukkit.isPrimaryThread() || player == null || !player.isOnline()) return false;
+        PreparedInstance prepared = preparedWorlds.get(instanceId);
+        if (prepared == null || prepared.world() == null || prepared.spawn() == null) return false;
+        Location destination = prepared.spawn().toLocation(prepared.world());
+        if (!player.teleport(destination)) return false;
+        player.setGameMode(GameMode.SURVIVAL);
+        var maxHealth = player.getAttribute(Attribute.MAX_HEALTH);
+        if (maxHealth != null) player.setHealth(Math.max(1.0, maxHealth.getValue()));
+        player.setFoodLevel(20);
+        player.setSaturation(5.0f);
+        player.setFireTicks(0);
+        player.setFallDistance(0);
+        player.setNoDamageTicks(40);
+        return true;
+    }
+
+    public boolean isInstanceReady(String instanceId) {
+        PreparedInstance prepared = preparedWorlds.get(instanceId);
+        return prepared != null && prepared.world() != null && prepared.spawn() != null;
+    }
+
+    public void recoverPlayerOnJoin(Player player) {
+        if (player == null) return;
+        retryDeferredRewards(player.getUniqueId());
+        String instanceId = getPlayerActiveInstance(player.getUniqueId());
+        if (instanceId == null) return;
+        submitReviveSql(connection -> DungeonReviveStore.candidate(
+                connection, instanceId, player.getUniqueId())).whenComplete((candidate, failure) ->
+                runOnServerThread(() -> {
+                    if (failure != null || candidate == null
+                            || !STATUS_ACTIVE.equals(candidate.instanceStatus()) || !player.isOnline()) return;
+                    if ("ALIVE".equals(candidate.participantStatus())) {
+                        returnPlayerToInstance(instanceId, player);
+                    } else if ("DEAD".equals(candidate.participantStatus())) {
+                        player.sendMessage("§6[副本] §c你仍处于阵亡状态；使用 /dungeon revive 付费回场。");
+                    } else if ("REVIVE_PENDING".equals(candidate.participantStatus())) {
+                        resumePendingRevives(instanceId);
+                    }
+                }));
+    }
+
+    private void retryDeferredRewards(UUID playerUuid) {
+        executeRewardSql(() -> {
+            List<String> instances;
+            try (var connection = eco.ksCore().dataStore().getConnection()) {
+                if (connection == null) return;
+                instances = DungeonRewardGrantStore.rearmOfflineDeliveries(connection, playerUuid, nowSeconds());
+            }
+            for (String instanceId : instances) {
+                try (var connection = eco.ksCore().dataStore().getConnection()) {
+                    if (connection == null) continue;
+                    DungeonLifecycleStore.endInstance(connection, instanceId, STATUS_COMPLETED)
+                            .filter(DungeonLifecycleStore.EndPlan::rewardsPending)
+                            .ifPresent(plan -> scheduleCompletionRewards(instanceId, plan));
+                }
+            }
+        }, () -> eco.getLogger().warning("[副本系统] 玩家登录奖励补发任务被拒绝: " + playerUuid));
     }
 
     public List<Map<String, Object>> listLogs(String instanceId, int limit) {
@@ -973,253 +1842,44 @@ public final class DungeonInstanceManager {
         return v == null ? 0 : ((Number) v).intValue();
     }
 
-    // ================================================================
-    // 地图：FAWE 贴 schematic + 告示牌标记刷怪 + 清场
-    // ================================================================
-
-    /**
-     * 在传送前准备地图（主线程入口）。模板配了 schematic 且装了 FAWE 时：
-     * 异步先清画布→贴图，回主线程扫描 [mm]/[spawn] 告示牌标记（刷怪+定出生点），再执行 activate。
-     * 无图 / 无 FAWE / 找不到文件 → 直接 activate（保持纯虚空行为）。
-     */
-    private void prepareMapAndActivate(String instanceId, String templateId, Runnable activate) {
-        Map<String, Object> tpl = getTemplate(templateId);
-        String schem = tpl == null ? null : (String) tpl.get("schematic");
-        Map<String, Object> grid = getGridByInstance(instanceId);
-        DungeonConfigManager.ConfigSnapshot cfg = configManager.snapshot();
-
-        if (grid == null || schem == null || schem.isBlank()) { activate.run(); return; }
-        if (!SchematicService.isAvailable()) {
-            eco.getLogger().warning("[副本系统] 模板配置了地图但服务器未装 FastAsyncWorldEdit，跳过贴图: " + schem);
-            activate.run();
-            return;
-        }
-        final World world = Bukkit.getWorld((String) grid.get("world"));
-        if (world == null) { activate.run(); return; }
-        final File file = SchematicService.resolveFile(eco.getDataFolder(), schem);
-        if (file == null) {
-            eco.getLogger().warning("[副本系统] 找不到 schematic 文件: " + schem
-                    + "（放到 plugins/ks-Eco/dungeon_schematics/ 或 FAWE schematics 目录），跳过贴图");
-            activate.run();
-            return;
-        }
-
-        final int cx = ((Number) grid.get("centerX")).intValue();
-        final int cz = ((Number) grid.get("centerZ")).intValue();
-        final int baseY = cfg.mapBaseY;
-        final int radius = cfg.mapArenaRadius;
-        final boolean spawnMobs = cfg.mapSpawnMobs;
-        final int level = tpl.get("monsterLevel") == null ? 10 : ((Number) tpl.get("monsterLevel")).intValue();
-
-        Bukkit.getScheduler().runTaskAsynchronously(eco, () -> {
-            int[] yRange = arenaYRange(world, baseY);
-            // 先清画布：防止复用网格时上一副本地形残留
-            SchematicService.clearRegion(eco, world, cx - radius, yRange[0], cz - radius,
-                    cx + radius, yRange[1], cz + radius);
-            int[] box = SchematicService.paste(eco, world, file, cx, baseY, cz);
-            Bukkit.getScheduler().runTask(eco, () -> {
-                if (box != null) {
-                    // 包围盒几何中心做兜底出生点（远比网格角落可靠：角落大概率落在结构外的空气里）
-                    int midX = (box[0] + box[3]) / 2;
-                    int midZ = (box[2] + box[5]) / 2;
-                    int groundY = world.getHighestBlockYAt(midX, midZ);
-                    if (groundY <= world.getMinHeight()) groundY = box[1]; // 中心列仍无地面则退回贴图最低层
-                    instancePasteCenter.put(instanceId, new Location(world, midX + 0.5, groundY + 1.0, midZ + 0.5));
-                    int mobs = scanMarkers(instanceId, world, box, level, spawnMobs);
-                    logEvent(instanceId, "MAP_PASTED", "", "schem=" + schem + " mobs=" + mobs);
-                    eco.getLogger().info("[副本系统] 副本 " + instanceId + " 贴图 " + schem
-                            + " 完成（包围盒 " + box[0] + "," + box[1] + "," + box[2] + " ~ "
-                            + box[3] + "," + box[4] + "," + box[5] + "），刷怪 " + mobs + " 只");
-                } else {
-                    eco.getLogger().warning("[副本系统] 副本 " + instanceId + " 贴图失败: " + schem);
-                }
-                activate.run();
-            });
-        });
-    }
-
-    /**
-     * 扫描贴图区域内的告示牌标记（主线程）。
-     *   第1行 [mm]   第2行 怪物名:等级  → spawnMythicMob，然后清除该牌
-     *   第1行 [spawn]                    → 记为玩家出生点覆盖，然后清除该牌
-     * @return 成功刷出的怪物数
-     */
-    private int scanMarkers(String instanceId, World world, int[] box, int defaultLevel, boolean spawnMobs) {
-        int minX = box[0], minY = box[1], minZ = box[2], maxX = box[3], maxY = box[4], maxZ = box[5];
-        long volume = (long) (maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
-        if (volume > 12_000_000L) {
-            eco.getLogger().warning("[副本系统] schematic 体积较大(" + volume + " 方块)，扫描刷怪点可能有短暂卡顿: " + instanceId);
-        }
-        int mobs = 0;
-        int signsSeen = 0;
-        for (int x = minX; x <= maxX; x++) {
-            for (int y = minY; y <= maxY; y++) {
-                for (int z = minZ; z <= maxZ; z++) {
-                    Block b = world.getBlockAt(x, y, z);
-                    // 廉价过滤：仅对告示牌方块取 BlockState
-                    if (!b.getType().name().endsWith("_SIGN")) continue;
-                    if (!(b.getState() instanceof Sign sign)) continue;
-                    signsSeen++;
-                    String[] lines = sign.getLines();
-                    String tag = stripJsonQuotes(lines.length > 0 ? lines[0] : "").toLowerCase(Locale.ROOT);
-                    String arg = stripJsonQuotes(lines.length > 1 ? lines[1] : "");
-                    boolean isBoss = lines.length > 2 && "boss".equalsIgnoreCase(stripJsonQuotes(lines[2]).trim());
-                    eco.getLogger().info("[副本系统] 扫描到告示牌 @" + x + "," + y + "," + z
-                            + " tag=\"" + tag + "\" arg=\"" + arg + "\"" + (isBoss ? " [BOSS]" : ""));
-                    Location at = new Location(world, x + 0.5, y, z + 0.5);
-                    if (tag.equals("[mm]")) {
-                        if (spawnMobs && !arg.isEmpty()) {
-                            String mobName = arg;
-                            int level = defaultLevel;
-                            int colon = arg.lastIndexOf(':');
-                            if (colon > 0) {
-                                mobName = arg.substring(0, colon).trim();
-                                try { level = Integer.parseInt(arg.substring(colon + 1).trim()); }
-                                catch (NumberFormatException ignored) {}
-                            }
-                            boolean completionTarget = isBoss || MythicSpawner.isCompletionController(mobName);
-                            UUID spawnedUuid = MythicSpawner.spawn(eco, mobName, at, level);
-                            eco.getLogger().info("[副本系统] 刷怪 " + mobName + "@" + at + " -> " + (spawnedUuid != null));
-                            if (spawnedUuid != null) {
-                                mobs++;
-                                if (completionTarget) {
-                                    instanceBoss.put(instanceId, spawnedUuid);
-                                    eco.getLogger().info("[副本系统] 副本 " + instanceId + " 已记录通关检测目标: " + mobName + " (" + spawnedUuid + ")");
-                                }
-                            } else if (completionTarget) {
-                                eco.getLogger().warning("[副本系统] 副本 " + instanceId + " 的通关检测目标刷怪未拿到实体引用，无法自动判定通关: " + mobName);
-                            }
-                        }
-                        b.setType(Material.AIR, false);  // 清除标记牌
-                    } else if (tag.equals("[spawn]")) {
-                        instanceSpawnOverride.put(instanceId, new Location(world, x + 0.5, y, z + 0.5));
-                        b.setType(Material.AIR, false);
-                    }
-                }
-            }
-        }
-        eco.getLogger().info("[副本系统] scanMarkers 完成: 共扫到 " + signsSeen + " 块告示牌, box=["
-                + minX + "," + minY + "," + minZ + " ~ " + maxX + "," + maxY + "," + maxZ + "]");
-        return mobs;
-    }
-
-    /** 出生点：优先 [spawn] 标记覆盖，否则网格中心的最高方块上方。 */
-    private Location resolveSpawnLocation(String instanceId, World world, int cx, int cz) {
-        Location ov = instanceSpawnOverride.get(instanceId);
-        if (ov != null && ov.getWorld() != null) return ov.clone();
-        Location center = instancePasteCenter.get(instanceId);
-        if (center != null && center.getWorld() != null) return center.clone();
-        return new Location(world, cx + 0.5, world.getHighestBlockYAt(cx, cz) + 1.0, cz + 0.5);
-    }
-
-    /** 部分 schematic 来源（如 mcschematic 等第三方工具生成）写入的 front_text 行带有原始 JSON 引号，
-     *  Sign#getLines() 在本服务器版本上不会再做一次 JSON 解码，需要手动剥掉首尾引号再比较标记。 */
-    private static String stripJsonQuotes(String s) {
-        s = s == null ? "" : s.trim();
-        if (s.length() >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
-            s = s.substring(1, s.length() - 1);
-        }
-        return s.trim();
-    }
-
-    private int[] arenaYRange(World world, int baseY) {
-        int yMin = Math.max(world.getMinHeight(), baseY - 16);
-        int yMax = Math.min(world.getMaxHeight() - 1, baseY + 255);
-        return new int[]{yMin, yMax};
-    }
-
-    /**
-     * 清场（副本结束时）：杀网格区域内所有非玩家实体 + FAWE 把地形清回空气，回收内存。
-     */
-    private void cleanupArena(String gridId) {
-        Map<String, Object> grid = getGridById(gridId);
-        if (grid == null) return;
-        final World world = Bukkit.getWorld((String) grid.get("world"));
-        if (world == null) return;
-        final int cx = ((Number) grid.get("centerX")).intValue();
-        final int cz = ((Number) grid.get("centerZ")).intValue();
-        DungeonConfigManager.ConfigSnapshot cfg = configManager.snapshot();
-        final int baseY = cfg.mapBaseY;
-        final int radius = cfg.mapArenaRadius;
-        final Location center = new Location(world, cx + 0.5, baseY, cz + 0.5);
-        Bukkit.getScheduler().runTask(eco, () -> {
-            try {
-                for (Entity e : world.getNearbyEntities(center, radius, 256, radius)) {
-                    if (!(e instanceof Player)) e.remove();
-                }
-            } catch (Throwable ignored) {}
-            if (SchematicService.isAvailable()) {
-                Bukkit.getScheduler().runTaskAsynchronously(eco, () -> {
-                    int[] yRange = arenaYRange(world, baseY);
-                    SchematicService.clearRegion(eco, world, cx - radius, yRange[0], cz - radius,
-                            cx + radius, yRange[1], cz + radius);
-                });
-            }
-        });
-    }
-
-    private Map<String, Object> getGridById(String gridId) {
+    public void shutdownInstances() {
+        Set<String> activeInstances = new LinkedHashSet<>(preparedWorlds.keySet());
         try (var conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return null;
-            try (var ps = conn.prepareStatement("SELECT * FROM ks_dungeon_grids WHERE id=?")) {
-                ps.setString(1, gridId);
-                try (var rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        Map<String, Object> m = new LinkedHashMap<>();
-                        m.put("id", rs.getString("id"));
-                        m.put("world", rs.getString("world"));
-                        m.put("centerX", rs.getInt("grid_x"));
-                        m.put("centerZ", rs.getInt("grid_z"));
-                        return m;
+            if (conn != null) {
+                try (var ps = conn.prepareStatement(
+                        "SELECT id FROM ks_dungeon_instances WHERE status='ACTIVE'")) {
+                    try (var rs = ps.executeQuery()) {
+                        while (rs.next()) activeInstances.add(rs.getString(1));
                     }
                 }
             }
-        } catch (SQLException ignored) {}
-        return null;
-    }
-
-    // ================================================================
-    // 异步世界管理
-    // ================================================================
-
-    private final Set<String> loadingWorlds = ConcurrentHashMap.newKeySet();
-
-    private void asyncLoadDungeonWorld(String worldName, Runnable onReady) {
-        if (Bukkit.getWorld(worldName) != null) {
-            onReady.run();
-            return;
+        } catch (SQLException failure) {
+            eco.getLogger().warning("[副本系统] 停用时读取活动副本失败: " + failure.getMessage());
         }
-        if (!loadingWorlds.add(worldName)) return;  // 已经在加载
-        Bukkit.getScheduler().runTaskAsynchronously(eco, () -> {
-            try {
-                // 同步代码创建世界（需要主线程）—— 切回主线程
-                Bukkit.getScheduler().runTask(eco, () -> {
-                    try {
-                        var creator = new org.bukkit.WorldCreator(worldName)
-                                .type(org.bukkit.WorldType.FLAT)
-                                .generatorSettings("{\"layers\":[{\"block\":\"minecraft:air\",\"height\":1}],\"biome\":\"minecraft:the_void\"}")
-                                .generateStructures(false);
-                        var w = Bukkit.createWorld(creator);
-                        if (w != null) {
-                            eco.getLogger().info("[副本系统] 虚空世界 " + worldName + " 已创建");
-                        }
-                        onReady.run();
-                    } catch (Exception e) {
-                        eco.getLogger().warning("[副本系统] 加载虚空世界失败: " + e.getMessage());
-                    } finally {
-                        loadingWorlds.remove(worldName);
-                    }
-                });
-            } catch (Exception e) {
-                loadingWorlds.remove(worldName);
-                eco.getLogger().warning("[副本系统] 加载虚空世界失败: " + e.getMessage());
+        for (String instanceId : activeInstances) {
+            if (!endInstance(instanceId, STATUS_ABANDONED, "PLUGIN_DISABLE",
+                    "§6[副本] §c副本模块已停用，你已返回主世界。")) {
+                eco.getLogger().warning("[副本系统] 停用时未能终止活动副本 " + instanceId);
             }
-        });
+        }
+        releaseWorldInstances();
     }
 
-    private void refundAndRelease(UUID owner, double price, String gridId) {
-        var p = Bukkit.getOfflinePlayer(owner);
-        if (eco.vaultHook().isAvailable()) eco.vaultHook().deposit(p, price);
-        gridAllocator.release(gridId);
+    private void releaseWorldInstances() {
+        for (String worldInstanceId : new HashSet<>(worldInstanceIds.values())) {
+            try {
+                instanceWorld.release(worldInstanceId, ReleaseCause.PLUGIN_DISABLE);
+            } catch (Throwable failure) {
+                eco.getLogger().warning("[副本系统] 停用时无法请求释放世界 "
+                        + worldInstanceId + ": " + failure.getMessage());
+            }
+        }
+        playerToInstance.clear();
+        pendingPlayers.clear();
+        pendingPreparations.clear();
+        pendingAdmissions.clear();
+        instanceBosses.clear();
+        preparedWorlds.clear();
+        worldInstanceIds.clear();
     }
 }

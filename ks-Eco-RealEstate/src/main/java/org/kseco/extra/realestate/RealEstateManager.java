@@ -1,9 +1,12 @@
 package org.kseco.extra.realestate;
 
 import org.kseco.KsEco;
+import org.kseco.database.PortableSqlMutation;
 
 import java.sql.*;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 房地产管理器。
@@ -51,14 +54,64 @@ public final class RealEstateManager {
 
     private final KsEco eco;
 
+    // 售楼沙盘单栋预渲染缓存。Bukkit 方块分 tick 在主线程快照，隐藏面裁剪与 JSON 模型组装在线程池完成。
+    private static final long VOXEL_CACHE_TTL_MILLIS = 5 * 60 * 1000L;
+    private static final int VOXEL_SCAN_BUDGET_PER_TICK = 8192;
+    private static final int MAX_HOUSE_SCAN_VOLUME = 250000;
+    private final Map<String, CachedVoxelModel> voxelModelCache = new ConcurrentHashMap<>();
+    private final Set<org.bukkit.scheduler.BukkitTask> voxelSnapshotTasks = ConcurrentHashMap.newKeySet();
+
+    private record CachedVoxelModel(String signature, long queuedAt,
+                                    CompletableFuture<Map<String, Object>> future) {}
+
     // 地块边界缓存（仅主世界地块，instance_id IS NULL）：方块事件高频，不能每次查 SQLite
+    private volatile boolean plotCacheHealthy = false;
+    private volatile boolean houseCacheHealthy = false;
+    private volatile boolean trustCacheHealthy = false;
     private volatile Map<String, List<Map<String, Object>>> plotCache = new HashMap<>();
     // Immutable flattened view for periodic systems. Avoid copying every plot map on every tick.
     private volatile List<Map<String, Object>> plotCacheView = List.of();
     // 房屋边界缓存（仅主世界地块上登记的房屋）：同上，方块事件高频不能每次查 SQLite
     private volatile Map<String, List<Map<String, Object>>> houseCache = new HashMap<>();
+    // PLAYER 地块/房屋信任权限快照。保护事件只读内存，写入成功后原子替换对应条目。
+    private volatile Map<String, Map<UUID, TrustPermissions>> plotTrustCache = Map.of();
+    private volatile Map<String, Map<UUID, TrustPermissions>> houseTrustCache = Map.of();
     // 玩家测量棒选区临时状态（不落库，服务器重启即丢失）：world+两角点
     private final Map<UUID, Selection> houseSelections = new HashMap<>();
+
+    public record PlotSummary(
+            String id,
+            String world,
+            int x1,
+            int z1,
+            int x2,
+            int z2,
+            String ownerType,
+            String ownerId,
+            String zoneType,
+            long purchasedAt
+    ) {}
+
+    public record TrustEntry(
+            String plotId,
+            UUID trustedUuid,
+            String trustedName,
+            boolean canBuild,
+            boolean canContainer,
+            boolean canInteract,
+            long grantedAt
+    ) {}
+
+    private record TrustPermissions(boolean build, boolean container, boolean interact) {
+        private boolean allows(String kind) {
+            return switch (kind) {
+                case "BUILD" -> build;
+                case "CONTAINER" -> container;
+                case "INTERACT" -> interact;
+                default -> false;
+            };
+        }
+    }
 
     /** 测量棒选区：左键=pos1，右键=pos2，两点都设好才能 /house register。 */
     public static final class Selection {
@@ -75,15 +128,30 @@ public final class RealEstateManager {
         ensureTables();
         refreshPlotCache();
         refreshHouseCache();
+        refreshTrustCaches();
+    }
+
+    /** 模块停用时取消尚未完成的售楼沙盘快照，防止重载后旧任务继续读取世界。 */
+    public void shutdownVoxelCache() {
+        for (org.bukkit.scheduler.BukkitTask task : voxelSnapshotTasks) task.cancel();
+        voxelSnapshotTasks.clear();
+        for (CachedVoxelModel entry : voxelModelCache.values()) {
+            entry.future().cancel(false);
+        }
+        voxelModelCache.clear();
     }
 
     /** 全量重新加载主世界地块边界缓存。地块增/删后调用。 */
     public void refreshPlotCache() {
+        refreshPlotCache(true);
+    }
+
+    private void refreshPlotCache(boolean publish) {
         Map<String, List<Map<String, Object>>> next = new HashMap<>();
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) {
-                plotCache = next;
-                plotCacheView = List.of();
+                plotCacheHealthy = false;
+                eco.getLogger().severe("[房地产] 地块缓存刷新失败：数据库连接不可用，继续使用旧缓存并 fail-closed");
                 return;
             }
             try (var s = conn.createStatement();
@@ -104,7 +172,9 @@ public final class RealEstateManager {
                 }
             }
         } catch (SQLException e) {
-            eco.getLogger().warning("[房地产] 刷新地块缓存失败: " + e.getMessage());
+            plotCacheHealthy = false;
+            eco.getLogger().severe("[房地产] 刷新地块缓存失败，继续使用旧缓存并 fail-closed: " + e.getMessage());
+            return;
         }
         List<Map<String, Object>> flattened = new ArrayList<>();
         for (List<Map<String, Object>> plots : next.values()) {
@@ -118,6 +188,8 @@ public final class RealEstateManager {
         }
         plotCache = Map.copyOf(immutable);
         plotCacheView = List.copyOf(flattened);
+        plotCacheHealthy = true;
+        if (publish) eco.publishCrossServerInvalidation("real-estate", "all");
     }
 
     /** 找出 (world,x,z) 落在哪块主世界地块内；找不到返回 null。坐标用方块整数坐标。 */
@@ -150,9 +222,17 @@ public final class RealEstateManager {
 
     /** 全量重新加载主世界房屋边界缓存（仅含挂在主世界地块上的房屋）。房屋增删/转移所有权后调用。 */
     public void refreshHouseCache() {
+        refreshHouseCache(true);
+    }
+
+    private void refreshHouseCache(boolean publish) {
         Map<String, List<Map<String, Object>>> next = new HashMap<>();
         try (var conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) { houseCache = next; return; }
+            if (conn == null) {
+                houseCacheHealthy = false;
+                eco.getLogger().severe("[房地产] 房屋缓存刷新失败：数据库连接不可用，继续使用旧缓存并 fail-closed");
+                return;
+            }
             try (var s = conn.createStatement();
                  var rs = s.executeQuery(
                          "SELECT h.* FROM ks_re_houses h JOIN ks_re_plots p ON p.id = h.plot_id " +
@@ -163,9 +243,17 @@ public final class RealEstateManager {
                 }
             }
         } catch (SQLException e) {
-            eco.getLogger().warning("[房地产] 刷新房屋缓存失败: " + e.getMessage());
+            houseCacheHealthy = false;
+            eco.getLogger().severe("[房地产] 刷新房屋缓存失败，继续使用旧缓存并 fail-closed: " + e.getMessage());
+            return;
         }
-        houseCache = next;
+        Map<String, List<Map<String, Object>>> immutable = new HashMap<>();
+        for (Map.Entry<String, List<Map<String, Object>>> entry : next.entrySet()) {
+            immutable.put(entry.getKey(), List.copyOf(entry.getValue()));
+        }
+        houseCache = Map.copyOf(immutable);
+        houseCacheHealthy = true;
+        if (publish) eco.publishCrossServerInvalidation("real-estate", "all");
     }
 
     /** 找出 (world,x,y,z) 落在哪套主世界房屋内；找不到返回 null。 */
@@ -201,24 +289,9 @@ public final class RealEstateManager {
     }
 
     private boolean hasHouseTrust(String houseId, UUID actor, String kind) {
-        String col = switch (kind) {
-            case "BUILD" -> "can_build";
-            case "CONTAINER" -> "can_container";
-            case "INTERACT" -> "can_interact";
-            default -> null;
-        };
-        if (col == null) return false;
-        try (var conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return false;
-            try (var ps = conn.prepareStatement(
-                    "SELECT " + col + " FROM ks_re_house_trust WHERE house_id=? AND trusted_uuid=?")) {
-                ps.setString(1, houseId);
-                ps.setString(2, actor.toString());
-                try (var rs = ps.executeQuery()) { return rs.next() && rs.getInt(1) != 0; }
-            }
-        } catch (SQLException e) {
-            return false;
-        }
+        Map<UUID, TrustPermissions> trusted = houseTrustCache.get(houseId);
+        TrustPermissions permissions = trusted == null ? null : trusted.get(actor);
+        return permissions != null && permissions.allows(kind);
     }
 
     /** 判断 actor 是否有权管理该地块（登记房屋等所有者专属操作）：PLAYER 地块要求本人，ENTERPRISE 地块要求企业成员。 */
@@ -265,165 +338,433 @@ public final class RealEstateManager {
     }
 
     private boolean hasTrust(String plotId, UUID actor, String kind) {
-        String col = switch (kind) {
-            case "BUILD" -> "can_build";
-            case "CONTAINER" -> "can_container";
-            case "INTERACT" -> "can_interact";
-            default -> null;
-        };
-        if (col == null) return false;
-        try (var conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return false;
-            try (var ps = conn.prepareStatement(
-                    "SELECT " + col + " FROM ks_re_plot_trust WHERE plot_id=? AND trusted_uuid=?")) {
-                ps.setString(1, plotId);
-                ps.setString(2, actor.toString());
-                try (var rs = ps.executeQuery()) { return rs.next() && rs.getInt(1) != 0; }
-            }
-        } catch (SQLException e) {
-            return false;
-        }
+        Map<UUID, TrustPermissions> trusted = plotTrustCache.get(plotId);
+        TrustPermissions permissions = trusted == null ? null : trusted.get(actor);
+        return permissions != null && permissions.allows(kind);
     }
 
     /** 地块所有者授予信任权限（PLAYER 地块专用）。 @return null 成功，否则中文错误信息。 */
-    public String grantTrust(String plotId, UUID owner, UUID targetUuid, String targetName,
-                              boolean build, boolean container, boolean interact) {
-        Map<String, Object> plot = getPlot(plotId);
-        if (plot == null) return "地块不存在";
-        if (!OWNER_PLAYER.equals(plot.get("ownerType")) || !owner.toString().equals(plot.get("ownerId"))) {
-            return "非地块所有者";
-        }
+    public synchronized String grantTrust(String plotId, UUID owner, UUID targetUuid, String targetName,
+                                          boolean build, boolean container, boolean interact) {
+        if (plotId == null || plotId.isBlank() || owner == null || targetUuid == null) return "参数无效";
         if (targetUuid.equals(owner)) return "不能信任自己";
         long now = System.currentTimeMillis() / 1000;
+        String safeTargetName = normalizeTrustName(targetName);
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return "数据库不可用";
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_re_plot_trust (plot_id, trusted_uuid, trusted_name, can_build, can_container, can_interact, granted_at) " +
-                    "VALUES (?,?,?,?,?,?,?) " +
-                    "ON CONFLICT(plot_id, trusted_uuid) DO UPDATE SET trusted_name=excluded.trusted_name, " +
-                    "can_build=excluded.can_build, can_container=excluded.can_container, can_interact=excluded.can_interact")) {
-                ps.setString(1, plotId);
-                ps.setString(2, targetUuid.toString());
-                ps.setString(3, targetName == null ? "" : targetName);
-                ps.setInt(4, build ? 1 : 0);
-                ps.setInt(5, container ? 1 : 0);
-                ps.setInt(6, interact ? 1 : 0);
-                ps.setLong(7, now);
-                ps.executeUpdate();
-            }
+            PortableSqlMutation.upsert(conn,
+                    "UPDATE ks_re_plot_trust SET trusted_name=?,can_build=?,can_container=?,can_interact=? " +
+                            "WHERE plot_id=? AND trusted_uuid=? AND EXISTS (SELECT 1 FROM ks_re_plots WHERE id=? AND owner_type=? AND owner_id=?)",
+                    ps -> bindTrustUpdate(ps, safeTargetName, build, container, interact, plotId, targetUuid, owner),
+                    "INSERT INTO ks_re_plot_trust (plot_id,trusted_uuid,trusted_name,can_build,can_container,can_interact,granted_at) " +
+                            "SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM ks_re_plots WHERE id=? AND owner_type=? AND owner_id=?)",
+                    ps -> bindTrustInsert(ps, plotId, targetUuid, safeTargetName, build, container, interact, now, owner));
         } catch (SQLException e) {
             eco.getLogger().warning("[房地产] 授予信任失败: " + e.getMessage());
             return "操作失败";
         }
+        putPlotTrustCache(plotId, targetUuid, new TrustPermissions(build, container, interact));
+        eco.publishCrossServerInvalidation("real-estate", "all");
         return null;
     }
 
     /** 地块所有者撤销信任。@return null 成功，否则中文错误信息。 */
-    public String revokeTrust(String plotId, UUID owner, UUID targetUuid) {
-        Map<String, Object> plot = getPlot(plotId);
-        if (plot == null) return "地块不存在";
-        if (!OWNER_PLAYER.equals(plot.get("ownerType")) || !owner.toString().equals(plot.get("ownerId"))) {
-            return "非地块所有者";
-        }
+    public synchronized String revokeTrust(String plotId, UUID owner, UUID targetUuid) {
+        if (plotId == null || plotId.isBlank() || owner == null || targetUuid == null) return "参数无效";
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return "数据库不可用";
-            try (var ps = conn.prepareStatement("DELETE FROM ks_re_plot_trust WHERE plot_id=? AND trusted_uuid=?")) {
+            try (var ps = conn.prepareStatement(
+                    "DELETE FROM ks_re_plot_trust WHERE plot_id=? AND trusted_uuid=? AND EXISTS (" +
+                    "SELECT 1 FROM ks_re_plots WHERE id=? AND owner_type=? AND owner_id=?)")) {
                 ps.setString(1, plotId);
                 ps.setString(2, targetUuid.toString());
-                ps.executeUpdate();
+                ps.setString(3, plotId);
+                ps.setString(4, OWNER_PLAYER);
+                ps.setString(5, owner.toString());
+                int deleted = ps.executeUpdate();
+                if (deleted == 0 && !ownsPlayerPlot(conn, plotId, owner)) {
+                    return "地块不存在或所有权已变更";
+                }
             }
         } catch (SQLException e) {
             eco.getLogger().warning("[房地产] 撤销信任失败: " + e.getMessage());
             return "操作失败";
         }
+        removePlotTrustCache(plotId, targetUuid);
+        eco.publishCrossServerInvalidation("real-estate", "all");
         return null;
     }
 
     /** 列出玩家能管理/进入的主世界地块：自己直接持有的 + 自己作为成员的企业持有的。用于 /land GUI。 */
     public List<Map<String, Object>> listAccessiblePlots(UUID uuid) {
-        List<Map<String, Object>> out = new ArrayList<>(listPlots(null, OWNER_PLAYER, uuid.toString()));
-        for (Map<String, Object> p : listPlots(null, OWNER_ENTERPRISE, null)) {
-            if (isEnterpriseMember((String) p.get("ownerId"), uuid)) out.add(p);
+        try {
+            List<Map<String, Object>> out = new ArrayList<>();
+            for (PlotSummary plot : loadAccessiblePlotSummaries(uuid)) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", plot.id());
+                row.put("world", plot.world());
+                row.put("x1", plot.x1());
+                row.put("z1", plot.z1());
+                row.put("x2", plot.x2());
+                row.put("z2", plot.z2());
+                row.put("ownerType", plot.ownerType());
+                row.put("ownerId", plot.ownerId());
+                row.put("zoneType", plot.zoneType());
+                row.put("purchasedAt", plot.purchasedAt());
+                out.add(row);
+            }
+            return out;
+        } catch (SQLException e) {
+            eco.getLogger().warning("[房地产] 列可管理地块失败: " + e.getMessage());
+            return List.of();
         }
-        return out;
     }
 
     /** 列出地块的信任名单。 */
     public List<Map<String, Object>> listTrust(String plotId) {
-        List<Map<String, Object>> out = new ArrayList<>();
-        try (var conn = eco.ksCore().dataStore().getConnection()) {
-            if (conn == null) return out;
-            try (var ps = conn.prepareStatement(
-                    "SELECT * FROM ks_re_plot_trust WHERE plot_id=? ORDER BY granted_at ASC")) {
-                ps.setString(1, plotId);
-                try (var rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        Map<String, Object> m = new LinkedHashMap<>();
-                        m.put("plotId", rs.getString("plot_id"));
-                        m.put("trustedUuid", rs.getString("trusted_uuid"));
-                        m.put("trustedName", rs.getString("trusted_name"));
-                        m.put("canBuild", rs.getInt("can_build") != 0);
-                        m.put("canContainer", rs.getInt("can_container") != 0);
-                        m.put("canInteract", rs.getInt("can_interact") != 0);
-                        m.put("grantedAt", rs.getLong("granted_at"));
-                        out.add(m);
-                    }
-                }
+        try {
+            List<Map<String, Object>> out = new ArrayList<>();
+            for (TrustEntry trust : loadTrustEntries(plotId)) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("plotId", trust.plotId());
+                row.put("trustedUuid", trust.trustedUuid().toString());
+                row.put("trustedName", trust.trustedName());
+                row.put("canBuild", trust.canBuild());
+                row.put("canContainer", trust.canContainer());
+                row.put("canInteract", trust.canInteract());
+                row.put("grantedAt", trust.grantedAt());
+                out.add(row);
             }
+            return out;
         } catch (SQLException e) {
             eco.getLogger().warning("[房地产] 列信任名单失败: " + e.getMessage());
+            return List.of();
         }
-        return out;
+    }
+
+    public List<PlotSummary> loadAccessiblePlotSummaries(UUID playerUuid) throws SQLException {
+        Objects.requireNonNull(playerUuid, "playerUuid");
+        try (var conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) throw new SQLException("database unavailable");
+            List<PlotSummary> out = new ArrayList<>();
+            String columns = "SELECT p.id,p.world,p.x1,p.z1,p.x2,p.z2,p.owner_type,p.owner_id," +
+                    "z.type AS joined_zone_type,p.purchased_at FROM ks_re_plots p " +
+                    "LEFT JOIN ks_re_zones z ON z.id=p.zone_id ";
+            try (var ps = conn.prepareStatement(columns +
+                    "WHERE p.instance_id IS NULL AND p.owner_type=? AND p.owner_id=? " +
+                    "ORDER BY p.purchased_at DESC LIMIT 200")) {
+                ps.setString(1, OWNER_PLAYER);
+                ps.setString(2, playerUuid.toString());
+                readPlotSummaries(ps, out);
+            }
+            if (tableExists(conn, "ks_ent_members")) {
+                try (var ps = conn.prepareStatement(columns +
+                        "WHERE p.instance_id IS NULL AND p.owner_type=? AND EXISTS (" +
+                        "SELECT 1 FROM ks_ent_members m WHERE m.enterprise_id=p.owner_id AND m.player_uuid=?) " +
+                        "ORDER BY p.purchased_at DESC LIMIT 200")) {
+                    ps.setString(1, OWNER_ENTERPRISE);
+                    ps.setString(2, playerUuid.toString());
+                    readPlotSummaries(ps, out);
+                }
+            }
+            out.sort(Comparator.comparingLong(PlotSummary::purchasedAt).reversed());
+            if (out.size() > 200) out.subList(200, out.size()).clear();
+            return List.copyOf(out);
+        }
+    }
+
+    public List<TrustEntry> loadTrustEntries(String plotId) throws SQLException {
+        if (plotId == null || plotId.isBlank() || plotId.length() > 64) return List.of();
+        try (var conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) throw new SQLException("database unavailable");
+            try (var ps = conn.prepareStatement(
+                    "SELECT plot_id,trusted_uuid,trusted_name,can_build,can_container,can_interact,granted_at " +
+                    "FROM ks_re_plot_trust WHERE plot_id=? ORDER BY granted_at ASC LIMIT 200")) {
+                ps.setString(1, plotId);
+                return readTrustEntries(ps, false);
+            }
+        }
+    }
+
+    public List<TrustEntry> loadOwnedTrustEntries(String plotId, UUID owner) throws SQLException {
+        if (plotId == null || plotId.isBlank() || plotId.length() > 64 || owner == null) {
+            throw new SQLException("invalid plot owner request");
+        }
+        try (var conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) throw new SQLException("database unavailable");
+            try (var ps = conn.prepareStatement(
+                    "SELECT p.id AS plot_id,t.trusted_uuid,t.trusted_name,t.can_build,t.can_container," +
+                    "t.can_interact,t.granted_at FROM ks_re_plots p LEFT JOIN ks_re_plot_trust t ON t.plot_id=p.id " +
+                    "WHERE p.id=? AND p.owner_type=? AND p.owner_id=? ORDER BY t.granted_at ASC LIMIT 200")) {
+                ps.setString(1, plotId);
+                ps.setString(2, OWNER_PLAYER);
+                ps.setString(3, owner.toString());
+                return readTrustEntries(ps, true);
+            }
+        }
+    }
+
+    private List<TrustEntry> readTrustEntries(PreparedStatement statement, boolean requireOwnerRow) throws SQLException {
+        List<TrustEntry> out = new ArrayList<>();
+        boolean sawRow = false;
+        try (var rs = statement.executeQuery()) {
+            while (rs.next()) {
+                sawRow = true;
+                String trustedUuid = rs.getString("trusted_uuid");
+                if (trustedUuid == null) continue;
+                try {
+                    out.add(new TrustEntry(
+                            rs.getString("plot_id"),
+                            UUID.fromString(trustedUuid),
+                            rs.getString("trusted_name"),
+                            rs.getInt("can_build") != 0,
+                            rs.getInt("can_container") != 0,
+                            rs.getInt("can_interact") != 0,
+                            rs.getLong("granted_at")));
+                } catch (IllegalArgumentException invalidUuid) {
+                    eco.getLogger().warning("[房地产] 忽略无效信任 UUID: " + trustedUuid);
+                }
+            }
+        }
+        if (requireOwnerRow && !sawRow) throw new SQLException("plot ownership changed");
+        return List.copyOf(out);
+    }
+
+    private void readPlotSummaries(PreparedStatement statement, List<PlotSummary> out) throws SQLException {
+        try (var rs = statement.executeQuery()) {
+            while (rs.next()) {
+                out.add(new PlotSummary(
+                        rs.getString("id"),
+                        rs.getString("world"),
+                        rs.getInt("x1"),
+                        rs.getInt("z1"),
+                        rs.getInt("x2"),
+                        rs.getInt("z2"),
+                        rs.getString("owner_type"),
+                        rs.getString("owner_id"),
+                        rs.getString("joined_zone_type"),
+                        rs.getLong("purchased_at")));
+            }
+        }
+    }
+
+    private boolean tableExists(Connection conn, String tableName) throws SQLException {
+        var metadata = conn.getMetaData();
+        for (String candidate : List.of(tableName, tableName.toUpperCase(Locale.ROOT),
+                tableName.toLowerCase(Locale.ROOT))) {
+            try (var rows = metadata.getTables(conn.getCatalog(), null, candidate, new String[]{"TABLE"})) {
+                if (rows.next()) return true;
+            }
+        }
+        return false;
+    }
+
+    public synchronized void refreshTrustCaches() {
+        refreshTrustCaches(true);
+    }
+
+    private synchronized void refreshTrustCaches(boolean publish) {
+        Map<String, Map<UUID, TrustPermissions>> nextPlot = new HashMap<>();
+        Map<String, Map<UUID, TrustPermissions>> nextHouse = new HashMap<>();
+        try (var conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) {
+                trustCacheHealthy = false;
+                eco.getLogger().severe("[房地产] 信任缓存刷新失败：数据库连接不可用，继续使用旧缓存并 fail-closed");
+                return;
+            }
+            readTrustCache(conn, "ks_re_plot_trust", "plot_id", nextPlot);
+            readTrustCache(conn, "ks_re_house_trust", "house_id", nextHouse);
+        } catch (SQLException e) {
+            trustCacheHealthy = false;
+            eco.getLogger().severe("[房地产] 刷新信任缓存失败，继续使用旧缓存并 fail-closed: " + e.getMessage());
+            return;
+        }
+        plotTrustCache = freezeTrustCache(nextPlot);
+        houseTrustCache = freezeTrustCache(nextHouse);
+        trustCacheHealthy = true;
+        if (publish) eco.publishCrossServerInvalidation("real-estate", "all");
+    }
+
+    public boolean refreshAllCachesFromRemote() {
+        refreshPlotCache(false);
+        refreshHouseCache(false);
+        refreshTrustCaches(false);
+        return protectionCachesHealthy();
+    }
+
+    public boolean protectionCachesHealthy() {
+        return plotCacheHealthy && houseCacheHealthy && trustCacheHealthy;
+    }
+
+    private void readTrustCache(Connection conn, String table, String idColumn,
+                                Map<String, Map<UUID, TrustPermissions>> target) throws SQLException {
+        String sql = "SELECT " + idColumn + ",trusted_uuid,can_build,can_container,can_interact FROM " + table;
+        try (var statement = conn.createStatement(); var rs = statement.executeQuery(sql)) {
+            while (rs.next()) {
+                try {
+                    UUID trustedUuid = UUID.fromString(rs.getString("trusted_uuid"));
+                    TrustPermissions permissions = new TrustPermissions(
+                            rs.getInt("can_build") != 0,
+                            rs.getInt("can_container") != 0,
+                            rs.getInt("can_interact") != 0);
+                    target.computeIfAbsent(rs.getString(idColumn), ignored -> new HashMap<>())
+                            .put(trustedUuid, permissions);
+                } catch (IllegalArgumentException invalidUuid) {
+                    eco.getLogger().warning("[房地产] 忽略无效信任 UUID: " + rs.getString("trusted_uuid"));
+                }
+            }
+        }
+    }
+
+    private Map<String, Map<UUID, TrustPermissions>> freezeTrustCache(
+            Map<String, Map<UUID, TrustPermissions>> source) {
+        Map<String, Map<UUID, TrustPermissions>> frozen = new HashMap<>();
+        for (var entry : source.entrySet()) {
+            frozen.put(entry.getKey(), Map.copyOf(entry.getValue()));
+        }
+        return Map.copyOf(frozen);
+    }
+
+    private synchronized void putPlotTrustCache(String plotId, UUID trustedUuid, TrustPermissions permissions) {
+        plotTrustCache = putTrustCacheEntry(plotTrustCache, plotId, trustedUuid, permissions);
+    }
+
+    private synchronized void removePlotTrustCache(String plotId, UUID trustedUuid) {
+        plotTrustCache = removeTrustCacheEntry(plotTrustCache, plotId, trustedUuid);
+    }
+
+    private synchronized void putHouseTrustCache(String houseId, UUID trustedUuid, TrustPermissions permissions) {
+        houseTrustCache = putTrustCacheEntry(houseTrustCache, houseId, trustedUuid, permissions);
+    }
+
+    private synchronized void removeHouseTrustCache(String houseId) {
+        if (!houseTrustCache.containsKey(houseId)) return;
+        Map<String, Map<UUID, TrustPermissions>> next = new HashMap<>(houseTrustCache);
+        next.remove(houseId);
+        houseTrustCache = Map.copyOf(next);
+    }
+
+    private Map<String, Map<UUID, TrustPermissions>> putTrustCacheEntry(
+            Map<String, Map<UUID, TrustPermissions>> current,
+            String targetId,
+            UUID trustedUuid,
+            TrustPermissions permissions) {
+        Map<String, Map<UUID, TrustPermissions>> next = new HashMap<>(current);
+        Map<UUID, TrustPermissions> entries = new HashMap<>(current.getOrDefault(targetId, Map.of()));
+        entries.put(trustedUuid, permissions);
+        next.put(targetId, Map.copyOf(entries));
+        return Map.copyOf(next);
+    }
+
+    private Map<String, Map<UUID, TrustPermissions>> removeTrustCacheEntry(
+            Map<String, Map<UUID, TrustPermissions>> current,
+            String targetId,
+            UUID trustedUuid) {
+        Map<UUID, TrustPermissions> currentEntries = current.get(targetId);
+        if (currentEntries == null || !currentEntries.containsKey(trustedUuid)) return current;
+        Map<String, Map<UUID, TrustPermissions>> next = new HashMap<>(current);
+        Map<UUID, TrustPermissions> entries = new HashMap<>(currentEntries);
+        entries.remove(trustedUuid);
+        if (entries.isEmpty()) next.remove(targetId);
+        else next.put(targetId, Map.copyOf(entries));
+        return Map.copyOf(next);
+    }
+
+    private boolean ownsPlayerPlot(Connection conn, String plotId, UUID owner) throws SQLException {
+        try (var ps = conn.prepareStatement(
+                "SELECT 1 FROM ks_re_plots WHERE id=? AND owner_type=? AND owner_id=? LIMIT 1")) {
+            ps.setString(1, plotId);
+            ps.setString(2, OWNER_PLAYER);
+            ps.setString(3, owner.toString());
+            try (var rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    private String normalizeTrustName(String targetName) {
+        if (targetName == null) return "";
+        String normalized = targetName.trim();
+        return normalized.length() <= 32 ? normalized : normalized.substring(0, 32);
+    }
+
+    private static void bindTrustUpdate(PreparedStatement ps, String name, boolean build,
+                                        boolean container, boolean interact, String assetId,
+                                        UUID targetUuid, UUID ownerUuid) throws SQLException {
+        ps.setString(1, name);
+        ps.setInt(2, build ? 1 : 0);
+        ps.setInt(3, container ? 1 : 0);
+        ps.setInt(4, interact ? 1 : 0);
+        ps.setString(5, assetId);
+        ps.setString(6, targetUuid.toString());
+        ps.setString(7, assetId);
+        ps.setString(8, OWNER_PLAYER);
+        ps.setString(9, ownerUuid.toString());
+    }
+
+    private static void bindTrustInsert(PreparedStatement ps, String assetId, UUID targetUuid,
+                                        String name, boolean build, boolean container, boolean interact,
+                                        long now, UUID ownerUuid) throws SQLException {
+        ps.setString(1, assetId);
+        ps.setString(2, targetUuid.toString());
+        ps.setString(3, name);
+        ps.setInt(4, build ? 1 : 0);
+        ps.setInt(5, container ? 1 : 0);
+        ps.setInt(6, interact ? 1 : 0);
+        ps.setLong(7, now);
+        ps.setString(8, assetId);
+        ps.setString(9, OWNER_PLAYER);
+        ps.setString(10, ownerUuid.toString());
     }
 
     private void ensureTables() {
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return;
+            RealEstateSchema.initialize(conn);
             try (var s = conn.createStatement()) {
                 s.execute("""
                     CREATE TABLE IF NOT EXISTS ks_re_zones (
-                        id TEXT PRIMARY KEY,
+                        id VARCHAR(64) PRIMARY KEY,
                         name TEXT NOT NULL,
                         world TEXT NOT NULL,
                         x1 INTEGER NOT NULL, z1 INTEGER NOT NULL,
                         x2 INTEGER NOT NULL, z2 INTEGER NOT NULL,
                         type TEXT NOT NULL DEFAULT 'RESIDENTIAL',
-                        base_price REAL NOT NULL DEFAULT 1000,
-                        tax_rate REAL NOT NULL DEFAULT 0.05,
+                        base_price DOUBLE NOT NULL DEFAULT 1000,
+                        tax_rate DOUBLE NOT NULL DEFAULT 0.05,
                         status TEXT NOT NULL DEFAULT 'STATE_OWNED',
                         created_at INTEGER NOT NULL
                     )
                 """);
                 s.execute("""
                     CREATE TABLE IF NOT EXISTS ks_re_plots (
-                        id TEXT PRIMARY KEY,
+                        id VARCHAR(64) PRIMARY KEY,
                         zone_id TEXT NOT NULL,
                         world TEXT NOT NULL,
                         x1 INTEGER NOT NULL, z1 INTEGER NOT NULL,
                         x2 INTEGER NOT NULL, z2 INTEGER NOT NULL,
                         owner_type TEXT NOT NULL,
                         owner_id TEXT NOT NULL,
-                        price REAL NOT NULL,
-                        tax_rate REAL NOT NULL,
+                        price DOUBLE NOT NULL,
+                        tax_rate DOUBLE NOT NULL,
                         status TEXT NOT NULL DEFAULT 'PURCHASED',
                         purchased_at INTEGER NOT NULL
                     )
                 """);
                 // 副本内房产共用 ks_re_plots：补 instance_id + property_function 两列（原 RealEstateDungeon 迁入，本插件现为唯一 owner）
-                try { s.execute("ALTER TABLE ks_re_plots ADD COLUMN instance_id TEXT DEFAULT NULL"); } catch (SQLException ignore) {}
-                try { s.execute("ALTER TABLE ks_re_plots ADD COLUMN property_function TEXT NOT NULL DEFAULT 'RESIDENTIAL'"); } catch (SQLException ignore) {}
+                try { s.execute("ALTER TABLE ks_re_plots ADD COLUMN instance_id VARCHAR(128) DEFAULT NULL"); } catch (SQLException ignore) {}
+                try { s.execute("ALTER TABLE ks_re_plots ADD COLUMN property_function VARCHAR(32) NOT NULL DEFAULT 'RESIDENTIAL'"); } catch (SQLException ignore) {}
                 // 资产联动：住宅地块可绑定一个副本模板 ID，作为该副本的"资产钥匙"（与副本插件解耦，不做 FK 校验）
-                try { s.execute("ALTER TABLE ks_re_plots ADD COLUMN dungeon_template_id TEXT DEFAULT NULL"); } catch (SQLException ignore) {}
-                s.execute("CREATE INDEX IF NOT EXISTS idx_re_plots_instance ON ks_re_plots(instance_id)");
+                try { s.execute("ALTER TABLE ks_re_plots ADD COLUMN dungeon_template_id VARCHAR(128) DEFAULT NULL"); } catch (SQLException ignore) {}
                 // 容积率：区域最大合法登记地块数（0=不限）
                 try { s.execute("ALTER TABLE ks_re_zones ADD COLUMN max_plots INTEGER NOT NULL DEFAULT 0"); } catch (SQLException ignore) {}
                 // 资产联动：管理员划分住宅区域时直接配好副本权限（模板 ID），地块购买时自动继承到 ks_re_plots.dungeon_template_id
-                try { s.execute("ALTER TABLE ks_re_zones ADD COLUMN dungeon_template_id TEXT DEFAULT NULL"); } catch (SQLException ignore) {}
+                try { s.execute("ALTER TABLE ks_re_zones ADD COLUMN dungeon_template_id VARCHAR(128) DEFAULT NULL"); } catch (SQLException ignore) {}
                 // 领地保护：PLAYER 地块的信任名单（ENTERPRISE 地块按企业成员表直查，不进这张表）
                 s.execute("""
                     CREATE TABLE IF NOT EXISTS ks_re_plot_trust (
-                        plot_id TEXT NOT NULL,
-                        trusted_uuid TEXT NOT NULL,
+                        plot_id VARCHAR(64) NOT NULL,
+                        trusted_uuid VARCHAR(64) NOT NULL,
                         trusted_name TEXT DEFAULT '',
                         can_build INTEGER NOT NULL DEFAULT 1,
                         can_container INTEGER NOT NULL DEFAULT 1,
@@ -435,7 +776,7 @@ public final class RealEstateManager {
                 // 房屋：在已购地块范围内圈定登记的实际建筑（登记才消耗容积率，买地本身不消耗）
                 s.execute("""
                     CREATE TABLE IF NOT EXISTS ks_re_houses (
-                        id TEXT PRIMARY KEY,
+                        id VARCHAR(64) PRIMARY KEY,
                         plot_id TEXT NOT NULL,
                         zone_id TEXT NOT NULL,
                         world TEXT NOT NULL,
@@ -444,21 +785,23 @@ public final class RealEstateManager {
                         owner_type TEXT NOT NULL,
                         owner_id TEXT NOT NULL,
                         dungeon_template_id TEXT DEFAULT NULL,
-                        tax_rate REAL NOT NULL DEFAULT 0.05,
+                        tax_rate DOUBLE NOT NULL DEFAULT 0.05,
                         name TEXT DEFAULT NULL,
+                        showcase_price DOUBLE NOT NULL DEFAULT 0,
+                        showcase_marker VARCHAR(32) NOT NULL DEFAULT 'CYAN',
                         registered_at INTEGER NOT NULL
                     )
                 """);
-                s.execute("CREATE INDEX IF NOT EXISTS idx_re_houses_plot ON ks_re_houses(plot_id)");
-                s.execute("CREATE INDEX IF NOT EXISTS idx_re_houses_zone ON ks_re_houses(zone_id)");
                 // 兼容旧表：早期某次部署用的是缺 tax_rate 列的旧版 CREATE TABLE（已被 CREATE TABLE IF NOT EXISTS 跳过未升级），
                 // 之后所有 registerHouse() 的 INSERT 都会因列不存在而失败——这里补 ALTER 兜底修复历史遗留表结构。
-                try { s.execute("ALTER TABLE ks_re_houses ADD COLUMN tax_rate REAL NOT NULL DEFAULT 0.05"); } catch (SQLException ignore) {}
+                try { s.execute("ALTER TABLE ks_re_houses ADD COLUMN tax_rate DOUBLE NOT NULL DEFAULT 0.05"); } catch (SQLException ignore) {}
+                try { s.execute("ALTER TABLE ks_re_houses ADD COLUMN showcase_price DOUBLE NOT NULL DEFAULT 0"); } catch (SQLException ignore) {}
+                try { s.execute("ALTER TABLE ks_re_houses ADD COLUMN showcase_marker VARCHAR(32) NOT NULL DEFAULT 'CYAN'"); } catch (SQLException ignore) {}
                 // 领地保护：PLAYER 房屋的信任名单（结构同 ks_re_plot_trust，键换成 house_id）
                 s.execute("""
                     CREATE TABLE IF NOT EXISTS ks_re_house_trust (
-                        house_id TEXT NOT NULL,
-                        trusted_uuid TEXT NOT NULL,
+                        house_id VARCHAR(64) NOT NULL,
+                        trusted_uuid VARCHAR(64) NOT NULL,
                         trusted_name TEXT DEFAULT '',
                         can_build INTEGER NOT NULL DEFAULT 1,
                         can_container INTEGER NOT NULL DEFAULT 1,
@@ -468,6 +811,7 @@ public final class RealEstateManager {
                     )
                 """);
             }
+            RealEstatePricingSchema.migrate(conn);
         } catch (SQLException e) {
             eco.getLogger().warning("[房地产] 建表失败: " + e.getMessage());
         }
@@ -480,6 +824,28 @@ public final class RealEstateManager {
     public String createZone(String name, String world, int x1, int z1, int x2, int z2,
                              String type, double basePrice, double taxRate, String status, int maxPlots,
                              String dungeonTemplateId) {
+        return createZone(name, world, x1, z1, x2, z2, type, basePrice, taxRate, status, maxPlots,
+                dungeonTemplateId, PlotPricingPolicy.MODE_FLAT, 0.0d, 0.0d, 0L,
+                0L, 0L, 0L, 0L);
+    }
+
+    /**
+     * Extended zone creation contract. Zero area limits mean disabled; existing callers retain FLAT pricing.
+     */
+    public String createZone(String name, String world, int x1, int z1, int x2, int z2,
+                             String type, double basePrice, double taxRate, String status, int maxPlots,
+                             String dungeonTemplateId, String pricingMode, double pricePerBlock,
+                             double minimumPlotPrice, long maxPlotArea,
+                             long playerSoftArea, long playerHardArea,
+                             long enterpriseSoftArea, long enterpriseHardArea) {
+        PlotPricingPolicy.ZonePolicy pricing;
+        try {
+            pricing = PlotPricingPolicy.policy(pricingMode, Math.max(0, basePrice), pricePerBlock,
+                    minimumPlotPrice, maxPlotArea, playerSoftArea, playerHardArea,
+                    enterpriseSoftArea, enterpriseHardArea);
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
         String id = "Z" + UUID.randomUUID().toString().substring(0, 8);
         String resolvedType = type != null ? type : ZONE_TYPE_RESIDENTIAL;
         // 副本权限对住宅/农业/工业用地开放；其余区域类型填了也忽略
@@ -490,8 +856,9 @@ public final class RealEstateManager {
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return null;
             try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_re_zones (id, name, world, x1, z1, x2, z2, type, base_price, tax_rate, status, created_at, max_plots, dungeon_template_id) " +
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
+                    "INSERT INTO ks_re_zones (id, name, world, x1, z1, x2, z2, type, base_price, tax_rate, status, created_at, max_plots, dungeon_template_id, " +
+                    "pricing_mode, price_per_block, min_plot_price, max_plot_area, player_soft_area, player_hard_area, enterprise_soft_area, enterprise_hard_area) " +
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
                 ps.setString(1, id);
                 ps.setString(2, name);
                 ps.setString(3, world);
@@ -506,6 +873,14 @@ public final class RealEstateManager {
                 ps.setLong(12, now);
                 ps.setInt(13, Math.max(0, maxPlots));
                 ps.setString(14, dtid);
+                ps.setString(15, pricing.pricingMode());
+                ps.setDouble(16, pricing.pricePerBlock());
+                ps.setDouble(17, pricing.minimumPrice());
+                ps.setLong(18, pricing.maxPlotArea());
+                ps.setLong(19, pricing.playerSoftArea());
+                ps.setLong(20, pricing.playerHardArea());
+                ps.setLong(21, pricing.enterpriseSoftArea());
+                ps.setLong(22, pricing.enterpriseHardArea());
                 ps.executeUpdate();
                 return id;
             }
@@ -628,17 +1003,67 @@ public final class RealEstateManager {
     }
 
     public boolean setZonePrice(String zoneId, double basePrice) {
+        if (!Double.isFinite(basePrice)) return false;
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return false;
-            try (var ps = conn.prepareStatement("UPDATE ks_re_zones SET base_price=? WHERE id=?")) {
+            try (var ps = conn.prepareStatement(
+                    "UPDATE ks_re_zones SET base_price=?, " +
+                    "price_per_block=CASE WHEN pricing_mode='PER_BLOCK' THEN ? ELSE price_per_block END WHERE id=?")) {
                 ps.setDouble(1, Math.max(0, basePrice));
-                ps.setString(2, zoneId);
+                ps.setDouble(2, Math.max(0, basePrice));
+                ps.setString(3, zoneId);
                 return ps.executeUpdate() > 0;
             }
         } catch (SQLException e) {
             eco.getLogger().warning("设置区域价格失败: " + e.getMessage());
         }
         return false;
+    }
+
+    /**
+     * Atomically replaces a zone's pricing and anti-hoarding limits. Zero limits disable that limit.
+     * Existing rows remain FLAT until this method explicitly changes them.
+     *
+     * @return null on success, otherwise a stable error message.
+     */
+    public String setZonePricingPolicy(String zoneId, String pricingMode, double pricePerBlock,
+                                       double minimumPlotPrice, long maxPlotArea,
+                                       long playerSoftArea, long playerHardArea,
+                                       long enterpriseSoftArea, long enterpriseHardArea) {
+        if (zoneId == null || zoneId.isBlank()) return "区域不存在";
+        Map<String, Object> zone = getZone(zoneId);
+        if (zone == null) return "区域不存在";
+
+        PlotPricingPolicy.ZonePolicy pricing;
+        try {
+            pricing = PlotPricingPolicy.policy(pricingMode,
+                    ((Number) zone.get("basePrice")).doubleValue(), pricePerBlock, minimumPlotPrice,
+                    maxPlotArea, playerSoftArea, playerHardArea, enterpriseSoftArea, enterpriseHardArea);
+        } catch (IllegalArgumentException exception) {
+            return "定价或面积限制无效";
+        }
+
+        try (var conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return "数据库不可用";
+            try (var ps = conn.prepareStatement(
+                    "UPDATE ks_re_zones SET pricing_mode=?, price_per_block=?, min_plot_price=?, " +
+                    "max_plot_area=?, player_soft_area=?, player_hard_area=?, " +
+                    "enterprise_soft_area=?, enterprise_hard_area=? WHERE id=?")) {
+                ps.setString(1, pricing.pricingMode());
+                ps.setDouble(2, pricing.pricePerBlock());
+                ps.setDouble(3, pricing.minimumPrice());
+                ps.setLong(4, pricing.maxPlotArea());
+                ps.setLong(5, pricing.playerSoftArea());
+                ps.setLong(6, pricing.playerHardArea());
+                ps.setLong(7, pricing.enterpriseSoftArea());
+                ps.setLong(8, pricing.enterpriseHardArea());
+                ps.setString(9, zoneId);
+                return ps.executeUpdate() == 1 ? null : "区域不存在";
+            }
+        } catch (SQLException exception) {
+            eco.getLogger().warning("设置区域定价策略失败: " + exception.getMessage());
+            return "设置失败";
+        }
     }
 
     public boolean setZoneStatus(String zoneId, String status) {
@@ -683,6 +1108,7 @@ public final class RealEstateManager {
                         m.put("houseCount", rs.getInt("house_count"));
                         try { m.put("maxPlots", rs.getInt("max_plots")); } catch (SQLException ignored) { m.put("maxPlots", 0); }
                         try { m.put("dungeonTemplateId", rs.getString("dungeon_template_id")); } catch (SQLException ignored) {}
+                        putZonePricing(m, rs);
                         out.add(m);
                     }
                 }
@@ -733,7 +1159,14 @@ public final class RealEstateManager {
             int zoneMinZ = Math.min(((Number) quotedZone.get("z1")).intValue(), ((Number) quotedZone.get("z2")).intValue());
             int zoneMaxZ = Math.max(((Number) quotedZone.get("z1")).intValue(), ((Number) quotedZone.get("z2")).intValue());
             if (minX < zoneMinX || maxX > zoneMaxX || minZ < zoneMinZ || maxZ > zoneMaxZ) return null;
-            quotedPlayerPrice = ((Number) quotedZone.get("basePrice")).doubleValue();
+            try (Connection quoteConnection = eco.ksCore().dataStore().getConnection()) {
+                if (quoteConnection == null) return null;
+                long heldArea = loadOwnerHeldArea(quoteConnection, normalizedOwnerType, ownerId);
+                quotedPlayerPrice = PlotPricingPolicy.quote(pricingPolicy(quotedZone), normalizedOwnerType,
+                        heldArea, minX, minZ, maxX, maxZ).finalPrice();
+            } catch (SQLException | IllegalArgumentException exception) {
+                return null;
+            }
             if (!Double.isFinite(quotedPlayerPrice) || quotedPlayerPrice < 0
                     || !eco.vaultHook().has(playerOwner, quotedPlayerPrice)
                     || !eco.vaultHook().withdraw(playerOwner, quotedPlayerPrice)) return null;
@@ -765,8 +1198,11 @@ public final class RealEstateManager {
             String world;
             double taxRate;
             String dungeonTemplateId;
+            PlotPricingPolicy.ZonePolicy pricingPolicy;
             try (var zoneQuery = conn.prepareStatement(
-                    "SELECT world,x1,z1,x2,z2,base_price,tax_rate,status,dungeon_template_id FROM ks_re_zones WHERE id=?")) {
+                    "SELECT world,x1,z1,x2,z2,base_price,tax_rate,status,dungeon_template_id,pricing_mode," +
+                    "price_per_block,min_plot_price,max_plot_area,player_soft_area,player_hard_area," +
+                    "enterprise_soft_area,enterprise_hard_area FROM ks_re_zones WHERE id=?")) {
                 zoneQuery.setString(1, zoneId);
                 try (var rs = zoneQuery.executeQuery()) {
                     if (!rs.next() || !ZONE_STATUS_FOR_SALE.equals(rs.getString("status"))) {
@@ -782,12 +1218,21 @@ public final class RealEstateManager {
                         return null;
                     }
                     world = rs.getString("world");
-                    price = rs.getDouble("base_price");
                     taxRate = rs.getDouble("tax_rate");
                     dungeonTemplateId = rs.getString("dungeon_template_id");
+                    pricingPolicy = pricingPolicy(rs);
                 }
             }
-            if (!Double.isFinite(price) || price < 0 || !Double.isFinite(taxRate) || taxRate < 0) {
+            if (!Double.isFinite(taxRate) || taxRate < 0) {
+                conn.rollback();
+                return null;
+            }
+
+            try {
+                long heldArea = loadOwnerHeldArea(conn, normalizedOwnerType, ownerId);
+                price = PlotPricingPolicy.quote(pricingPolicy, normalizedOwnerType, heldArea,
+                        minX, minZ, maxX, maxZ).finalPrice();
+            } catch (IllegalArgumentException exception) {
                 conn.rollback();
                 return null;
             }
@@ -863,6 +1308,55 @@ public final class RealEstateManager {
         return plotId;
     }
 
+    private PlotPricingPolicy.ZonePolicy pricingPolicy(Map<String, Object> zone) {
+        return PlotPricingPolicy.policy(
+                String.valueOf(zone.getOrDefault("pricingMode", PlotPricingPolicy.MODE_FLAT)),
+                ((Number) zone.getOrDefault("basePrice", 0.0d)).doubleValue(),
+                ((Number) zone.getOrDefault("pricePerBlock", 0.0d)).doubleValue(),
+                ((Number) zone.getOrDefault("minimumPlotPrice", 0.0d)).doubleValue(),
+                ((Number) zone.getOrDefault("maxPlotArea", 0L)).longValue(),
+                ((Number) zone.getOrDefault("playerSoftArea", 0L)).longValue(),
+                ((Number) zone.getOrDefault("playerHardArea", 0L)).longValue(),
+                ((Number) zone.getOrDefault("enterpriseSoftArea", 0L)).longValue(),
+                ((Number) zone.getOrDefault("enterpriseHardArea", 0L)).longValue());
+    }
+
+    private PlotPricingPolicy.ZonePolicy pricingPolicy(ResultSet resultSet) throws SQLException {
+        return PlotPricingPolicy.policy(
+                resultSet.getString("pricing_mode"),
+                resultSet.getDouble("base_price"),
+                resultSet.getDouble("price_per_block"),
+                resultSet.getDouble("min_plot_price"),
+                resultSet.getLong("max_plot_area"),
+                resultSet.getLong("player_soft_area"),
+                resultSet.getLong("player_hard_area"),
+                resultSet.getLong("enterprise_soft_area"),
+                resultSet.getLong("enterprise_hard_area"));
+    }
+
+    private long loadOwnerHeldArea(Connection connection, String ownerType, String ownerId) throws SQLException {
+        long total = 0L;
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT x1,z1,x2,z2 FROM ks_re_plots " +
+                "WHERE instance_id IS NULL AND owner_type=? AND owner_id=?")) {
+            statement.setString(1, ownerType);
+            statement.setString(2, ownerId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    long area;
+                    try {
+                        area = PlotPricingPolicy.area(resultSet.getInt("x1"), resultSet.getInt("z1"),
+                                resultSet.getInt("x2"), resultSet.getInt("z2"));
+                        total = Math.addExact(total, area);
+                    } catch (ArithmeticException | IllegalArgumentException exception) {
+                        throw new SQLException("invalid stored plot area", exception);
+                    }
+                }
+            }
+        }
+        return total;
+    }
+
     public List<Map<String, Object>> listPlots(String zoneId, String ownerType, String ownerId) {
         List<Map<String, Object>> out = new ArrayList<>();
         try (var conn = eco.ksCore().dataStore().getConnection()) {
@@ -925,6 +1419,7 @@ public final class RealEstateManager {
                         m.put("createdAt", rs.getLong("created_at"));
                         try { m.put("maxPlots", rs.getInt("max_plots")); } catch (SQLException ignored) { m.put("maxPlots", 0); }
                         try { m.put("dungeonTemplateId", rs.getString("dungeon_template_id")); } catch (SQLException ignored) {}
+                        putZonePricing(m, rs);
                         return m;
                     }
                 }
@@ -933,6 +1428,17 @@ public final class RealEstateManager {
             eco.getLogger().warning("查区域失败: " + e.getMessage());
         }
         return null;
+    }
+
+    private void putZonePricing(Map<String, Object> target, ResultSet resultSet) throws SQLException {
+        target.put("pricingMode", resultSet.getString("pricing_mode"));
+        target.put("pricePerBlock", resultSet.getDouble("price_per_block"));
+        target.put("minimumPlotPrice", resultSet.getDouble("min_plot_price"));
+        target.put("maxPlotArea", resultSet.getLong("max_plot_area"));
+        target.put("playerSoftArea", resultSet.getLong("player_soft_area"));
+        target.put("playerHardArea", resultSet.getLong("player_hard_area"));
+        target.put("enterpriseSoftArea", resultSet.getLong("enterprise_soft_area"));
+        target.put("enterpriseHardArea", resultSet.getLong("enterprise_hard_area"));
     }
 
     // ================================================================
@@ -1040,6 +1546,40 @@ public final class RealEstateManager {
         return HouseResult.ok(houseId);
     }
 
+    /** Web 管理端登记入口使用稳定的 Map 合同，避免主插件反射依赖 Extra 内部结果类型。 */
+    public Map<String, Object> registerHouseForWeb(String plotId, UUID actor, String world,
+            int x1, int y1, int z1, int x2, int y2, int z2, String name) {
+        HouseResult result = registerHouse(plotId, actor, world, x1, y1, z1, x2, y2, z2, name);
+        if (result.houseId != null) return Map.of("houseId", result.houseId, "message", "楼栋已登记并进入沙盘预热队列");
+        return Map.of("error", result.error == null ? "登记失败" : result.error);
+    }
+
+    /** 设置售楼沙盘展示信息；展示价不等同于正式市场挂单，不参与资金结算。 */
+    public boolean setHouseShowcase(String houseId, double showcasePrice, String marker) {
+        if (houseId == null || houseId.isBlank() || !Double.isFinite(showcasePrice) || showcasePrice < 0) return false;
+        String normalizedMarker = normalizeShowcaseMarker(marker);
+        try (var conn = eco.ksCore().dataStore().getConnection()) {
+            if (conn == null) return false;
+            try (var ps = conn.prepareStatement(
+                    "UPDATE ks_re_houses SET showcase_price=?,showcase_marker=? WHERE id=?")) {
+                ps.setDouble(1, showcasePrice);
+                ps.setString(2, normalizedMarker);
+                ps.setString(3, houseId);
+                if (ps.executeUpdate() != 1) return false;
+            }
+        } catch (SQLException error) {
+            eco.getLogger().warning("[房地产] 设置沙盘展示信息失败: " + error.getMessage());
+            return false;
+        }
+        refreshHouseCache();
+        return true;
+    }
+
+    private String normalizeShowcaseMarker(String marker) {
+        String value = marker == null ? "CYAN" : marker.trim().toUpperCase(Locale.ROOT);
+        return Set.of("CYAN", "MAGENTA", "AMBER", "GREEN", "BLUE", "RED").contains(value) ? value : "CYAN";
+    }
+
     /** unregisterHouse 的结果：success=true 表示已删除；否则 error 是中文失败原因。 */
     public static final class UnregisterResult {
         public final boolean success;
@@ -1079,6 +1619,7 @@ public final class RealEstateManager {
             eco.getLogger().warning("[房地产] 退登记房屋失败: " + e.getMessage());
             return UnregisterResult.fail("退登记失败");
         }
+        removeHouseTrustCache(houseId);
         refreshHouseCache();
         return UnregisterResult.ok();
     }
@@ -1166,9 +1707,8 @@ public final class RealEstateManager {
     private static final int REGION_SURFACE_ABOVE = 16;
 
     /**
-     * 导出一套房屋范围内的体素数据（材质+近似颜色），供网页端 3D 模型查看器渲染。
-     * 读 Bukkit 方块必须在主线程，HTTP 请求线程调用此方法时会跳到主线程同步等待结果（最多 8 秒超时）。
-     * @return null=房屋不存在；否则含 world/x1y1z1/x2y2z2/blocks(仅非空气方块) 的结果，超出体积上限时 blocks 为空、truncated=true。
+     * 导出一套房屋的售楼沙盘模型。首次请求只排队，不阻塞 HTTP 线程；网页轮询到 READY 后取得缓存模型。
+     * 世界读取被切成每 tick 固定预算，完成后再异步裁掉完全被遮挡的内部方块。
      */
     public Map<String, Object> exportHouseVoxels(String houseId) {
         Map<String, Object> house = getHouse(houseId);
@@ -1177,35 +1717,177 @@ public final class RealEstateManager {
         int x1 = (int) house.get("x1"), y1 = (int) house.get("y1"), z1 = (int) house.get("z1");
         int x2 = (int) house.get("x2"), y2 = (int) house.get("y2"), z2 = (int) house.get("z2");
         long volume = (long) (x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1);
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("world", world);
-        result.put("x1", x1); result.put("y1", y1); result.put("z1", z1);
-        result.put("x2", x2); result.put("y2", y2); result.put("z2", z2);
-        if (volume > MAX_VOXEL_BLOCKS) {
-            result.put("truncated", true);
-            result.put("blocks", List.of());
-            return result;
+        if (volume > MAX_HOUSE_SCAN_VOLUME) {
+            return voxelEnvelope(house, "FAILED", true, "volume_limit", List.of());
+        }
+
+        String signature = world + ':' + x1 + ':' + y1 + ':' + z1 + ':' + x2 + ':' + y2 + ':' + z2;
+        long now = System.currentTimeMillis();
+        CachedVoxelModel entry = voxelModelCache.compute(houseId, (id, current) -> {
+            boolean expired = current != null && current.future().isDone()
+                    && now - current.queuedAt() > VOXEL_CACHE_TTL_MILLIS;
+            if (current == null || !current.signature().equals(signature) || expired || current.future().isCancelled()) {
+                return queueHouseVoxelSnapshot(house, signature, now);
+            }
+            return current;
+        });
+        if (!entry.future().isDone()) {
+            Map<String, Object> pending = voxelEnvelope(house, "PREPARING", false, null, List.of());
+            pending.put("retryAfterMs", 250);
+            pending.put("queuedAt", entry.queuedAt());
+            return pending;
         }
         try {
-            List<Object[]> blocks = org.bukkit.Bukkit.getScheduler()
-                    .callSyncMethod(eco, () -> scanVoxels(world, x1, y1, z1, x2, y2, z2))
-                    .get(8, java.util.concurrent.TimeUnit.SECONDS);
-            List<Map<String, Object>> out = new ArrayList<>(blocks.size());
-            for (Object[] b : blocks) {
-                Map<String, Object> bm = new LinkedHashMap<>();
-                bm.put("x", b[0]); bm.put("y", b[1]); bm.put("z", b[2]);
-                bm.put("color", b[3]); bm.put("mat", b[4]);
-                if (b[5] != null) bm.put("data", b[5]);
-                out.add(bm);
-            }
-            result.put("truncated", false);
-            result.put("blocks", out);
-        } catch (Exception e) {
-            eco.getLogger().warning("[房地产] 导出房屋体素失败: " + e.getMessage());
-            result.put("truncated", true);
-            result.put("blocks", List.of());
+            return entry.future().join();
+        } catch (RuntimeException error) {
+            voxelModelCache.remove(houseId, entry);
+            eco.getLogger().warning("[房地产] 售楼沙盘快照失败: " + error.getMessage());
+            return voxelEnvelope(house, "FAILED", true, "read_failed", List.of());
         }
+    }
+
+    /** 仅触发预热；城区清单接口调用后网页可以立即绘制地块骨架。 */
+    public boolean prewarmHouseVoxels(String houseId) {
+        return exportHouseVoxels(houseId) != null;
+    }
+
+    /** 城区由已登记单栋组成；调用方可据此先画道路/地块，再逐栋请求缓存模型。 */
+    public List<Map<String, Object>> listHousesInZone(String zoneId) {
+        if (zoneId == null || zoneId.isBlank()) return List.of();
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (List<Map<String, Object>> houses : houseCache.values()) {
+            for (Map<String, Object> house : houses) {
+                if (zoneId.equals(house.get("zoneId"))) out.add(new LinkedHashMap<>(house));
+            }
+        }
+        out.sort(Comparator.comparingLong(h -> ((Number) h.getOrDefault("registeredAt", 0L)).longValue()));
+        return out;
+    }
+
+    private CachedVoxelModel queueHouseVoxelSnapshot(Map<String, Object> house, String signature, long queuedAt) {
+        CompletableFuture<Map<String, Object>> future = new CompletableFuture<>();
+        Map<String, Object> immutableHouse = Collections.unmodifiableMap(new LinkedHashMap<>(house));
+        final org.bukkit.scheduler.BukkitTask[] taskRef = new org.bukkit.scheduler.BukkitTask[1];
+        org.bukkit.scheduler.BukkitTask task = new org.bukkit.scheduler.BukkitRunnable() {
+            private final int x1 = ((Number) immutableHouse.get("x1")).intValue();
+            private final int y1 = ((Number) immutableHouse.get("y1")).intValue();
+            private final int z1 = ((Number) immutableHouse.get("z1")).intValue();
+            private final int x2 = ((Number) immutableHouse.get("x2")).intValue();
+            private final int y2 = ((Number) immutableHouse.get("y2")).intValue();
+            private final int z2 = ((Number) immutableHouse.get("z2")).intValue();
+            private int x = x1, y = y1, z = z1;
+            private final List<Object[]> blocks = new ArrayList<>();
+
+            @Override public void run() {
+                if (future.isCancelled() || !eco.isEnabled()) { finishTask(); return; }
+                org.bukkit.World bukkitWorld = org.bukkit.Bukkit.getWorld(String.valueOf(immutableHouse.get("world")));
+                if (bukkitWorld == null) {
+                    future.complete(voxelEnvelope(immutableHouse, "FAILED", true, "world_unavailable", List.of()));
+                    finishTask();
+                    return;
+                }
+                int budget = VOXEL_SCAN_BUDGET_PER_TICK;
+                while (budget-- > 0) {
+                    org.bukkit.block.Block block = bukkitWorld.getBlockAt(x, y, z);
+                    org.bukkit.Material material = block.getType();
+                    if (!material.isAir()) {
+                        if (blocks.size() >= MAX_VOXEL_BLOCKS) {
+                            future.complete(voxelEnvelope(immutableHouse, "FAILED", true, "block_limit", List.of()));
+                            finishTask();
+                            return;
+                        }
+                        String materialName = material.name();
+                        String data = needsBlockData(materialName) ? block.getBlockData().getAsString() : null;
+                        blocks.add(new Object[]{x - x1, y - y1, z - z1,
+                                VoxelColors.colorOf(material), materialName, data});
+                    }
+                    if (++z > z2) { z = z1; if (++y > y2) { y = y1; if (++x > x2) { completeSnapshot(); return; } } }
+                }
+            }
+
+            private void completeSnapshot() {
+                finishTask();
+                List<Object[]> snapshot = List.copyOf(blocks);
+                org.bukkit.Bukkit.getScheduler().runTaskAsynchronously(eco, () -> {
+                    try {
+                        List<Object[]> visible = cullHiddenVoxels(snapshot);
+                        List<Map<String, Object>> rows = new ArrayList<>(visible.size());
+                        for (Object[] block : visible) {
+                            Map<String, Object> row = new LinkedHashMap<>();
+                            row.put("x", block[0]); row.put("y", block[1]); row.put("z", block[2]);
+                            row.put("color", block[3]); row.put("mat", block[4]);
+                            if (block[5] != null) row.put("data", block[5]);
+                            rows.add(row);
+                        }
+                        Map<String, Object> ready = voxelEnvelope(immutableHouse, "READY", false, null, rows);
+                        ready.put("sourceBlocks", snapshot.size());
+                        ready.put("generatedAt", System.currentTimeMillis());
+                        ready.put("cacheTtlSeconds", VOXEL_CACHE_TTL_MILLIS / 1000);
+                        future.complete(ready);
+                    } catch (RuntimeException error) {
+                        future.completeExceptionally(error);
+                    }
+                });
+            }
+
+            private void finishTask() {
+                cancel();
+                if (taskRef[0] != null) voxelSnapshotTasks.remove(taskRef[0]);
+            }
+        }.runTaskTimer(eco, 1L, 1L);
+        taskRef[0] = task;
+        voxelSnapshotTasks.add(task);
+        return new CachedVoxelModel(signature, queuedAt, future);
+    }
+
+    private Map<String, Object> voxelEnvelope(Map<String, Object> house, String status,
+                                               boolean truncated, String reason,
+                                               List<Map<String, Object>> blocks) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("houseId", house.get("id"));
+        result.put("name", house.get("name"));
+        result.put("plotId", house.get("plotId"));
+        result.put("zoneId", house.get("zoneId"));
+        result.put("world", house.get("world"));
+        result.put("x1", house.get("x1")); result.put("y1", house.get("y1")); result.put("z1", house.get("z1"));
+        result.put("x2", house.get("x2")); result.put("y2", house.get("y2")); result.put("z2", house.get("z2"));
+        result.put("status", status);
+        result.put("truncated", truncated);
+        if (reason != null) result.put("reason", reason);
+        result.put("blocks", blocks);
         return result;
+    }
+
+    private List<Object[]> cullHiddenVoxels(List<Object[]> blocks) {
+        Map<Long, String> occupancy = new HashMap<>(blocks.size() * 2);
+        for (Object[] block : blocks) {
+            occupancy.put(voxelKey((Integer) block[0], (Integer) block[1], (Integer) block[2]), (String) block[4]);
+        }
+        List<Object[]> visible = new ArrayList<>(blocks.size());
+        int[][] directions = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+        for (Object[] block : blocks) {
+            int x = (Integer) block[0], y = (Integer) block[1], z = (Integer) block[2];
+            String material = (String) block[4];
+            if (isVoxelTransparent(material)) { visible.add(block); continue; }
+            boolean hidden = true;
+            for (int[] d : directions) {
+                String neighbor = occupancy.get(voxelKey(x + d[0], y + d[1], z + d[2]));
+                if (neighbor == null || isVoxelTransparent(neighbor)) { hidden = false; break; }
+            }
+            if (!hidden) visible.add(block);
+        }
+        return visible;
+    }
+
+    private static long voxelKey(int x, int y, int z) {
+        return (((long) x & 0x1fffffL) << 42) | (((long) y & 0x1fffffL) << 21) | ((long) z & 0x1fffffL);
+    }
+
+    private static boolean isVoxelTransparent(String material) {
+        return material == null || material.contains("GLASS") || material.endsWith("_PANE")
+                || material.endsWith("_LEAVES") || material.equals("WATER") || material.equals("LAVA")
+                || material.endsWith("_FENCE") || material.endsWith("_WALL") || material.endsWith("_DOOR")
+                || material.endsWith("_TRAPDOOR") || material.endsWith("_STAIRS") || material.endsWith("_SLAB");
     }
 
     /** 形状依赖朝向/状态数据（楼梯/台阶/活板门/门/栅栏门）才能正确渲染的方块，需要额外导出 BlockData 字符串。 */
@@ -1302,7 +1984,8 @@ public final class RealEstateManager {
 
     private static boolean needsBlockData(String matName) {
         return matName.endsWith("_STAIRS") || matName.endsWith("_SLAB")
-                || matName.endsWith("_TRAPDOOR") || matName.endsWith("_DOOR") || matName.endsWith("_FENCE_GATE");
+                || matName.endsWith("_TRAPDOOR") || matName.endsWith("_DOOR") || matName.endsWith("_FENCE_GATE")
+                || matName.endsWith("_PANE") || matName.endsWith("_FENCE") || matName.endsWith("_WALL");
     }
 
     /** 主线程内执行：扫描 AABB 内的非空气方块，返回 {x,y,z,colorRGB,matName,blockDataString} 数组列表（坐标相对房屋原点平移到 0 起）。 */
@@ -1425,11 +2108,13 @@ public final class RealEstateManager {
             eco.getLogger().warning("[房地产] 转移房屋所有权失败: " + e.getMessage());
             return "转移失败";
         }
+        removeHouseTrustCache(houseId);
         refreshHouseCache();
         return null;
     }
 
     private boolean isMortgagedCollateral(Connection conn, String assetType, String assetRef) throws SQLException {
+        if (!tableExists(conn, "ks_bank_collateral")) return false;
         try (var ps = conn.prepareStatement(
                 "SELECT 1 FROM ks_bank_collateral WHERE asset_type=? AND asset_ref=? " +
                         "AND status IN ('LOCKED','SEIZED')")) {
@@ -1438,9 +2123,6 @@ public final class RealEstateManager {
             try (var rs = ps.executeQuery()) {
                 return rs.next();
             }
-        } catch (SQLException e) {
-            if (e.getMessage() != null && e.getMessage().contains("no such table")) return false;
-            throw e;
         }
     }
 
@@ -1448,6 +2130,7 @@ public final class RealEstateManager {
     private boolean isMortgagedCollateral(String assetType, String assetRef) {
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return false;
+            if (!tableExists(conn, "ks_bank_collateral")) return false;
             try (var ps = conn.prepareStatement(
                     "SELECT 1 FROM ks_bank_collateral WHERE asset_type=? AND asset_ref=? AND status IN ('LOCKED','SEIZED')")) {
                 ps.setString(1, assetType);
@@ -1461,35 +2144,27 @@ public final class RealEstateManager {
     }
 
     /** 房屋所有者授予信任权限（PLAYER 房屋专用）。@return null 成功，否则中文错误信息。 */
-    public String grantHouseTrust(String houseId, UUID owner, UUID targetUuid, String targetName,
-                                   boolean build, boolean container, boolean interact) {
-        Map<String, Object> house = getHouse(houseId);
-        if (house == null) return "房屋不存在";
-        if (!OWNER_PLAYER.equals(house.get("ownerType")) || !owner.toString().equals(house.get("ownerId"))) {
-            return "非房屋所有者";
-        }
+    public synchronized String grantHouseTrust(String houseId, UUID owner, UUID targetUuid, String targetName,
+                                               boolean build, boolean container, boolean interact) {
+        if (houseId == null || houseId.isBlank() || owner == null || targetUuid == null) return "参数无效";
         if (targetUuid.equals(owner)) return "不能信任自己";
         long now = System.currentTimeMillis() / 1000;
+        String safeTargetName = normalizeTrustName(targetName);
         try (var conn = eco.ksCore().dataStore().getConnection()) {
             if (conn == null) return "数据库不可用";
-            try (var ps = conn.prepareStatement(
-                    "INSERT INTO ks_re_house_trust (house_id, trusted_uuid, trusted_name, can_build, can_container, can_interact, granted_at) " +
-                    "VALUES (?,?,?,?,?,?,?) " +
-                    "ON CONFLICT(house_id, trusted_uuid) DO UPDATE SET trusted_name=excluded.trusted_name, " +
-                    "can_build=excluded.can_build, can_container=excluded.can_container, can_interact=excluded.can_interact")) {
-                ps.setString(1, houseId);
-                ps.setString(2, targetUuid.toString());
-                ps.setString(3, targetName == null ? "" : targetName);
-                ps.setInt(4, build ? 1 : 0);
-                ps.setInt(5, container ? 1 : 0);
-                ps.setInt(6, interact ? 1 : 0);
-                ps.setLong(7, now);
-                ps.executeUpdate();
-            }
+            PortableSqlMutation.upsert(conn,
+                    "UPDATE ks_re_house_trust SET trusted_name=?,can_build=?,can_container=?,can_interact=? " +
+                            "WHERE house_id=? AND trusted_uuid=? AND EXISTS (SELECT 1 FROM ks_re_houses WHERE id=? AND owner_type=? AND owner_id=?)",
+                    ps -> bindTrustUpdate(ps, safeTargetName, build, container, interact, houseId, targetUuid, owner),
+                    "INSERT INTO ks_re_house_trust (house_id,trusted_uuid,trusted_name,can_build,can_container,can_interact,granted_at) " +
+                            "SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM ks_re_houses WHERE id=? AND owner_type=? AND owner_id=?)",
+                    ps -> bindTrustInsert(ps, houseId, targetUuid, safeTargetName, build, container, interact, now, owner));
         } catch (SQLException e) {
             eco.getLogger().warning("[房地产] 授予房屋信任失败: " + e.getMessage());
             return "操作失败";
         }
+        putHouseTrustCache(houseId, targetUuid, new TrustPermissions(build, container, interact));
+        eco.publishCrossServerInvalidation("real-estate", "all");
         return null;
     }
 
@@ -1506,6 +2181,8 @@ public final class RealEstateManager {
         m.put("dungeonTemplateId", rs.getString("dungeon_template_id"));
         m.put("taxRate", rs.getDouble("tax_rate"));
         m.put("name", rs.getString("name"));
+        m.put("showcasePrice", rs.getDouble("showcase_price"));
+        m.put("showcaseMarker", rs.getString("showcase_marker"));
         m.put("registeredAt", rs.getLong("registered_at"));
         return m;
     }
